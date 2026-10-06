@@ -47,7 +47,11 @@ else
     esac
 
     if [ -n "${TARGET}" ]; then
-        LATEST_URL="https://github.com/botoxMD/botox-cli/releases/latest/download/botox-${TARGET}.tar.gz"
+        echo "Looking up prebuilt binary for ${TARGET}..."
+        LATEST_URL="$(curl -fsSL https://api.github.com/repos/botoxMD/botox-cli/releases/latest 2>/dev/null | grep "browser_download_url" | grep "${TARGET}\.tar\.gz" | head -n 1 | cut -d '"' -f 4 || true)"
+        if [ -z "${LATEST_URL}" ]; then
+            LATEST_URL="https://github.com/botoxMD/botox-cli/releases/latest/download/botox-v0.1.0-${TARGET}.tar.gz"
+        fi
         echo "Downloading ${LATEST_URL}..."
         TMP_DIR="$(mktemp -d)"
         if curl -fsSL "${LATEST_URL}" | tar -xz -C "${TMP_DIR}"; then
