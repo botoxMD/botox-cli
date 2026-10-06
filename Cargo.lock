@@ -134,11 +134,14 @@ dependencies = [
  "fontdb",
  "pulldown-cmark",
  "serde",
+ "serde_json",
  "serde_yaml",
  "typst",
  "typst-as-lib",
  "typst-assets",
+ "typst-layout",
  "typst-pdf",
+ "typst-svg",
 ]
 
 [[package]]
