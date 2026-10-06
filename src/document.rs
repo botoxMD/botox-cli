@@ -128,7 +128,7 @@ pub fn wrap_document(body_typst: &str, fm: &Value, config: &DocumentConfig, cli_
         .or_else(|| fm.get("number-sections"))
         .and_then(|v| v.as_bool())
         .or(config.section_numbering)
-        .unwrap_or(false);
+        .unwrap_or(true);
 
     if numbering {
         out.push_str("#set heading(numbering: \"1.1\")\n");
@@ -239,12 +239,14 @@ pub fn wrap_document(body_typst: &str, fm: &Value, config: &DocumentConfig, cli_
     } else if let Some(fm_toc) = fm.get("toc").or_else(|| fm.get("table-of-contents")).and_then(|v| v.as_bool()) {
         fm_toc
     } else {
-        config.toc.unwrap_or(false)
+        config.toc.unwrap_or(true)
     };
 
     let toc_depth = fm.get("toc-depth")
         .or_else(|| fm.get("toc_depth"))
         .and_then(|v| v.as_u64())
+        .map(|n| n as usize)
+        .or(config.toc_depth)
         .unwrap_or(3);
 
     if should_include_toc {

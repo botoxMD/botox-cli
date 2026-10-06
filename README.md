@@ -85,6 +85,10 @@ cp target/release/botox ~/.local/bin/botox
 The single executable `botox` handles both documents and presentations:
 
 ```bash
+# Initialize a new document or presentation with active default settings
+botox init document.md
+botox init slides.md
+
 # Compile documentation PDF (auto-detected)
 botox README.md -o README.pdf
 
@@ -272,4 +276,5 @@ slides:
 | `--pdf` | None | Force PDF documentation mode |
 | `--slides` | None | Force presentation slide deck mode |
 | `--config` | `<file>` | Supply custom configuration YAML path |
+| `init` | `<filename>` | Initialize new document or slide deck with default settings |
 | `config` | Subcommand | Display currently active configuration |

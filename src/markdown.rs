@@ -177,6 +177,10 @@ fn preprocess_pandoc(markdown: &str) -> String {
 pub fn convert_latex_math_to_typst(math: &str) -> String {
     let mut s = math.trim().to_string();
 
+    if matches!(s.as_str(), "dt" | "dx" | "dy" | "dz" | "dr" | "du" | "dv") {
+        return format!("dif {}", &s[1..]);
+    }
+
     // Text & Font styles
     while let Some(pos) = s.find(r"\mathcal{") {
         if let Some(end) = find_matching_brace(&s, pos + 8) {
@@ -304,7 +308,12 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
             if let Some(end) = find_matching_brace(&s, pos + cmd.len() - 1) {
                 let inner = s[pos + cmd.len()..end].to_string();
                 let inner_conv = convert_latex_math_to_typst(&inner);
-                s.replace_range(pos..end + 1, &format!("{func}({inner_conv})"));
+                let space_before = if pos > 0 && s[..pos].chars().last().map_or(false, |c| c.is_alphanumeric()) {
+                    " "
+                } else {
+                    ""
+                };
+                s.replace_range(pos..end + 1, &format!("{space_before}{func}({inner_conv})"));
             } else {
                 break;
             }

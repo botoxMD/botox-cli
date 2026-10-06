@@ -13,6 +13,7 @@ pub struct DocumentConfig {
     pub columns: Option<usize>,
     pub section_numbering: Option<bool>,
     pub toc: Option<bool>,
+    pub toc_depth: Option<usize>,
     pub margin: Option<MarginConfig>,
     pub bibliography: Option<bool>,
     pub lang: Option<String>,
@@ -35,13 +36,14 @@ impl DocumentConfig {
             monofont: Some("DejaVu Sans Mono".to_string()),
             papersize: Some("a4".to_string()),
             columns: Some(1),
-            section_numbering: Some(false),
-            toc: Some(false),
+            section_numbering: Some(true),
+            toc: Some(true),
+            toc_depth: Some(3),
             margin: Some(MarginConfig::Axes {
                 x: Some("2.5cm".to_string()),
                 y: Some("2.5cm".to_string()),
             }),
-            bibliography: Some(false),
+            bibliography: Some(true),
             lang: Some("en".to_string()),
         }
     }
@@ -57,6 +59,7 @@ impl DocumentConfig {
         if other.columns.is_some() { self.columns = other.columns; }
         if other.section_numbering.is_some() { self.section_numbering = other.section_numbering; }
         if other.toc.is_some() { self.toc = other.toc; }
+        if other.toc_depth.is_some() { self.toc_depth = other.toc_depth; }
         if other.margin.is_some() { self.margin = other.margin.clone(); }
         if other.bibliography.is_some() { self.bibliography = other.bibliography; }
         if other.lang.is_some() { self.lang = other.lang.clone(); }

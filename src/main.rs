@@ -10,10 +10,15 @@ use serde_yaml::Value;
 fn show_help() {
     println!(r#"Usage: botox <input.md> [options]
        botox <pdf|slides> <input.md> [options]
+       botox init <filename> [options]
        botox config
 
 Pure Rust single native binary: Transforms Markdown into LaTeX-quality PDF documents or presentation slides.
 Mode is detected automatically from frontmatter structure, or specified explicitly.
+
+Commands:
+  init <filename>         Initialize a new Markdown document or presentation slide deck
+  config                  Display currently active configuration settings and loaded sources
 
 Common Options:
   -o, --output <file>     Output PDF file path (default: <input>.pdf)
@@ -32,6 +37,225 @@ Documentation Options:
 Slide Options:
   --slides                Force presentation slide deck mode
 "#);
+}
+
+fn handle_init(args: &[String]) {
+    if args.is_empty() || args[0] == "-h" || args[0] == "--help" {
+        println!(r#"Usage: botox init <filename> [options]
+
+Initialize a new Markdown document or presentation slide deck with active default settings.
+
+Arguments:
+  <filename>              Target file path to create (e.g. document.md, slides.md)
+
+Options:
+  --slides                Initialize as a presentation slide deck
+  --doc, --pdf            Initialize as a publication-grade LaTeX PDF document
+  -f, --force             Overwrite target file if it already exists
+  --theme <theme>         Slide theme (default: from config or 'default')
+"#);
+        return;
+    }
+
+    let mut target_filename: Option<PathBuf> = None;
+    let mut explicit_slides = false;
+    let mut explicit_doc = false;
+    let mut force = false;
+    let mut cli_theme: Option<String> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--slides" | "slides" => explicit_slides = true,
+            "--doc" | "--pdf" | "pdf" | "doc" => explicit_doc = true,
+            "-f" | "--force" => force = true,
+            "--theme" => {
+                i += 1;
+                if i < args.len() {
+                    cli_theme = Some(args[i].clone());
+                }
+            }
+            other => {
+                if !other.starts_with('-') && target_filename.is_none() {
+                    let mut path = PathBuf::from(other);
+                    if path.extension().is_none() {
+                        path.set_extension("md");
+                    }
+                    target_filename = Some(path);
+                }
+            }
+        }
+        i += 1;
+    }
+
+    let target_path = match target_filename {
+        Some(p) => p,
+        None => {
+            eprintln!("Error: 'botox init' requires a target filename.");
+            eprintln!("Example: botox init document.md   or   botox init slides.md");
+            std::process::exit(1);
+        }
+    };
+
+    if target_path.exists() && !force {
+        eprintln!(
+            "Error: File '{}' already exists. Use --force to overwrite.",
+            target_path.display()
+        );
+        std::process::exit(1);
+    }
+
+    let fname_lower = target_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let is_slides = explicit_slides
+        || (!explicit_doc && (fname_lower.contains("slide") || fname_lower.contains("pres")));
+
+    let doc_dir = target_path.parent();
+    let (resolved_cfg, _) = config::BotoxConfig::load(None, doc_dir);
+
+    let content = generate_init_template(is_slides, &resolved_cfg, cli_theme.as_deref(), &target_path);
+
+    if let Some(parent) = target_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+
+    match std::fs::write(&target_path, content) {
+        Ok(()) => {
+            let doc_type = if is_slides { "slide presentation" } else { "PDF document" };
+            println!("Initialized new {} -> '{}'", doc_type, target_path.display());
+        }
+        Err(e) => {
+            eprintln!("Error writing '{}': {e}", target_path.display());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn generate_init_template(
+    is_slides: bool,
+    resolved_cfg: &config::BotoxConfig,
+    cli_theme: Option<&str>,
+    target_path: &std::path::Path,
+) -> String {
+    if is_slides {
+        let slides_cfg = resolved_cfg.slides.clone().unwrap_or_default();
+        let theme = cli_theme
+            .map(|s| s.to_string())
+            .or(slides_cfg.theme)
+            .unwrap_or_else(|| "default".to_string());
+        let paginate = slides_cfg.paginate.unwrap_or(true);
+
+        format!(
+            r#"---
+marp: true
+theme: {theme}
+paginate: {paginate}
+---
+
+# Presentation Title
+### Presentation Subtitle or Presenter
+
+---
+
+# Executive Summary
+
+- High performance, single-binary Markdown typesetting
+- Direct compilation to 16:9 presentation slides
+- Full support for math, code, tables, and images
+
+---
+
+# Architecture Highlights
+
+Mathematical equations and vector graphics render natively:
+
+$$ \vec{{F}} = m \frac{{d \vec{{v}}}}{{d t}} $$
+
+- Point 1: Direct bypass forwarding
+- Point 2: Zero runtime dependencies
+"#
+        )
+    } else {
+        let doc_cfg = resolved_cfg.document.clone().unwrap_or_default();
+        let author = doc_cfg.author.unwrap_or_else(|| {
+            std::env::var("USER")
+                .or_else(|_| std::env::var("USERNAME"))
+                .unwrap_or_else(|_| "Minus".to_string())
+        });
+        let affiliation = doc_cfg
+            .affiliation
+            .unwrap_or_else(|| "Systems Engineering".to_string());
+        let lang = doc_cfg.lang.unwrap_or_else(|| "en".to_string());
+        let papersize = doc_cfg.papersize.unwrap_or_else(|| "a4".to_string());
+        let fontsize = doc_cfg.fontsize.unwrap_or_else(|| "11pt".to_string());
+        let mainfont = doc_cfg
+            .mainfont
+            .unwrap_or_else(|| "New Computer Modern".to_string());
+        let monofont = doc_cfg
+            .monofont
+            .unwrap_or_else(|| "DejaVu Sans Mono".to_string());
+        let mathfont = doc_cfg
+            .mathfont
+            .unwrap_or_else(|| "New Computer Modern Math".to_string());
+        let num_sections = doc_cfg.section_numbering.unwrap_or(true);
+        let toc = doc_cfg.toc.unwrap_or(true);
+        let toc_depth = doc_cfg.toc_depth.unwrap_or(3);
+        let bib = doc_cfg.bibliography.unwrap_or(true);
+
+        format!(
+            r#"---
+title: "Document Title"
+subtitle: "Document Subtitle"
+author:
+  - name: "{author}"
+    affiliation: "{affiliation}"
+date: \today
+lang: {lang}
+papersize: {papersize}
+fontsize: {fontsize}
+mainfont: "{mainfont}"
+monofont: "{monofont}"
+mathfont: "{mathfont}"
+geometry: "margin=2.5cm"
+number-sections: {num_sections}
+table-of-contents: {toc}
+toc-depth: {toc_depth}
+bibliography: {bib}
+---
+
+\newpage
+
+# Introduction
+
+Welcome to your new document. This file was initialized with your active Botox default settings.
+
+## Getting Started
+
+You can write standard Markdown and compile it directly using:
+
+```bash
+botox {display_name} -o output.pdf
+```
+
+## Mathematical Modeling
+
+LaTeX mathematics is supported natively:
+
+$$\int_{{-\infty}}^{{+\infty}} e^{{-x^2}} \, dx = \sqrt{{\pi}}$$
+
+## References
+
+Hyperlinks are automatically transformed into an IEEE-standard Bibliography:
+Check out the [Botox Documentation](https://github.com) for more examples.
+"#,
+            display_name = target_path.display()
+        )
+    }
 }
 
 fn extract_frontmatter(content: &str) -> (Value, &str) {
@@ -85,6 +309,11 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 || args[1] == "-h" || args[1] == "--help" {
         show_help();
+        return;
+    }
+
+    if args[1] == "init" {
+        handle_init(&args[2..]);
         return;
     }
 
@@ -229,7 +458,7 @@ fn main() {
             _ => false,
         }
     } else {
-        doc_config.bibliography.unwrap_or(false)
+        doc_config.bibliography.unwrap_or(true)
     };
 
     let typst_markup = if is_slides {
@@ -259,5 +488,45 @@ fn main() {
             eprintln!("Compilation failed: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_generate_init_document_template() {
+        let mut cfg = config::BotoxConfig::defaults();
+        if let Some(ref mut doc) = cfg.document {
+            doc.author = Some("Ada Lovelace".to_string());
+            doc.affiliation = Some("Computing Institute".to_string());
+        }
+        let tpl = generate_init_template(false, &cfg, None, Path::new("report.md"));
+        assert!(tpl.contains("name: \"Ada Lovelace\""));
+        assert!(tpl.contains("affiliation: \"Computing Institute\""));
+        assert!(tpl.contains("papersize: a4"));
+        assert!(tpl.contains("number-sections: true"));
+        assert!(tpl.contains("table-of-contents: true"));
+        assert!(tpl.contains("toc-depth: 3"));
+        assert!(tpl.contains("bibliography: true"));
+        assert!(tpl.contains("botox report.md -o output.pdf"));
+    }
+
+    #[test]
+    fn test_generate_init_slides_template() {
+        let mut cfg = config::BotoxConfig::defaults();
+        if let Some(ref mut s) = cfg.slides {
+            s.theme = Some("academic".to_string());
+        }
+        let tpl = generate_init_template(true, &cfg, None, Path::new("talk.md"));
+        assert!(tpl.contains("marp: true"));
+        assert!(tpl.contains("theme: academic"));
+        assert!(tpl.contains("paginate: true"));
+
+        // CLI theme override
+        let tpl2 = generate_init_template(true, &cfg, Some("nord"), Path::new("talk.md"));
+        assert!(tpl2.contains("theme: nord"));
     }
 }

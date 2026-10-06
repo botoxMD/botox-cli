@@ -3,18 +3,23 @@
 
 document:
   author: "Minus"
-  affiliation: "Engineering"
+  affiliation: "Systems Engineering"
   fontsize: "11pt"
   mainfont: "New Computer Modern"       # True LaTeX font
   mathfont: "New Computer Modern Math"  # True LaTeX math font
+  monofont: "DejaVu Sans Mono"          # Monospace font
   papersize: "a4"                       # a4, letter
   columns: 1                            # 1 or 2
   margin:
     x: "2.5cm"
     y: "2.5cm"
-  section_numbering: true              # Set to true for 1., 1.1 numbered sections
-  toc: true                            # Set to true to auto-generate a Table of Contents by default
+  section_numbering: true              # Numbered sections: 1, 1.1
+  toc: true                            # Auto-generate Table of Contents
+  toc_depth: 3                         # Outline heading depth
+  bibliography: true                   # Transform links into IEEE Bibliography
+  lang: "en"
 
 slides:
-  theme: "gaia"                         # gaia, default, uncover
+  theme: "default"                     # default, academic, nord, dark
   paginate: true
+  font: "New Computer Modern"
