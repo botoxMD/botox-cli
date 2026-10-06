@@ -75,6 +75,7 @@ fn convert_sub_super(s: &str) -> String {
 fn preprocess_pandoc(markdown: &str) -> String {
     let mut result = String::with_capacity(markdown.len());
     let mut in_code_fence = false;
+    let mut in_display_math = false;
 
     for line in markdown.lines() {
         let trimmed = line.trim_start();
@@ -96,6 +97,17 @@ fn preprocess_pandoc(markdown: &str) -> String {
         let mut text_segment = String::new();
 
         while let Some(c) = chars.next() {
+            if in_display_math {
+                if c == '$' && chars.peek() == Some(&'$') {
+                    chars.next(); // consume second $
+                    processed_line.push_str("$$");
+                    in_display_math = false;
+                } else {
+                    processed_line.push(c);
+                }
+                continue;
+            }
+
             if c == '`' {
                 if !text_segment.is_empty() {
                     processed_line.push_str(&convert_sub_super(&text_segment));
@@ -109,15 +121,42 @@ fn preprocess_pandoc(markdown: &str) -> String {
                     }
                 }
             } else if c == '$' {
-                if !text_segment.is_empty() {
-                    processed_line.push_str(&convert_sub_super(&text_segment));
-                    text_segment.clear();
-                }
-                processed_line.push('$');
-                while let Some(c2) = chars.next() {
-                    processed_line.push(c2);
-                    if c2 == '$' {
-                        break;
+                if chars.peek() == Some(&'$') {
+                    // Display math starts
+                    chars.next(); // consume second $
+                    if !text_segment.is_empty() {
+                        processed_line.push_str(&convert_sub_super(&text_segment));
+                        text_segment.clear();
+                    }
+                    processed_line.push_str("$$");
+                    let mut closed = false;
+                    while let Some(c2) = chars.next() {
+                        if c2 == '$' && chars.peek() == Some(&'$') {
+                            chars.next(); // consume second $
+                            processed_line.push_str("$$");
+                            closed = true;
+                            break;
+                        } else {
+                            processed_line.push(c2);
+                        }
+                    }
+                    if !closed {
+                        in_display_math = true;
+                    }
+                } else {
+                    // Inline math starts with a single $
+                    if !text_segment.is_empty() {
+                        processed_line.push_str(&convert_sub_super(&text_segment));
+                        text_segment.clear();
+                    }
+                    processed_line.push('$');
+                    let mut prev_backslash = false;
+                    while let Some(c2) = chars.next() {
+                        processed_line.push(c2);
+                        if c2 == '$' && !prev_backslash {
+                            break;
+                        }
+                        prev_backslash = c2 == '\\' && !prev_backslash;
                     }
                 }
             } else {
@@ -320,7 +359,7 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
         (r"\sum", "sum"),
         (r"\prod", "product"),
         (r"\int", "integral"),
-        (r"\infty", "infinity"),
+        (r"\infty", "oo"),
         (r"\ge", ">="),
         (r"\le", "<="),
         (r"\ne", "!="),
@@ -356,12 +395,33 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
         (r"\dots", "..."),
         (r"\cdots", "..."),
         (r"\ldots", "..."),
+        (r"\vdots", "dots.v"),
+        (r"\ddots", "dots.down"),
+        (r"\lim", "lim"),
+        (r"\det", "det"),
+        (r"\max", "max"),
+        (r"\min", "min"),
+        (r"\sup", "sup"),
+        (r"\inf", "inf"),
         (r"\log", "log"),
         (r"\ln", "ln"),
         (r"\exp", "exp"),
         (r"\sin", "sin"),
         (r"\cos", "cos"),
         (r"\tan", "tan"),
+        (r"\sinh", "sinh"),
+        (r"\cosh", "cosh"),
+        (r"\tanh", "tanh"),
+        (r"\, dx", " dif x"),
+        (r"\, dy", " dif y"),
+        (r"\, dt", " dif t"),
+        (r"\, dz", " dif z"),
+        (r"\, dr", " dif r"),
+        (r"\, du", " dif u"),
+        (r"\, dv", " dif v"),
+        (r" dx", " dif x"),
+        (r" dy", " dif y"),
+        (r" dt", " dif t"),
         // Greek letters
         (r"\alpha", "alpha"),
         (r"\beta", "beta"),
@@ -403,10 +463,40 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
     }
 
     // Convert grouping braces in subscripts and superscripts: _{...} -> _(...) and ^{...} -> ^(...)
+    let format_sub_super_inner = |inner: &str| -> String {
+        let trimmed = inner.trim();
+        let is_known = matches!(
+            trimmed,
+            "oo" | "+oo" | "-oo" | "inf" | "sup" | "max" | "min" | "lim"
+                | "alpha" | "beta" | "gamma" | "delta" | "epsilon" | "zeta" | "eta" | "theta"
+                | "iota" | "kappa" | "lambda" | "mu" | "nu" | "xi" | "pi" | "rho" | "sigma"
+                | "tau" | "upsilon" | "phi" | "chi" | "psi" | "omega"
+                | "Gamma" | "Delta" | "Theta" | "Lambda" | "Xi" | "Pi" | "Sigma" | "Phi" | "Psi" | "Omega"
+        );
+
+        if is_known
+            || inner.chars().all(|c| c.is_ascii_digit())
+            || inner.contains(' ')
+            || inner.contains(',')
+            || inner.contains('+')
+            || inner.contains('-')
+            || inner.contains('=')
+            || inner.contains('<')
+            || inner.contains('>')
+            || inner.contains('/')
+            || inner.contains('*')
+        {
+            inner.to_string()
+        } else {
+            inner.chars().map(|c| c.to_string()).collect::<Vec<_>>().join(" ")
+        }
+    };
+
     while let Some(pos) = s.find("_{") {
         if let Some(end) = find_matching_brace(&s, pos + 1) {
             let inner = &s[pos + 2..end];
-            s.replace_range(pos..end + 1, &format!("_({inner})"));
+            let formatted_inner = format_sub_super_inner(inner);
+            s.replace_range(pos..end + 1, &format!("_({formatted_inner})"));
         } else {
             break;
         }
@@ -414,7 +504,8 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
     while let Some(pos) = s.find("^{") {
         if let Some(end) = find_matching_brace(&s, pos + 1) {
             let inner = &s[pos + 2..end];
-            s.replace_range(pos..end + 1, &format!("^({inner})"));
+            let formatted_inner = format_sub_super_inner(inner);
+            s.replace_range(pos..end + 1, &format!("^({formatted_inner})"));
         } else {
             break;
         }
@@ -933,5 +1024,15 @@ mod tests {
         assert!(typst.contains("\\[1\\] \"Rust\", [Online]. Available: #link(\"https://www.rust-lang.org\")"));
         assert!(typst.contains("<bib-2>"));
         assert!(typst.contains("\\[2\\] \"LLVM\", [Online]. Available: #link(\"https://llvm.org\")"));
+    }
+
+    #[test]
+    fn test_display_math_and_latex_superscript() {
+        let md = "$$\\int_{-\\infty}^{+\\infty} e^{-x^2} \\, dx = \\sqrt{\\pi}$$\n\n$$\n\\sum_{k=0}^\\infty \\frac{1}{k!}\n$$";
+        let typst = markdown_to_typst(md, false, false, "en", None);
+        assert!(!typst.contains("#super"), "Math must not contain #super: {typst}");
+        assert!(!typst.contains("#sub"), "Math must not contain #sub: {typst}");
+        assert!(typst.contains("oo"), "Infinity should be oo: {typst}");
+        assert!(typst.contains("integral_(-oo)^(+oo)"));
     }
 }
