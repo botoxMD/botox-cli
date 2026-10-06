@@ -44,10 +44,18 @@ impl FileResolver for BotoxFileResolver {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct BotoxHeadingInfo {
+    pub page_index: usize,
+    pub text: String,
+    pub y_ratio: f64,
+}
+
 #[derive(serde::Serialize)]
 pub struct BotoxPagesOutput {
     pub num_pages: usize,
     pub pages: Vec<String>,
+    pub headings: Vec<BotoxHeadingInfo>,
 }
 
 pub fn compile_typst(
@@ -108,92 +116,44 @@ pub fn compile_typst(
         .unwrap_or("")
         .to_lowercase();
 
-fn escape_xml_text(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-fn extract_frame_text(
-    frame: &typst_library::layout::Frame,
-    parent_ts: typst_library::layout::Transform,
-    out: &mut Vec<(f64, f64, f64, f64, String, bool)>,
-) {
-    for (point, item) in frame.items() {
-        let item_ts = parent_ts.pre_concat(typst_library::layout::Transform::translate(point.x, point.y));
-        match item {
-            typst_library::layout::FrameItem::Text(text_item) => {
-                let x = item_ts.tx.to_pt();
-                let y = item_ts.ty.to_pt();
-                let size = (text_item.size.to_pt() * item_ts.sy.get()).abs();
-                let width = (text_item.width().to_pt() * item_ts.sx.get()).abs();
-                let is_heading = size >= 12.8;
-                if !text_item.text.is_empty() {
-                    out.push((x, y, size, width, text_item.text.to_string(), is_heading));
+    fn extract_frame_headings(
+        frame: &typst_library::layout::Frame,
+        parent_ts: typst_library::layout::Transform,
+        page_index: usize,
+        page_height: f64,
+        out: &mut Vec<BotoxHeadingInfo>,
+    ) {
+        for (point, item) in frame.items() {
+            let item_ts = parent_ts.pre_concat(typst_library::layout::Transform::translate(point.x, point.y));
+            match item {
+                typst_library::layout::FrameItem::Text(text_item) => {
+                    let y = item_ts.ty.to_pt();
+                    let size = (text_item.size.to_pt() * item_ts.sy.get()).abs();
+                    let is_heading = size >= 12.8;
+                    let trimmed = text_item.text.trim();
+                    if is_heading && !trimmed.is_empty() {
+                        out.push(BotoxHeadingInfo {
+                            page_index,
+                            text: trimmed.to_string(),
+                            y_ratio: (y / page_height).clamp(0.0, 1.0),
+                        });
+                    }
                 }
+                typst_library::layout::FrameItem::Group(group) => {
+                    let group_ts = item_ts.pre_concat(group.transform);
+                    extract_frame_headings(&group.frame, group_ts, page_index, page_height, out);
+                }
+                _ => {}
             }
-            typst_library::layout::FrameItem::Group(group) => {
-                let group_ts = item_ts.pre_concat(group.transform);
-                extract_frame_text(&group.frame, group_ts, out);
-            }
-            _ => {}
         }
     }
-}
-
-pub fn make_page_svg_with_text(page: &typst_layout::Page, opts: &typst_svg::SvgOptions) -> String {
-    let mut base_svg = typst_svg::svg(page, opts);
-    let mut text_runs = Vec::new();
-    extract_frame_text(&page.frame, typst_library::layout::Transform::identity(), &mut text_runs);
-
-    if text_runs.is_empty() {
-        return base_svg;
-    }
-
-    let mut text_layer = String::from(r#"<g class="selectable-text" style="cursor: text; fill: transparent; stroke: none; fill-opacity: 0;">"#);
-    for (x, y, size, width, text, is_heading) in text_runs {
-        let escaped = escape_xml_text(&text);
-        let heading_attr = if is_heading { r#" data-heading="true""# } else { "" };
-        if width > 0.0 {
-            use std::fmt::Write;
-            let _ = write!(
-                text_layer,
-                r#"<text x="{x:.2}" y="{y:.2}" font-size="{size:.2}" data-size="{size:.2}" textLength="{width:.2}" lengthAdjust="spacingAndGlyphs"{heading_attr}>{escaped}</text>"#
-            );
-        } else {
-            use std::fmt::Write;
-            let _ = write!(
-                text_layer,
-                r#"<text x="{x:.2}" y="{y:.2}" font-size="{size:.2}" data-size="{size:.2}"{heading_attr}>{escaped}</text>"#
-            );
-        }
-    }
-    text_layer.push_str("</g>");
-
-    if let Some(pos) = base_svg.rfind("</svg>") {
-        base_svg.insert_str(pos, &text_layer);
-    } else {
-        base_svg.push_str(&text_layer);
-    }
-
-    base_svg
-}
 
     match ext.as_str() {
         "svg" => {
             let svg_opts = typst_svg::SvgOptions::default();
             let svg_content = if doc.pages().len() <= 1 {
                 if let Some(first_page) = doc.pages().first() {
-                    make_page_svg_with_text(first_page, &svg_opts)
+                    typst_svg::svg(first_page, &svg_opts)
                 } else {
                     String::from("<svg></svg>")
                 }
@@ -208,11 +168,25 @@ pub fn make_page_svg_with_text(page: &typst_layout::Page, opts: &typst_svg::SvgO
             let pages: Vec<String> = doc
                 .pages()
                 .iter()
-                .map(|p| make_page_svg_with_text(p, &svg_opts))
+                .map(|p| typst_svg::svg(p, &svg_opts))
                 .collect();
+
+            let mut headings = Vec::new();
+            for (page_idx, page) in doc.pages().iter().enumerate() {
+                let page_height = page.frame.height().to_pt().max(1.0);
+                extract_frame_headings(
+                    &page.frame,
+                    typst_library::layout::Transform::identity(),
+                    page_idx,
+                    page_height,
+                    &mut headings,
+                );
+            }
+
             let output_struct = BotoxPagesOutput {
                 num_pages: pages.len(),
                 pages,
+                headings,
             };
             let json_str = serde_json::to_string(&output_struct)
                 .map_err(|e| format!("Failed to serialize pages to JSON: {e}"))?;
