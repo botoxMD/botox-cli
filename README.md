@@ -7,24 +7,9 @@ author:
   - name: "Core Architecture Team"
     affiliation: "Botox Project"
 date: \today
-lang: en
 abstract: "Botox is a pure Rust, single-binary command-line suite that compiles standard Markdown documents into publication-grade LaTeX-style PDF documentation or presentation slide decks. Featuring an embedded in-process typesetting engine, authentic New Computer Modern typography, advanced TeX mathematics, native IEEE-standard bibliographies, and Pandoc extensions, Botox requires zero external runtime dependencies."
 keywords: ["Document Engineering", "LaTeX Typesetting", "Pandoc Compatibility", "Rust"]
-papersize: a4
-fontsize: 11pt
-mainfont: "New Computer Modern"
-monofont: "DejaVu Sans Mono"
-mathfont: "New Computer Modern Math"
-geometry: "margin=2.5cm"
-linkcolor: "#0284c7"
-number-sections: true
-table-of-contents: true
-toc-title: "Table of Contents"
-toc-depth: 3
-bibliography: true
 ---
-
-\newpage
 
 # Overview and Architecture
 

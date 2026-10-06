@@ -18,6 +18,7 @@ document:
   toc_depth: 3                         # Outline heading depth
   bibliography: true                   # Transform links into IEEE Bibliography
   lang: "en"
+  linkcolor: "#0284c7"                 # Clean modern blue link color
 
 slides:
   theme: "default"                     # default, academic, nord, dark

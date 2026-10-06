@@ -17,6 +17,8 @@ pub struct DocumentConfig {
     pub margin: Option<MarginConfig>,
     pub bibliography: Option<bool>,
     pub lang: Option<String>,
+    pub linkcolor: Option<String>,
+    pub toc_title: Option<String>,
 }
 
 impl Default for DocumentConfig {
@@ -39,12 +41,14 @@ impl DocumentConfig {
             section_numbering: Some(true),
             toc: Some(true),
             toc_depth: Some(3),
+            toc_title: None,
             margin: Some(MarginConfig::Axes {
                 x: Some("2.5cm".to_string()),
                 y: Some("2.5cm".to_string()),
             }),
             bibliography: Some(true),
             lang: Some("en".to_string()),
+            linkcolor: Some("#0284c7".to_string()),
         }
     }
 
@@ -60,9 +64,11 @@ impl DocumentConfig {
         if other.section_numbering.is_some() { self.section_numbering = other.section_numbering; }
         if other.toc.is_some() { self.toc = other.toc; }
         if other.toc_depth.is_some() { self.toc_depth = other.toc_depth; }
+        if other.toc_title.is_some() { self.toc_title = other.toc_title.clone(); }
         if other.margin.is_some() { self.margin = other.margin.clone(); }
         if other.bibliography.is_some() { self.bibliography = other.bibliography; }
         if other.lang.is_some() { self.lang = other.lang.clone(); }
+        if other.linkcolor.is_some() { self.linkcolor = other.linkcolor.clone(); }
     }
 }
 

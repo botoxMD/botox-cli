@@ -123,7 +123,11 @@ pub fn wrap_document(body_typst: &str, fm: &Value, config: &DocumentConfig, cli_
     out.push_str("}\n\n");
 
     // Link color
-    if let Some(lc) = fm.get("linkcolor").and_then(|v| v.as_str()) {
+    let linkcolor = fm.get("linkcolor")
+        .and_then(|v| v.as_str())
+        .or_else(|| config.linkcolor.as_deref());
+
+    if let Some(lc) = linkcolor {
         let color_val = if lc.starts_with('#') {
             format!("rgb(\"{lc}\")")
         } else if matches!(lc, "blue" | "red" | "green" | "navy" | "maroon" | "purple" | "teal" | "olive" | "gray" | "black" | "orange") {
@@ -335,7 +339,8 @@ pub fn wrap_document(body_typst: &str, fm: &Value, config: &DocumentConfig, cli_
 
     let toc_title = fm.get("toc-title")
         .or_else(|| fm.get("toc_title"))
-        .and_then(|v| v.as_str());
+        .and_then(|v| v.as_str())
+        .or_else(|| config.toc_title.as_deref());
 
     if should_include_toc {
         if let Some(title) = toc_title {
