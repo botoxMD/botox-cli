@@ -342,6 +342,7 @@ fn main() {
     let mut cli_author: Option<String> = None;
     let mut cli_font: Option<String> = None;
     let mut cli_bibliography: Option<bool> = None;
+    let mut cli_resource_dir: Option<PathBuf> = None;
     let mut explicit_pdf = false;
     let mut explicit_slides = false;
 
@@ -384,6 +385,12 @@ fn main() {
                     custom_config = Some(PathBuf::from(&args[i]));
                 }
             }
+            "--resource-dir" => {
+                i += 1;
+                if i < args.len() {
+                    cli_resource_dir = Some(PathBuf::from(&args[i]));
+                }
+            }
             "--author" => {
                 i += 1;
                 if i < args.len() {
@@ -400,7 +407,9 @@ fn main() {
                 // Handled in document wrapper via flag or frontmatter
             }
             other => {
-                if !other.starts_with('-') && input_file.is_none() {
+                if other == "-" && input_file.is_none() {
+                    input_file = Some(PathBuf::from("-"));
+                } else if !other.starts_with('-') && input_file.is_none() {
                     input_file = Some(PathBuf::from(other));
                 }
             }
@@ -416,21 +425,48 @@ fn main() {
         }
     };
 
-    if !input_path.is_file() {
+    let is_stdin = input_path.as_os_str() == "-";
+    if !is_stdin && !input_path.is_file() {
         eprintln!("Error: Input file '{}' not found.", input_path.display());
         std::process::exit(1);
     }
 
-    let output_path = output_file.unwrap_or_else(|| input_path.with_extension("pdf"));
-    let (config_data, _) = config::BotoxConfig::load(custom_config.as_deref(), input_path.parent());
+    let default_output = if is_stdin {
+        PathBuf::from("output.pdf")
+    } else {
+        input_path.with_extension("pdf")
+    };
+    let output_path = output_file.unwrap_or(default_output);
+
+    let doc_dir = cli_resource_dir.or_else(|| {
+        if is_stdin {
+            std::env::current_dir().ok()
+        } else {
+            input_path.parent().map(|p| p.to_path_buf())
+        }
+    });
+
+    let (config_data, _) = config::BotoxConfig::load(custom_config.as_deref(), doc_dir.as_deref());
     let doc_config = config_data.document.unwrap_or_default();
     let slides_config = config_data.slides.unwrap_or_default();
 
-    let raw_content = match std::fs::read_to_string(&input_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error reading '{}': {e}", input_path.display());
-            std::process::exit(1);
+    let raw_content = if is_stdin {
+        use std::io::Read;
+        let mut buffer = String::new();
+        match std::io::stdin().read_to_string(&mut buffer) {
+            Ok(_) => buffer,
+            Err(e) => {
+                eprintln!("Error reading from stdin: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        match std::fs::read_to_string(&input_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Error reading '{}': {e}", input_path.display());
+                std::process::exit(1);
+            }
         }
     };
 
@@ -477,7 +513,7 @@ fn main() {
     };
 
     let start = std::time::Instant::now();
-    let resource_dir = input_path.parent();
+    let resource_dir = doc_dir.as_deref();
     match compiler::compile_typst(&typst_markup, &output_path, resource_dir) {
         Ok(()) => {
             let duration = start.elapsed();
