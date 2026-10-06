@@ -423,7 +423,13 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
     s
 }
 
-pub fn markdown_to_typst(markdown: &str, is_slides: bool) -> String {
+pub fn markdown_to_typst(
+    markdown: &str,
+    is_slides: bool,
+    bibliography: bool,
+    lang: &str,
+    biblio_title: Option<&str>,
+) -> String {
     let preprocessed = preprocess_pandoc(markdown);
     let markdown = &preprocessed;
 
@@ -480,6 +486,8 @@ pub fn markdown_to_typst(markdown: &str, is_slides: bool) -> String {
     let mut in_table = false;
     let mut in_code_block = false;
     let mut in_footnote_def = false;
+    let mut references: Vec<(String, String)> = Vec::new();
+    let mut current_link: Option<(String, String)> = None;
 
     for event in parser {
         match event {
@@ -553,6 +561,14 @@ pub fn markdown_to_typst(markdown: &str, is_slides: bool) -> String {
                     in_footnote_def = true;
                 }
                 Tag::Link { dest_url, .. } => {
+                    let is_external = dest_url.starts_with("http://")
+                        || dest_url.starts_with("https://")
+                        || dest_url.starts_with("ftp://");
+                    if bibliography && is_external {
+                        current_link = Some((dest_url.to_string(), String::new()));
+                    } else {
+                        current_link = None;
+                    }
                     let link_code = format!("#link(\"{dest_url}\")[");
                     if in_table { current_cell.push_str(&link_code); } else { typst.push_str(&link_code); }
                 }
@@ -631,6 +647,27 @@ pub fn markdown_to_typst(markdown: &str, is_slides: bool) -> String {
                     }
                     TagEnd::Link => {
                         if in_table { current_cell.push(']'); } else { typst.push(']'); }
+                        if let Some((url, link_text)) = current_link.take() {
+                            let idx = if let Some(pos) = references.iter().position(|(u, _)| u == &url) {
+                                pos + 1
+                            } else {
+                                references.push((url.clone(), link_text.trim().to_string()));
+                                references.len()
+                            };
+
+                            let trimmed = link_text.trim();
+                            let already_citation = (trimmed.starts_with('[') && trimmed.ends_with(']'))
+                                || trimmed.parse::<usize>().is_ok();
+
+                            if !already_citation {
+                                let cite_code = format!(" #link(<bib-{idx}>)[\\[{idx}\\]]");
+                                if in_table {
+                                    current_cell.push_str(&cite_code);
+                                } else {
+                                    typst.push_str(&cite_code);
+                                }
+                            }
+                        }
                     }
                     TagEnd::DefinitionList => {
                         typst.push('\n');
@@ -686,6 +723,9 @@ pub fn markdown_to_typst(markdown: &str, is_slides: bool) -> String {
                 if in_footnote_def {
                     continue;
                 }
+                if let Some((_, ref mut link_text)) = current_link {
+                    link_text.push_str(&text);
+                }
                 if in_table {
                     current_cell.push_str(&text);
                 } else if in_code_block {
@@ -737,6 +777,11 @@ pub fn markdown_to_typst(markdown: &str, is_slides: bool) -> String {
             Event::Code(code) => {
                 if in_footnote_def {
                     continue;
+                }
+                if let Some((_, ref mut link_text)) = current_link {
+                    link_text.push('`');
+                    link_text.push_str(&code);
+                    link_text.push('`');
                 }
                 if in_table {
                     current_cell.push('`');
@@ -806,6 +851,44 @@ pub fn markdown_to_typst(markdown: &str, is_slides: bool) -> String {
         }
     }
 
+    if bibliography && !references.is_empty() {
+        let default_heading = match lang {
+            "fr" => "Références",
+            "de" => "Literaturverzeichnis",
+            "es" => "Referencias",
+            "it" => "Riferimenti bibliografici",
+            _ => "References",
+        };
+        let heading = biblio_title.unwrap_or(default_heading);
+
+        let (online_label, available_label) = match lang {
+            "fr" => ("[En ligne]", "Disponible sur :"),
+            "de" => ("[Online]", "Verfügbar unter:"),
+            "es" => ("[En línea]", "Disponible en:"),
+            "it" => ("[Online]", "Disponibile su:"),
+            _ => ("[Online]", "Available:"),
+        };
+
+        typst.push_str("\n\n#v(2em)\n");
+        typst.push_str(&format!("#heading(numbering: none)[{heading}] <references>\n\n"));
+        typst.push_str("#set par(hanging-indent: 1.8em, justify: false)\n\n");
+
+        for (i, (url, label)) in references.iter().enumerate() {
+            let idx = i + 1;
+
+            let is_url_label = label.is_empty()
+                || label == url
+                || label.starts_with("http://")
+                || label.starts_with("https://");
+
+            if is_url_label {
+                typst.push_str(&format!("#block[\\[{idx}\\] {online_label}. {available_label} #link(\"{url}\").] <bib-{idx}>\n\n"));
+            } else {
+                typst.push_str(&format!("#block[\\[{idx}\\] \"{label}\", {online_label}. {available_label} #link(\"{url}\").] <bib-{idx}>\n\n"));
+            }
+        }
+    }
+
     typst
 }
 
@@ -816,8 +899,7 @@ mod tests {
     #[test]
     fn test_sub_super_and_strikethrough() {
         let md = "H~2~O and 10^6^ with ~~strike~~ and `code_with_~_and_^`";
-        let typst = markdown_to_typst(md, false);
-        println!("TYPST OUTPUT:\n{typst}");
+        let typst = markdown_to_typst(md, false, false, "en", None);
         assert!(typst.contains("#sub[2]"));
         assert!(typst.contains("#super[6]"));
         assert!(typst.contains("#strike[strike]"));
@@ -836,7 +918,20 @@ mod tests {
     #[test]
     fn test_pagebreaks() {
         let md = "Before\n\n\\newpage\n\nAfter";
-        let typst = markdown_to_typst(md, false);
+        let typst = markdown_to_typst(md, false, false, "en", None);
         assert!(typst.contains("#pagebreak()"));
+    }
+
+    #[test]
+    fn test_bibliography_link_transformation() {
+        let md = "See [Rust](https://www.rust-lang.org) and [LLVM](https://llvm.org). Also [Rust Lang](https://www.rust-lang.org).";
+        let typst = markdown_to_typst(md, false, true, "en", None);
+        assert!(typst.contains("#link(<bib-1>)[\\"));
+        assert!(typst.contains("#link(<bib-2>)[\\"));
+        assert!(typst.contains("#heading(numbering: none)[References] <references>"));
+        assert!(typst.contains("<bib-1>"));
+        assert!(typst.contains("\\[1\\] \"Rust\", [Online]. Available: #link(\"https://www.rust-lang.org\")"));
+        assert!(typst.contains("<bib-2>"));
+        assert!(typst.contains("\\[2\\] \"LLVM\", [Online]. Available: #link(\"https://llvm.org\")"));
     }
 }

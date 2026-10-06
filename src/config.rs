@@ -13,6 +13,7 @@ pub struct DocumentConfig {
     pub section_numbering: Option<bool>,
     pub toc: Option<bool>,
     pub margin: Option<MarginConfig>,
+    pub bibliography: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

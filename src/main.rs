@@ -26,6 +26,8 @@ Documentation Options:
   --author <name>         Author name (overrides frontmatter & config)
   --font <name>           Main font (default: New Computer Modern)
   -N, --number-sections   Number section headings
+  -b, --bibliography      Transform web links into an IEEE-standard Bibliography
+  --no-bibliography       Disable automatic Bibliography generation
 
 Slide Options:
   --slides                Force presentation slide deck mode
@@ -106,6 +108,7 @@ fn main() {
     let mut cli_toc: Option<bool> = None;
     let mut cli_author: Option<String> = None;
     let mut cli_font: Option<String> = None;
+    let mut cli_bibliography: Option<bool> = None;
     let mut explicit_pdf = false;
     let mut explicit_slides = false;
 
@@ -129,6 +132,12 @@ fn main() {
             }
             "--no-toc" => {
                 cli_toc = Some(false);
+            }
+            "-b" | "--bib" | "--bibliography" => {
+                cli_bibliography = Some(true);
+            }
+            "--no-bib" | "--no-bibliography" => {
+                cli_bibliography = Some(false);
             }
             "-o" | "--output" => {
                 i += 1;
@@ -195,11 +204,32 @@ fn main() {
     let (fm, body_md) = extract_frontmatter(&raw_content);
     let is_slides = detect_is_slides(&fm, explicit_slides, explicit_pdf);
 
+    let lang = fm.get("lang").and_then(|v| v.as_str()).unwrap_or("en");
+    let biblio_title = fm.get("biblio-title")
+        .or_else(|| fm.get("bibliography-title"))
+        .or_else(|| fm.get("references-title"))
+        .and_then(|v| v.as_str());
+
+    let should_enable_bib = if let Some(cli) = cli_bibliography {
+        cli
+    } else if let Some(fm_bib) = fm.get("bibliography")
+        .or_else(|| fm.get("links-as-references"))
+        .or_else(|| fm.get("cite-links"))
+    {
+        match fm_bib {
+            Value::Bool(b) => *b,
+            Value::String(s) => !s.is_empty() && s != "false" && s != "no" && s != "off",
+            _ => false,
+        }
+    } else {
+        doc_config.bibliography.unwrap_or(false)
+    };
+
     let typst_markup = if is_slides {
-        let body_typst = markdown::markdown_to_typst(body_md, true);
+        let body_typst = markdown::markdown_to_typst(body_md, true, should_enable_bib, lang, biblio_title);
         slides::wrap_slides(&body_typst, &fm, &slides_config)
     } else {
-        let body_typst = markdown::markdown_to_typst(body_md, false);
+        let body_typst = markdown::markdown_to_typst(body_md, false, should_enable_bib, lang, biblio_title);
         document::wrap_document(
             &body_typst,
             &fm,

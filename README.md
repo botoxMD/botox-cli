@@ -15,7 +15,7 @@ margin:
   y: 2.5cm
 toc: true
 ---
-/newpage
+\newpage
 # Overview
 
 Botox provides a single, self-contained native binary (`botox`) to compile standard Markdown files into:
@@ -115,10 +115,21 @@ A Table of Contents is generated automatically when requested:
 - Via command line: `--toc` or `--no-toc`
 - In configuration: `toc: true` in `botox.yaml` to enable it by default across all documents
 
+## Automatic Bibliography Transformation
+
+Normal Markdown hyperlinks can be transformed into an IEEE-standard numbered bibliography. In the body text, links receive bracketed citation numbers (e.g., `Rust Language [1]`), and an unnumbered References section is generated at the end of the document with hanging indents and full electronic resource citations. Repeated links to the same URL automatically share the same citation index.
+
+- In frontmatter: `bibliography: true` (or `bibliography: "ieee"`, `links-as-references: true`)
+- Custom title: `biblio-title: "Webography"` (defaults to localized titles like *References*, *Références*, *Literaturverzeichnis*)
+- Via command line: `-b` or `--bibliography` (override with `--no-bibliography`)
+- In configuration: `bibliography: true` in `botox.yaml` under `document`
+
 ## Command Line Options
 
 - `-o, --output <file>`: Output PDF path (defaults to `<input>.pdf`).
 - `--toc` / `--no-toc`: Enable or disable the automatic Table of Contents.
+- `-b, --bibliography`: Transform web links into an IEEE-standard Bibliography.
+- `--no-bibliography`: Disable automatic Bibliography generation.
 - `--author <name>`: Override author name.
 - `--font <name>`: Override main typeface (e.g. `--font "Libertinus Serif"`).
 - `-N, --number-sections`: Enable numbered headings (`1.`, `1.1.`, etc.).
