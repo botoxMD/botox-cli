@@ -126,7 +126,7 @@ fn escape_xml_text(s: &str) -> String {
 fn extract_frame_text(
     frame: &typst_library::layout::Frame,
     parent_ts: typst_library::layout::Transform,
-    out: &mut Vec<(f64, f64, f64, f64, String)>,
+    out: &mut Vec<(f64, f64, f64, f64, String, bool)>,
 ) {
     for (point, item) in frame.items() {
         let item_ts = parent_ts.pre_concat(typst_library::layout::Transform::translate(point.x, point.y));
@@ -136,8 +136,9 @@ fn extract_frame_text(
                 let y = item_ts.ty.to_pt();
                 let size = (text_item.size.to_pt() * item_ts.sy.get()).abs();
                 let width = (text_item.width().to_pt() * item_ts.sx.get()).abs();
+                let is_heading = size >= 12.8;
                 if !text_item.text.is_empty() {
-                    out.push((x, y, size, width, text_item.text.to_string()));
+                    out.push((x, y, size, width, text_item.text.to_string(), is_heading));
                 }
             }
             typst_library::layout::FrameItem::Group(group) => {
@@ -159,19 +160,20 @@ pub fn make_page_svg_with_text(page: &typst_layout::Page, opts: &typst_svg::SvgO
     }
 
     let mut text_layer = String::from(r#"<g class="selectable-text" style="cursor: text; fill: transparent; stroke: none; fill-opacity: 0;">"#);
-    for (x, y, size, width, text) in text_runs {
+    for (x, y, size, width, text, is_heading) in text_runs {
         let escaped = escape_xml_text(&text);
+        let heading_attr = if is_heading { r#" data-heading="true""# } else { "" };
         if width > 0.0 {
             use std::fmt::Write;
             let _ = write!(
                 text_layer,
-                r#"<text x="{x:.2}" y="{y:.2}" font-size="{size:.2}" textLength="{width:.2}" lengthAdjust="spacingAndGlyphs">{escaped}</text>"#
+                r#"<text x="{x:.2}" y="{y:.2}" font-size="{size:.2}" data-size="{size:.2}" textLength="{width:.2}" lengthAdjust="spacingAndGlyphs"{heading_attr}>{escaped}</text>"#
             );
         } else {
             use std::fmt::Write;
             let _ = write!(
                 text_layer,
-                r#"<text x="{x:.2}" y="{y:.2}" font-size="{size:.2}">{escaped}</text>"#
+                r#"<text x="{x:.2}" y="{y:.2}" font-size="{size:.2}" data-size="{size:.2}"{heading_attr}>{escaped}</text>"#
             );
         }
     }
