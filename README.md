@@ -26,7 +26,7 @@ Unlike traditional document compilation pipelines that require a web of external
 
 - **Zero Runtime Dependencies**: No Node.js, no Python, no Pandoc runtime, no headless Chrome, and no multi-gigabyte TeX Live distributions.
 - **Embedded Typesetting Engine**: Built on the [Rust Language](https://www.rust-lang.org) with the [Typst](https://typst.app) layout engine and New Computer Modern font family (Roman, Bold, Italic, and Math) compiled directly into the binary[^engine].
-- **Instantaneous Compilation**: Sub-second compilation times (typically 400ms to 900ms) for multi-page documents.
+- **Instantaneous Compilation**: Sub-second compilation times (typically under 200ms) for multi-page documents.
 - **Cross-Platform Portability**: Builds as a single static executable for Linux, macOS, and Windows.
 
 [^engine]: Embedded font assets include 17 New Computer Modern and DejaVu typeface variants loaded directly from in-memory binary slices.
@@ -47,9 +47,19 @@ Unlike traditional document compilation pipelines that require a web of external
 
 # Installation and Quick Start
 
-## System Binary Installation
+## Quick Install (Linux & macOS)
 
-The pre-compiled binary can be copied directly to any folder on your system `PATH`:
+Install the latest pre-compiled binary directly to `~/.local/bin/botox`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/botoxMD/botox-cli/main/install.sh | bash
+```
+
+Prebuilt binaries for Linux (x86_64, aarch64, musl), macOS (Apple Silicon, Intel), and Windows (x86_64) are available on [GitHub Releases](https://github.com/botoxMD/botox-cli/releases).
+
+## Manual System Binary Installation
+
+If downloading a release archive manually, copy the binary to any folder on your system `PATH`:
 
 ```bash
 # Install to user local binary path
