@@ -241,7 +241,8 @@ fn main() {
     };
 
     let start = std::time::Instant::now();
-    match compiler::compile_typst_to_pdf(&typst_markup, &output_path) {
+    let resource_dir = input_path.parent();
+    match compiler::compile_typst_to_pdf(&typst_markup, &output_path, resource_dir) {
         Ok(()) => {
             let duration = start.elapsed();
             let mode_str = if is_slides { "Presentation slides" } else { "LaTeX PDF document" };

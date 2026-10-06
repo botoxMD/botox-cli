@@ -579,6 +579,7 @@ pub fn markdown_to_typst(
     let mut in_footnote_def = false;
     let mut references: Vec<(String, String)> = Vec::new();
     let mut current_link: Option<(String, String)> = None;
+    let mut current_image: Option<(String, String)> = None;
 
     for event in parser {
         match event {
@@ -664,8 +665,7 @@ pub fn markdown_to_typst(
                     if in_table { current_cell.push_str(&link_code); } else { typst.push_str(&link_code); }
                 }
                 Tag::Image { dest_url, .. } => {
-                    let img_code = format!("#image(\"{dest_url}\")");
-                    if in_table { current_cell.push_str(&img_code); } else { typst.push_str(&img_code); }
+                    current_image = Some((dest_url.to_string(), String::new()));
                 }
                 Tag::Table(alignments) => {
                     in_table = true;
@@ -760,6 +760,31 @@ pub fn markdown_to_typst(
                             }
                         }
                     }
+                    TagEnd::Image => {
+                        if let Some((url, alt)) = current_image.take() {
+                            let alt = alt.trim();
+                            let escaped_url = url.replace('\\', "/").replace('"', "\\\"");
+                            if in_table {
+                                current_cell.push_str(&format!("#image(\"{escaped_url}\")"));
+                            } else if current_link.is_some() {
+                                typst.push_str(&format!("#image(\"{escaped_url}\")"));
+                            } else if is_slides {
+                                if alt == "bg" || alt.starts_with("bg ") {
+                                    typst.push_str(&format!("\n#place(top + left, dx: 0pt, dy: 0pt, image(\"{escaped_url}\", width: 100%, height: 100%, fit: \"cover\"))\n\n"));
+                                } else if !alt.is_empty() {
+                                    typst.push_str(&format!("\n#figure(image(\"{escaped_url}\"), caption: [{alt}])\n\n"));
+                                } else {
+                                    typst.push_str(&format!("\n#align(center)[#image(\"{escaped_url}\")]\n\n"));
+                                }
+                            } else {
+                                if !alt.is_empty() {
+                                    typst.push_str(&format!("\n#figure(image(\"{escaped_url}\"), caption: [{alt}])\n\n"));
+                                } else {
+                                    typst.push_str(&format!("\n#align(center)[#image(\"{escaped_url}\")]\n\n"));
+                                }
+                            }
+                        }
+                    }
                     TagEnd::DefinitionList => {
                         typst.push('\n');
                     }
@@ -812,6 +837,10 @@ pub fn markdown_to_typst(
             }
             Event::Text(text) => {
                 if in_footnote_def {
+                    continue;
+                }
+                if let Some((_, ref mut img_alt)) = current_image {
+                    img_alt.push_str(&text);
                     continue;
                 }
                 if let Some((_, ref mut link_text)) = current_link {
@@ -867,6 +896,12 @@ pub fn markdown_to_typst(
             }
             Event::Code(code) => {
                 if in_footnote_def {
+                    continue;
+                }
+                if let Some((_, ref mut img_alt)) = current_image {
+                    img_alt.push('`');
+                    img_alt.push_str(&code);
+                    img_alt.push('`');
                     continue;
                 }
                 if let Some((_, ref mut link_text)) = current_link {
@@ -1034,5 +1069,13 @@ mod tests {
         assert!(!typst.contains("#sub"), "Math must not contain #sub: {typst}");
         assert!(typst.contains("oo"), "Infinity should be oo: {typst}");
         assert!(typst.contains("integral_(-oo)^(+oo)"));
+    }
+
+    #[test]
+    fn test_image_rendering() {
+        let md = "![Architecture Pipeline](figures/arch.png)\n\n![](logo.svg)";
+        let typst = markdown_to_typst(md, false, false, "en", None);
+        assert!(typst.contains("#figure(image(\"figures/arch.png\"), caption: [Architecture Pipeline])"));
+        assert!(typst.contains("#align(center)[#image(\"logo.svg\")]"));
     }
 }

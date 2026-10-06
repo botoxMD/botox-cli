@@ -54,6 +54,7 @@ Unlike traditional document compilation pipelines that require a web of external
 - [x] Advanced TeX mathematical notation (matrices, piecewise systems, partial derivatives, accents)
 - [x] Pipe tables with column alignments (`:---`, `:---:`, `---:`) and cell formatting
 - [x] Automatic IEEE-standard numbered bibliography generated from hyperlinks
+- [x] High-resolution figures and vector graphics (PNG, JPEG, SVG, WebP, GIF) with automated captions and numbering
 - [x] Marp-compatible 16:9 presentation slide decks partitioned by `---`
 - [x] Cascading configuration hierarchy (`botox.yaml`)
 
@@ -132,6 +133,17 @@ Academic citations and callouts render with subtle left border rules and margins
 
 > "Simplicity is prerequisite for reliability."
 > --- Edsger W. Dijkstra, *Selected Writings on Computing*
+
+## Figures and Graphics
+
+Raster and vector image assets (PNG, JPEG, SVG, WebP, GIF) are rendered natively without external decoders. Standard Markdown syntax with alt text generates numbered LaTeX figures with captions:
+
+```markdown
+![Botox Architecture Pipeline](figures/architecture.png)
+![](logo.svg)
+```
+
+Relative paths resolve automatically from the directory of the Markdown input file or working directory.
 
 ## Page Breaks
 

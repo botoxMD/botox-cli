@@ -1,7 +1,54 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use typst_as_lib::file_resolver::FileResolver;
 use typst_as_lib::TypstEngine;
 
-pub fn compile_typst_to_pdf(typst_markup: &str, output_path: &Path) -> Result<(), String> {
+#[derive(Debug, Clone)]
+struct BotoxFileResolver {
+    resource_dir: PathBuf,
+}
+
+impl FileResolver for BotoxFileResolver {
+    fn resolve_binary(
+        &self,
+        id: typst::syntax::FileId,
+    ) -> typst::diag::FileResult<std::borrow::Cow<'_, typst::foundations::Bytes>> {
+        let vpath = id.vpath();
+        let rel_path = Path::new(vpath.get_without_slash());
+        let abs_candidate = Path::new(vpath.get_with_slash());
+
+        let candidates = [
+            self.resource_dir.join(rel_path),
+            abs_candidate.to_path_buf(),
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(rel_path),
+        ];
+
+        for path in &candidates {
+            if path.is_file() {
+                if let Ok(bytes) = std::fs::read(path) {
+                    return Ok(std::borrow::Cow::Owned(typst::foundations::Bytes::new(bytes)));
+                }
+            }
+        }
+
+        Err(typst::diag::FileError::NotFound(self.resource_dir.join(rel_path)))
+    }
+
+    fn resolve_source(
+        &self,
+        id: typst::syntax::FileId,
+    ) -> typst::diag::FileResult<std::borrow::Cow<'_, typst::syntax::Source>> {
+        let rel_path = Path::new(id.vpath().get_without_slash());
+        Err(typst::diag::FileError::NotFound(self.resource_dir.join(rel_path)))
+    }
+}
+
+pub fn compile_typst_to_pdf(
+    typst_markup: &str,
+    output_path: &Path,
+    resource_dir: Option<&Path>,
+) -> Result<(), String> {
     let mut fonts: Vec<typst::text::Font> = Vec::new();
 
     // 1. Embedded fonts (New Computer Modern, Math, etc.)
@@ -26,9 +73,14 @@ pub fn compile_typst_to_pdf(typst_markup: &str, output_path: &Path) -> Result<()
         }
     }
 
+    let res_dir = resource_dir
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
     let engine = TypstEngine::builder()
         .main_file(typst_markup)
         .fonts(fonts)
+        .add_file_resolver(BotoxFileResolver { resource_dir: res_dir })
         .build();
 
     let compilation_result = engine.compile();
