@@ -16,3 +16,10 @@ typst-as-lib = "0.16.0"
 serde_json = "1.0.151"
 typst-layout = "0.15.1"
 typst-library = "0.15.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
