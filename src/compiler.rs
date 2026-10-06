@@ -108,12 +108,90 @@ pub fn compile_typst(
         .unwrap_or("")
         .to_lowercase();
 
+fn escape_xml_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+fn extract_frame_text(
+    frame: &typst_library::layout::Frame,
+    parent_ts: typst_library::layout::Transform,
+    out: &mut Vec<(f64, f64, f64, f64, String)>,
+) {
+    for (point, item) in frame.items() {
+        let item_ts = parent_ts.pre_concat(typst_library::layout::Transform::translate(point.x, point.y));
+        match item {
+            typst_library::layout::FrameItem::Text(text_item) => {
+                let x = item_ts.tx.to_pt();
+                let y = item_ts.ty.to_pt();
+                let size = (text_item.size.to_pt() * item_ts.sy.get()).abs();
+                let width = (text_item.width().to_pt() * item_ts.sx.get()).abs();
+                if !text_item.text.is_empty() {
+                    out.push((x, y, size, width, text_item.text.to_string()));
+                }
+            }
+            typst_library::layout::FrameItem::Group(group) => {
+                let group_ts = item_ts.pre_concat(group.transform);
+                extract_frame_text(&group.frame, group_ts, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+pub fn make_page_svg_with_text(page: &typst_layout::Page, opts: &typst_svg::SvgOptions) -> String {
+    let mut base_svg = typst_svg::svg(page, opts);
+    let mut text_runs = Vec::new();
+    extract_frame_text(&page.frame, typst_library::layout::Transform::identity(), &mut text_runs);
+
+    if text_runs.is_empty() {
+        return base_svg;
+    }
+
+    let mut text_layer = String::from(r#"<g class="selectable-text" style="cursor: text; fill: transparent; stroke: none; fill-opacity: 0;">"#);
+    for (x, y, size, width, text) in text_runs {
+        let escaped = escape_xml_text(&text);
+        if width > 0.0 {
+            use std::fmt::Write;
+            let _ = write!(
+                text_layer,
+                r#"<text x="{x:.2}" y="{y:.2}" font-size="{size:.2}" textLength="{width:.2}" lengthAdjust="spacingAndGlyphs">{escaped}</text>"#
+            );
+        } else {
+            use std::fmt::Write;
+            let _ = write!(
+                text_layer,
+                r#"<text x="{x:.2}" y="{y:.2}" font-size="{size:.2}">{escaped}</text>"#
+            );
+        }
+    }
+    text_layer.push_str("</g>");
+
+    if let Some(pos) = base_svg.rfind("</svg>") {
+        base_svg.insert_str(pos, &text_layer);
+    } else {
+        base_svg.push_str(&text_layer);
+    }
+
+    base_svg
+}
+
     match ext.as_str() {
         "svg" => {
             let svg_opts = typst_svg::SvgOptions::default();
             let svg_content = if doc.pages().len() <= 1 {
                 if let Some(first_page) = doc.pages().first() {
-                    typst_svg::svg(first_page, &svg_opts)
+                    make_page_svg_with_text(first_page, &svg_opts)
                 } else {
                     String::from("<svg></svg>")
                 }
@@ -128,7 +206,7 @@ pub fn compile_typst(
             let pages: Vec<String> = doc
                 .pages()
                 .iter()
-                .map(|p| typst_svg::svg(p, &svg_opts))
+                .map(|p| make_page_svg_with_text(p, &svg_opts))
                 .collect();
             let output_struct = BotoxPagesOutput {
                 num_pages: pages.len(),
