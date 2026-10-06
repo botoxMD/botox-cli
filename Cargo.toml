@@ -1,0 +1,14 @@
+[package]
+name = "botox"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+pulldown-cmark = "0.13"
+typst = "0.15.1"
+typst-pdf = "0.15.1"
+typst-assets = { version = "0.15.1", features = ["fonts"] }
+fontdb = "0.23"
+typst-as-lib = "0.16.0"

@@ -1,0 +1,20 @@
+# Botox Project Configuration
+# Settings here will override ~/.config/botox/config.yaml for this workspace.
+
+document:
+  author: "Minus"
+  affiliation: "Engineering"
+  fontsize: "11pt"
+  mainfont: "New Computer Modern"       # True LaTeX font
+  mathfont: "New Computer Modern Math"  # True LaTeX math font
+  papersize: "a4"                       # a4, letter
+  columns: 1                            # 1 or 2
+  margin:
+    x: "2.5cm"
+    y: "2.5cm"
+  section_numbering: true              # Set to true for 1., 1.1 numbered sections
+  toc: true                            # Set to true to auto-generate a Table of Contents by default
+
+slides:
+  theme: "gaia"                         # gaia, default, uncover
+  paginate: true
