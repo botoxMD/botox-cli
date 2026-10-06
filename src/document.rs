@@ -84,7 +84,7 @@ pub fn wrap_document(body_typst: &str, fm: &Value, config: &DocumentConfig, cli_
         "#set text(font: {font_family}, size: {fontsize}, lang: \"{lang}\")\n"
     ));
 
-    // Math font
+    // Math font & equations
     let mathfont = fm.get("mathfont")
         .and_then(|v| v.as_str())
         .or_else(|| config.mathfont.as_deref())
@@ -92,10 +92,76 @@ pub fn wrap_document(body_typst: &str, fm: &Value, config: &DocumentConfig, cli_
     out.push_str(&format!(
         "#show math.equation: set text(font: \"{mathfont}\")\n"
     ));
-    out.push_str("#show math.equation.where(block: true): it => block(above: 1.2em, below: 1.2em)[#it]\n\n");
+    out.push_str("#show math.equation.where(block: true): it => block(above: 1.2em, below: 1.2em)[#it]\n");
+    out.push_str("#set math.equation(numbering: \"(1)\")\n\n");
+
+    // Pandoc callouts prelude
+    out.push_str("#let botox_callout(kind, title, body) = {\n");
+    out.push_str("  let (stroke_color, fill_color, default_title) = if kind == \"warning\" {\n");
+    out.push_str("    (rgb(\"#d97706\"), rgb(\"#fffbeb\"), \"Warning\")\n");
+    out.push_str("  } else if kind == \"tip\" {\n");
+    out.push_str("    (rgb(\"#16a34a\"), rgb(\"#f0fdf4\"), \"Tip\")\n");
+    out.push_str("  } else if kind == \"important\" or kind == \"caution\" or kind == \"danger\" {\n");
+    out.push_str("    (rgb(\"#dc2626\"), rgb(\"#fef2f2\"), \"Important\")\n");
+    out.push_str("  } else {\n");
+    out.push_str("    (rgb(\"#0284c7\"), rgb(\"#f1f5f9\"), \"Note\")\n");
+    out.push_str("  };\n");
+    out.push_str("  let display_title = if title != \"\" { title } else { default_title };\n");
+    out.push_str("  block(\n");
+    out.push_str("    fill: fill_color,\n");
+    out.push_str("    stroke: (left: 3.5pt + stroke_color),\n");
+    out.push_str("    inset: (x: 12pt, y: 10pt),\n");
+    out.push_str("    radius: (right: 4pt),\n");
+    out.push_str("    width: 100%,\n");
+    out.push_str("    above: 1.2em,\n");
+    out.push_str("    below: 1.2em,\n");
+    out.push_str("  )[\n");
+    out.push_str("    #text(weight: \"bold\", fill: stroke_color)[#display_title]\\\n");
+    out.push_str("    #v(0.3em)\n");
+    out.push_str("    #body\n");
+    out.push_str("  ]\n");
+    out.push_str("}\n\n");
+
+    // Link color
+    if let Some(lc) = fm.get("linkcolor").and_then(|v| v.as_str()) {
+        let color_val = if lc.starts_with('#') {
+            format!("rgb(\"{lc}\")")
+        } else if matches!(lc, "blue" | "red" | "green" | "navy" | "maroon" | "purple" | "teal" | "olive" | "gray" | "black" | "orange") {
+            lc.to_string()
+        } else {
+            format!("rgb(\"{lc}\")")
+        };
+        out.push_str(&format!("#show link: set text(fill: {color_val})\n"));
+    }
 
     // Paragraph & Base Typography styling
-    out.push_str("#set par(justify: true, leading: 0.7em)\n");
+    let linestretch = fm.get("linestretch")
+        .or_else(|| fm.get("line-spacing"))
+        .and_then(|v| v.as_f64());
+    let leading_em = if let Some(ls) = linestretch {
+        format!("{:.3}em", 0.7 * ls)
+    } else {
+        "0.7em".to_string()
+    };
+
+    let parindent = fm.get("indent")
+        .or_else(|| fm.get("parindent"))
+        .and_then(|v| {
+            if let Some(b) = v.as_bool() {
+                if b { Some("1.5em".to_string()) } else { None }
+            } else if let Some(s) = v.as_str() {
+                Some(s.to_string())
+            } else {
+                None
+            }
+        });
+    let indent_clause = if let Some(ind) = parindent {
+        format!(", first-line-indent: {ind}")
+    } else {
+        String::new()
+    };
+
+    out.push_str(&format!("#set par(justify: true, leading: {leading_em}{indent_clause})\n"));
     out.push_str("#show heading: set par(justify: false)\n");
     out.push_str("#show list: set par(justify: false)\n");
     out.push_str("#show enum: set par(justify: false)\n");
@@ -197,6 +263,16 @@ pub fn wrap_document(body_typst: &str, fm: &Value, config: &DocumentConfig, cli_
     });
 
     let abstract_text = fm.get("abstract").and_then(|v| v.as_str());
+    let keywords_str: Option<String> = fm.get("keywords").and_then(|v| {
+        if let Some(s) = v.as_str() {
+            Some(s.to_string())
+        } else if let Some(arr) = v.as_sequence() {
+            let kw: Vec<String> = arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect();
+            Some(kw.join(", "))
+        } else {
+            None
+        }
+    });
 
     if title.is_some() || !authors.is_empty() {
         out.push_str("#align(center)[\n  #set par(justify: false)\n");
@@ -227,10 +303,18 @@ pub fn wrap_document(body_typst: &str, fm: &Value, config: &DocumentConfig, cli_
         out.push_str("]\n\n#v(1.2em)\n");
     }
 
-    if let Some(abs) = abstract_text {
-        out.push_str(&format!(
-            "#align(center)[\n  #block(width: 88%)[\n    #set par(justify: true, leading: 0.6em)\n    #text(weight: \"bold\")[Abstract] -- #text(style: \"italic\")[{abs}]\n  ]\n]\n\n#v(1.4em)\n"
-        ));
+    if abstract_text.is_some() || keywords_str.is_some() {
+        out.push_str("#align(center)[\n  #block(width: 88%)[\n    #set par(justify: true, leading: 0.6em)\n");
+        if let Some(abs) = abstract_text {
+            out.push_str(&format!("    #text(weight: \"bold\")[Abstract] -- #text(style: \"italic\")[{abs}]\n"));
+        }
+        if let Some(ref kw) = keywords_str {
+            if abstract_text.is_some() {
+                out.push_str("    #v(0.6em)\n");
+            }
+            out.push_str(&format!("    #text(weight: \"bold\")[Keywords] -- #text(style: \"italic\")[{kw}]\n"));
+        }
+        out.push_str("  ]\n]\n\n#v(1.4em)\n");
     }
 
     // 4. Table of Contents
@@ -249,8 +333,38 @@ pub fn wrap_document(body_typst: &str, fm: &Value, config: &DocumentConfig, cli_
         .or(config.toc_depth)
         .unwrap_or(3);
 
+    let toc_title = fm.get("toc-title")
+        .or_else(|| fm.get("toc_title"))
+        .and_then(|v| v.as_str());
+
     if should_include_toc {
-        out.push_str(&format!("#outline(depth: {toc_depth})\n#v(1.5em)\n"));
+        if let Some(title) = toc_title {
+            out.push_str(&format!("#outline(title: \"{title}\", depth: {toc_depth})\n#v(1.5em)\n"));
+        } else {
+            out.push_str(&format!("#outline(depth: {toc_depth})\n#v(1.5em)\n"));
+        }
+    }
+
+    let lof = fm.get("lof").and_then(|v| v.as_bool()).unwrap_or(false);
+    if lof {
+        let lof_title = match lang {
+            "fr" => "Table des figures",
+            "de" => "Abbildungsverzeichnis",
+            "es" => "Índice de figuras",
+            _ => "List of Figures",
+        };
+        out.push_str(&format!("#outline(title: \"{lof_title}\", target: figure.where(kind: image))\n#v(1.5em)\n"));
+    }
+
+    let lot = fm.get("lot").and_then(|v| v.as_bool()).unwrap_or(false);
+    if lot {
+        let lot_title = match lang {
+            "fr" => "Liste des tableaux",
+            "de" => "Tabellenverzeichnis",
+            "es" => "Índice de cuadros",
+            _ => "List of Tables",
+        };
+        out.push_str(&format!("#outline(title: \"{lot_title}\", target: figure.where(kind: table))\n#v(1.5em)\n"));
     }
 
     // 5. Body

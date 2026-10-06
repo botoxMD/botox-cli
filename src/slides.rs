@@ -91,6 +91,33 @@ pub fn wrap_slides(slides_typst: &str, fm: &Value, config: &SlidesConfig) -> Str
     out.push_str("  radius: 3pt,\n");
     out.push_str(")[#set text(size: 0.9em); #it]\n\n");
 
+    // Callouts prelude for slides
+    out.push_str("#let botox_callout(kind, title, body) = {\n");
+    out.push_str("  let (stroke_color, default_title) = if kind == \"warning\" {\n");
+    out.push_str("    (rgb(\"#d97706\"), \"Warning\")\n");
+    out.push_str("  } else if kind == \"tip\" {\n");
+    out.push_str("    (rgb(\"#16a34a\"), \"Tip\")\n");
+    out.push_str("  } else if kind == \"important\" or kind == \"caution\" or kind == \"danger\" {\n");
+    out.push_str("    (rgb(\"#dc2626\"), \"Important\")\n");
+    out.push_str("  } else {\n");
+    out.push_str("    (rgb(\"#0284c7\"), \"Note\")\n");
+    out.push_str("  };\n");
+    out.push_str("  let display_title = if title != \"\" { title } else { default_title };\n");
+    out.push_str("  block(\n");
+    out.push_str("    fill: stroke_color.transparentize(88%),\n");
+    out.push_str("    stroke: (left: 4pt + stroke_color),\n");
+    out.push_str("    inset: (x: 16pt, y: 12pt),\n");
+    out.push_str("    radius: (right: 4pt),\n");
+    out.push_str("    width: 100%,\n");
+    out.push_str("    above: 1.2em,\n");
+    out.push_str("    below: 1.2em,\n");
+    out.push_str("  )[\n");
+    out.push_str("    #text(weight: \"bold\", fill: stroke_color)[#display_title]\\\n");
+    out.push_str("    #v(0.3em)\n");
+    out.push_str("    #body\n");
+    out.push_str("  ]\n");
+    out.push_str("}\n\n");
+
     let raw_slides: Vec<&str> = slides_typst.split("#pagebreak()").collect();
 
     for (i, slide) in raw_slides.iter().enumerate() {

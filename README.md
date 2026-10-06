@@ -9,14 +9,17 @@ author:
 date: \today
 lang: en
 abstract: "Botox is a pure Rust, single-binary command-line suite that compiles standard Markdown documents into publication-grade LaTeX-style PDF documentation or presentation slide decks. Featuring an embedded in-process typesetting engine, authentic New Computer Modern typography, advanced TeX mathematics, native IEEE-standard bibliographies, and Pandoc extensions, Botox requires zero external runtime dependencies."
+keywords: ["Document Engineering", "LaTeX Typesetting", "Pandoc Compatibility", "Rust"]
 papersize: a4
 fontsize: 11pt
 mainfont: "New Computer Modern"
 monofont: "DejaVu Sans Mono"
 mathfont: "New Computer Modern Math"
 geometry: "margin=2.5cm"
+linkcolor: "#0284c7"
 number-sections: true
 table-of-contents: true
+toc-title: "Table of Contents"
 toc-depth: 3
 bibliography: true
 ---
@@ -138,16 +141,44 @@ Academic citations and callouts render with subtle left border rules and margins
 > "Simplicity is prerequisite for reliability."
 > --- Edsger W. Dijkstra, *Selected Writings on Computing*
 
-## Figures and Graphics
+## Callout Divs
+
+Pandoc-style fenced divs (`:::`) render as color-coded advisory blocks with distinct visual borders:
+
+::: note
+**Pandoc `link_attributes`**: The `{width=50%}` syntax originates from Pandoc's `link_attributes` extension. Botox natively parses and renders image attributes without requiring any external preprocessors.
+:::
+
+::: tip
+Use cross-references like `@fig:arch`, `@tbl:perf`, `@sec:math`, or `@eq:energy` to generate clickable hyperlinks that automatically track section and asset numbering.
+:::
+
+::: warning
+Never mix unnumbered headings with strict numerical cross-references. Unnumbered headings (`{-}` or `{.unnumbered}`) are excluded from the numbering counter.
+:::
+
+## Figures, Graphics & Attributes
 
 Raster and vector image assets (PNG, JPEG, SVG, WebP, GIF) are rendered natively without external decoders. Standard Markdown syntax with alt text generates numbered LaTeX figures with captions:
 
 ```markdown
-![Botox Architecture Pipeline](figures/architecture.png)
-![](logo.svg)
+![Botox Architecture Pipeline](figures/architecture.png){width=65% #fig:arch}
+![](logo.svg){width=10cm height=5cm}
+![Relative Scaling](banner.png){width=0.8\linewidth}
 ```
 
-Relative paths resolve automatically from the directory of the Markdown input file or working directory.
+Attributes inside `{...}` support:
+- Dimensions: `%` (e.g. `width=50%`), absolute units (`10cm`, `4in`, `200pt`, `100mm`), pixels (`300px`), and TeX factors (`0.8\linewidth`, `\textwidth`).
+- Identifiers: `#fig:id` or `id=fig:id` for cross-referencing with `@fig:id`.
+
+## Cross-Referencing
+
+Botox implements Pandoc cross-referencing for figures, tables, sections, and equations:
+
+- `@fig:arch` references Figure 1
+- `@tbl:perf` references Table 1 (see @tbl:perf)
+- `@sec:math` references Section 4 (see @sec:math)
+- `@eq:energy` references Equation 1 (see @eq:energy)
 
 ## Page Breaks
 
@@ -158,13 +189,15 @@ LaTeX and Pandoc page break commands placed anywhere in the document are transla
 - `\clearpage`
 - `<!-- pagebreak -->`
 
-# Advanced Mathematical Typography
+# Advanced Mathematical Typography {#sec:math}
 
 Mathematical expressions render with full LaTeX fidelity using embedded New Computer Modern Math fonts.
 
 ## Fractions, Accents, and Operators
 
 Nested braces in fractions and roots resolve recursively with proper font scaling:
+
+$$E = m c^2 + \frac{1}{2} m v^2$$ {#eq:energy}
 
 $$\vec{F} \approx m \frac{\partial^2 \vec{r}}{\partial t^2} + \sqrt[3]{\frac{\alpha_{11}}{\beta + \gamma}} \pm \vec{\epsilon}$$
 
@@ -186,7 +219,9 @@ $$f(x) = \begin{cases} \sqrt{x} & \text{if } x \ge 0 \\ -\sqrt{-x} & \text{if } 
 
 # Structured Tables
 
-Pipe tables support header alignment markers (`:---` for left, `:---:` for center, and `---:` for right) and format with LaTeX-inspired booktabs horizontal rules:
+Pipe tables support header alignment markers (`:---` for left, `:---:` for center, and `---:` for right), automated captions, and cross-reference labels:
+
+Table: Pipeline execution comparison across toolchains. {#tbl:perf}
 
 | Tool | Pipeline Stage | Target Output | Performance |
 | :--- | :---: | :---: | ---: |
@@ -278,3 +313,8 @@ slides:
 | `--config` | `<file>` | Supply custom configuration YAML path |
 | `init` | `<filename>` | Initialize new document or slide deck with default settings |
 | `config` | Subcommand | Display currently active configuration |
+
+# Appendix {-}
+
+This appendix section demonstrates an unnumbered heading created with Pandoc's `{-}` attribute syntax. It appears in the document structure without incrementing the section counter.
+

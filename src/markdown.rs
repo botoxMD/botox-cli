@@ -72,6 +72,42 @@ fn convert_sub_super(s: &str) -> String {
     out
 }
 
+fn parse_callout_header(rest: &str) -> (String, String) {
+    let clean = rest.trim_matches(|c| c == '{' || c == '}').trim();
+    let mut kind = "note".to_string();
+    let mut title = String::new();
+
+    if let Some(t_idx) = clean.find("title=") {
+        let after_t = &clean[t_idx + 6..];
+        let q = after_t.chars().next().unwrap_or('"');
+        if q == '"' || q == '\'' {
+            if let Some(end_q) = after_t[1..].find(q) {
+                title = after_t[1..=end_q].to_string();
+            }
+        } else {
+            title = after_t.split_whitespace().next().unwrap_or("").to_string();
+        }
+    }
+
+    for token in clean.split_whitespace() {
+        if token.starts_with("title=") {
+            continue;
+        }
+        let token = token.trim_start_matches('.');
+        match token.to_lowercase().as_str() {
+            "note" | "info" => kind = "note".to_string(),
+            "warning" => kind = "warning".to_string(),
+            "tip" => kind = "tip".to_string(),
+            "important" => kind = "important".to_string(),
+            "caution" => kind = "caution".to_string(),
+            "danger" => kind = "danger".to_string(),
+            _ => {}
+        }
+    }
+
+    (kind, title)
+}
+
 fn preprocess_pandoc(markdown: &str) -> String {
     let mut result = String::with_capacity(markdown.len());
     let mut in_code_fence = false;
@@ -89,6 +125,17 @@ fn preprocess_pandoc(markdown: &str) -> String {
         if in_code_fence {
             result.push_str(line);
             result.push('\n');
+            continue;
+        }
+
+        if trimmed.starts_with(":::") {
+            let rest = trimmed.trim_start_matches(':').trim();
+            if rest.is_empty() {
+                result.push_str("\n]\n\n");
+            } else {
+                let (kind, title) = parse_callout_header(rest);
+                result.push_str(&format!("\n#botox_callout(\"{kind}\", \"{title}\")[\n"));
+            }
             continue;
         }
 
@@ -523,6 +570,148 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
     s
 }
 
+fn normalize_dimension(val: &str) -> Option<String> {
+    let s = val.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    if s == r"\linewidth" || s == r"\textwidth" || s == "\\linewidth" || s == "\\textwidth" {
+        return Some("100%".to_string());
+    }
+
+    if let Some(rest) = s.strip_suffix(r"\linewidth").or_else(|| s.strip_suffix(r"\textwidth")) {
+        if let Ok(factor) = rest.trim().parse::<f64>() {
+            return Some(format!("{}%", (factor * 100.0).round() as i64));
+        }
+    }
+
+    if let Some(px_str) = s.strip_suffix("px") {
+        if let Ok(px) = px_str.trim().parse::<f64>() {
+            return Some(format!("{}pt", (px * 0.75).round() as i64));
+        }
+    }
+
+    if s.ends_with('%')
+        || s.ends_with("cm")
+        || s.ends_with("mm")
+        || s.ends_with("in")
+        || s.ends_with("pt")
+        || s.ends_with("em")
+    {
+        return Some(s.to_string());
+    }
+
+    if let Ok(n) = s.parse::<f64>() {
+        if n <= 1.0 && n > 0.0 {
+            return Some(format!("{}%", (n * 100.0).round() as i64));
+        } else {
+            return Some(format!("{s}pt"));
+        }
+    }
+
+    Some(s.to_string())
+}
+
+fn parse_image_attributes(s: &str) -> (Option<String>, Option<String>, Option<String>) {
+    let mut width = None;
+    let mut height = None;
+    let mut id = None;
+
+    let clean = s.replace(',', " ");
+    for token in clean.split_whitespace() {
+        let token = token.trim();
+        if token.starts_with('#') {
+            let raw_id = &token[1..];
+            let clean_id = raw_id.replace(':', "-");
+            if !clean_id.is_empty() {
+                id = Some(clean_id);
+            }
+        } else if let Some(val) = token.strip_prefix("id=") {
+            let val = val.trim_matches('"').trim_matches('\'');
+            let clean_id = val.replace(':', "-");
+            if !clean_id.is_empty() {
+                id = Some(clean_id);
+            }
+        } else if let Some(val) = token.strip_prefix("width=") {
+            let val = val.trim_matches('"').trim_matches('\'');
+            if let Some(parsed) = normalize_dimension(val) {
+                width = Some(parsed);
+            }
+        } else if let Some(val) = token.strip_prefix("height=") {
+            let val = val.trim_matches('"').trim_matches('\'');
+            if let Some(parsed) = normalize_dimension(val) {
+                height = Some(parsed);
+            }
+        }
+    }
+
+    (width, height, id)
+}
+
+fn parse_heading_attributes(s: &str) -> (String, bool, Option<String>) {
+    let trimmed = s.trim();
+    if let Some(brace_start) = trimmed.rfind('{') {
+        if trimmed.ends_with('}') && brace_start > 0 {
+            let inside = trimmed[brace_start + 1..trimmed.len() - 1].trim();
+            let mut is_unnumbered = false;
+            let mut id = None;
+
+            for token in inside.split_whitespace() {
+                if token == "-" || token == ".unnumbered" || token == "unnumbered" {
+                    is_unnumbered = true;
+                } else if token.starts_with('#') {
+                    let clean_id = token[1..].replace(':', "-");
+                    if !clean_id.is_empty() {
+                        id = Some(clean_id);
+                    }
+                } else if let Some(val) = token.strip_prefix("id=") {
+                    let val = val.trim_matches('"').trim_matches('\'');
+                    let clean_id = val.replace(':', "-");
+                    if !clean_id.is_empty() {
+                        id = Some(clean_id);
+                    }
+                }
+            }
+
+            let clean_title = trimmed[..brace_start].trim().to_string();
+            return (clean_title, is_unnumbered, id);
+        }
+    }
+
+    (trimmed.to_string(), false, None)
+}
+
+fn parse_caption_and_label(s: &str) -> (String, Option<String>) {
+    let rest = if let Some(stripped) = s.strip_prefix("Table:") {
+        stripped.trim()
+    } else if let Some(stripped) = s.strip_prefix(':') {
+        stripped.trim()
+    } else {
+        s.trim()
+    };
+    let (caption, _, id) = parse_heading_attributes(rest);
+    (caption, id)
+}
+
+fn convert_cross_references(s: &str) -> String {
+    let mut out = s.to_string();
+    for prefix in &["@fig:", "@tbl:", "@sec:", "@eq:", "@lst:"] {
+        if out.contains(prefix) {
+            let target = match *prefix {
+                "@fig:" => "@fig-",
+                "@tbl:" => "@tbl-",
+                "@sec:" => "@sec-",
+                "@eq:" => "@eq-",
+                "@lst:" => "@lst-",
+                _ => continue,
+            };
+            out = out.replace(prefix, target);
+        }
+    }
+    out
+}
+
 pub fn markdown_to_typst(
     markdown: &str,
     is_slides: bool,
@@ -574,7 +763,7 @@ pub fn markdown_to_typst(
         }
     }
 
-    let parser = Parser::new_ext(markdown, options);
+    let mut events: Vec<Event> = Parser::new_ext(markdown, options).collect();
     let mut typst = String::with_capacity(markdown.len() * 2);
 
     let mut list_depth: usize = 0;
@@ -589,119 +778,161 @@ pub fn markdown_to_typst(
     let mut references: Vec<(String, String)> = Vec::new();
     let mut current_link: Option<(String, String)> = None;
     let mut current_image: Option<(String, String)> = None;
+    let mut current_heading: Option<(usize, String)> = None;
+    let mut pending_table_caption: Option<(String, Option<String>)> = None;
 
-    for event in parser {
+    let num_events = events.len();
+    let mut i = 0;
+    while i < num_events {
+        let event = std::mem::replace(&mut events[i], Event::Text("".into()));
         match event {
             Event::Start(tag) => {
                 if let Tag::FootnoteDefinition(_) = tag {
                     in_footnote_def = true;
+                    i += 1;
                     continue;
                 }
                 if in_footnote_def {
+                    i += 1;
                     continue;
                 }
                 match tag {
-                    Tag::Paragraph => {}
-                Tag::Heading { level, .. } => {
-                    let prefix = match level {
-                        HeadingLevel::H1 => "=",
-                        HeadingLevel::H2 => "==",
-                        HeadingLevel::H3 => "===",
-                        HeadingLevel::H4 => "====",
-                        HeadingLevel::H5 => "=====",
-                        HeadingLevel::H6 => "======",
-                    };
-                    typst.push_str(prefix);
-                    typst.push(' ');
-                }
-                Tag::BlockQuote(_) => {
-                    typst.push_str("#quote[");
-                }
-                Tag::CodeBlock(kind) => {
-                    in_code_block = true;
-                    typst.push_str("```");
-                    match kind {
-                        pulldown_cmark::CodeBlockKind::Fenced(lang) => {
+                    Tag::Paragraph => {
+                        if let Some(Event::Text(next_text)) = events.get(i + 1) {
+                            let trimmed = next_text.trim();
+                            if (trimmed.starts_with("Table:") || trimmed.starts_with(": ")) && trimmed.len() > 2 {
+                                let mut j = i + 2;
+                                let mut is_tbl = false;
+                                while j < num_events {
+                                    match &events[j] {
+                                        Event::End(TagEnd::Paragraph) => {
+                                            if let Some(Event::Start(Tag::Table(_))) = events.get(j + 1) {
+                                                is_tbl = true;
+                                            }
+                                            break;
+                                        }
+                                        _ => j += 1,
+                                    }
+                                }
+                                if is_tbl {
+                                    let (caption, label) = parse_caption_and_label(trimmed);
+                                    pending_table_caption = Some((caption, label));
+                                    i = j + 1;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    Tag::Heading { level, .. } => {
+                        let lvl = match level {
+                            HeadingLevel::H1 => 1,
+                            HeadingLevel::H2 => 2,
+                            HeadingLevel::H3 => 3,
+                            HeadingLevel::H4 => 4,
+                            HeadingLevel::H5 => 5,
+                            HeadingLevel::H6 => 6,
+                        };
+                        current_heading = Some((lvl, String::new()));
+                    }
+                    Tag::BlockQuote(_) => {
+                        typst.push_str("#quote[");
+                    }
+                    Tag::CodeBlock(kind) => {
+                        in_code_block = true;
+                        typst.push_str("```");
+                        if let pulldown_cmark::CodeBlockKind::Fenced(lang) = kind {
                             typst.push_str(&lang);
                         }
-                        pulldown_cmark::CodeBlockKind::Indented => {}
+                        typst.push('\n');
                     }
-                    typst.push('\n');
-                }
-                Tag::List(_) => {
-                    list_depth += 1;
-                }
-                Tag::Item => {
-                    let indent = "  ".repeat(list_depth.saturating_sub(1));
-                    typst.push_str(&indent);
-                    typst.push_str("- ");
-                }
-                Tag::Emphasis => {
-                    if in_table { current_cell.push('_'); } else { typst.push('_'); }
-                }
-                Tag::Strong => {
-                    if in_table { current_cell.push('*'); } else { typst.push('*'); }
-                }
-                Tag::Strikethrough => {
-                    if in_table { current_cell.push_str("#strike["); } else { typst.push_str("#strike["); }
-                }
-                Tag::Subscript => {
-                    if in_table { current_cell.push_str("#sub["); } else { typst.push_str("#sub["); }
-                }
-                Tag::Superscript => {
-                    if in_table { current_cell.push_str("#super["); } else { typst.push_str("#super["); }
-                }
-                Tag::DefinitionList => {
-                    typst.push('\n');
-                }
-                Tag::DefinitionListTitle => {
-                    typst.push_str("\n/ ");
-                }
-                Tag::DefinitionListDefinition => {}
-                Tag::FootnoteDefinition(_) => {
-                    in_footnote_def = true;
-                }
-                Tag::Link { dest_url, .. } => {
-                    let is_external = dest_url.starts_with("http://")
-                        || dest_url.starts_with("https://")
-                        || dest_url.starts_with("ftp://");
-                    if bibliography && is_external {
-                        current_link = Some((dest_url.to_string(), String::new()));
-                    } else {
-                        current_link = None;
+                    Tag::List(_) => {
+                        list_depth += 1;
                     }
-                    let link_code = format!("#link(\"{dest_url}\")[");
-                    if in_table { current_cell.push_str(&link_code); } else { typst.push_str(&link_code); }
-                }
-                Tag::Image { dest_url, .. } => {
-                    current_image = Some((dest_url.to_string(), String::new()));
-                }
-                Tag::Table(alignments) => {
-                    in_table = true;
-                    table_cells.clear();
-                    table_col_count = 0;
-                    table_alignments = alignments.into_iter().map(|a| match a {
-                        pulldown_cmark::Alignment::Center => "center",
-                        pulldown_cmark::Alignment::Right => "right",
-                        _ => "left",
-                    }).collect();
-                }
-                Tag::TableHead => {
-                    in_table_header = true;
-                }
-                Tag::TableRow => {}
-                Tag::TableCell => {
-                    current_cell.clear();
-                }
-                _ => {}
+                    Tag::Item => {
+                        let indent = "  ".repeat(list_depth.saturating_sub(1));
+                        typst.push_str(&indent);
+                        typst.push_str("- ");
+                    }
+                    Tag::Emphasis => {
+                        if let Some((_, ref mut h_buf)) = current_heading {
+                            h_buf.push('_');
+                        } else if in_table {
+                            current_cell.push('_');
+                        } else {
+                            typst.push('_');
+                        }
+                    }
+                    Tag::Strong => {
+                        if let Some((_, ref mut h_buf)) = current_heading {
+                            h_buf.push('*');
+                        } else if in_table {
+                            current_cell.push('*');
+                        } else {
+                            typst.push('*');
+                        }
+                    }
+                    Tag::Strikethrough => {
+                        if in_table { current_cell.push_str("#strike["); } else { typst.push_str("#strike["); }
+                    }
+                    Tag::Subscript => {
+                        if in_table { current_cell.push_str("#sub["); } else { typst.push_str("#sub["); }
+                    }
+                    Tag::Superscript => {
+                        if in_table { current_cell.push_str("#super["); } else { typst.push_str("#super["); }
+                    }
+                    Tag::DefinitionList => {
+                        typst.push('\n');
+                    }
+                    Tag::DefinitionListTitle => {
+                        typst.push_str("\n/ ");
+                    }
+                    Tag::DefinitionListDefinition => {}
+                    Tag::FootnoteDefinition(_) => {
+                        in_footnote_def = true;
+                    }
+                    Tag::Link { dest_url, .. } => {
+                        let is_external = dest_url.starts_with("http://")
+                            || dest_url.starts_with("https://")
+                            || dest_url.starts_with("ftp://");
+                        if bibliography && is_external {
+                            current_link = Some((dest_url.to_string(), String::new()));
+                        } else {
+                            current_link = None;
+                        }
+                        let link_code = format!("#link(\"{dest_url}\")[");
+                        if in_table { current_cell.push_str(&link_code); } else { typst.push_str(&link_code); }
+                    }
+                    Tag::Image { dest_url, .. } => {
+                        current_image = Some((dest_url.to_string(), String::new()));
+                    }
+                    Tag::Table(alignments) => {
+                        in_table = true;
+                        table_cells.clear();
+                        table_col_count = 0;
+                        table_alignments = alignments.into_iter().map(|a| match a {
+                            pulldown_cmark::Alignment::Center => "center",
+                            pulldown_cmark::Alignment::Right => "right",
+                            _ => "left",
+                        }).collect();
+                    }
+                    Tag::TableHead => {
+                        in_table_header = true;
+                    }
+                    Tag::TableRow => {}
+                    Tag::TableCell => {
+                        current_cell.clear();
+                    }
+                    _ => {}
                 }
             }
             Event::End(tag) => {
                 if let TagEnd::FootnoteDefinition = tag {
                     in_footnote_def = false;
+                    i += 1;
                     continue;
                 }
                 if in_footnote_def {
+                    i += 1;
                     continue;
                 }
                 match tag {
@@ -709,7 +940,28 @@ pub fn markdown_to_typst(
                         typst.push_str("\n\n");
                     }
                     TagEnd::Heading(_) => {
-                        typst.push_str("\n\n");
+                        if let Some((lvl, h_text)) = current_heading.take() {
+                            let (clean_title, is_unnumbered, id) = parse_heading_attributes(&h_text);
+                            if is_unnumbered {
+                                typst.push_str(&format!("#heading(level: {lvl}, numbering: none)[{clean_title}]"));
+                            } else {
+                                let prefix = match lvl {
+                                    1 => "=",
+                                    2 => "==",
+                                    3 => "===",
+                                    4 => "====",
+                                    5 => "=====",
+                                    _ => "======",
+                                };
+                                typst.push_str(&format!("{prefix} {clean_title}"));
+                            }
+                            if let Some(ref label) = id {
+                                typst.push_str(&format!(" <{label}>"));
+                            }
+                            typst.push_str("\n\n");
+                        } else {
+                            typst.push_str("\n\n");
+                        }
                     }
                     TagEnd::BlockQuote(_) => {
                         typst.push_str("]\n\n");
@@ -731,10 +983,22 @@ pub fn markdown_to_typst(
                         typst.push('\n');
                     }
                     TagEnd::Emphasis => {
-                        if in_table { current_cell.push('_'); } else { typst.push('_'); }
+                        if let Some((_, ref mut h_buf)) = current_heading {
+                            h_buf.push('_');
+                        } else if in_table {
+                            current_cell.push('_');
+                        } else {
+                            typst.push('_');
+                        }
                     }
                     TagEnd::Strong => {
-                        if in_table { current_cell.push('*'); } else { typst.push('*'); }
+                        if let Some((_, ref mut h_buf)) = current_heading {
+                            h_buf.push('*');
+                        } else if in_table {
+                            current_cell.push('*');
+                        } else {
+                            typst.push('*');
+                        }
                     }
                     TagEnd::Strikethrough => {
                         if in_table { current_cell.push(']'); } else { typst.push(']'); }
@@ -770,26 +1034,68 @@ pub fn markdown_to_typst(
                         }
                     }
                     TagEnd::Image => {
+                        let mut image_attrs = (None, None, None);
+                        if let Some(Event::Text(next_text)) = events.get_mut(i + 1) {
+                            let trimmed = next_text.trim_start();
+                            if trimmed.starts_with('{') {
+                                if let Some(brace_end) = trimmed.find('}') {
+                                    let attr_part = &trimmed[1..brace_end];
+                                    image_attrs = parse_image_attributes(attr_part);
+                                    let remainder = trimmed[brace_end + 1..].to_string();
+                                    *next_text = remainder.into();
+                                }
+                            }
+                        }
+
                         if let Some((url, alt)) = current_image.take() {
                             let alt = alt.trim();
                             let escaped_url = url.replace('\\', "/").replace('"', "\\\"");
+                            let (width, height, id) = image_attrs;
+
+                            let mut img_args = vec![format!("\"{escaped_url}\"")];
+                            if let Some(ref w) = width {
+                                img_args.push(format!("width: {w}"));
+                            }
+                            if let Some(ref h) = height {
+                                img_args.push(format!("height: {h}"));
+                            }
+                            let img_call = format!("image({})", img_args.join(", "));
+
                             if in_table {
-                                current_cell.push_str(&format!("#image(\"{escaped_url}\")"));
+                                current_cell.push_str(&format!("#{img_call}"));
                             } else if current_link.is_some() {
-                                typst.push_str(&format!("#image(\"{escaped_url}\")"));
+                                typst.push_str(&format!("#{img_call}"));
                             } else if is_slides {
                                 if alt == "bg" || alt.starts_with("bg ") {
                                     typst.push_str(&format!("\n#place(top + left, dx: 0pt, dy: 0pt, image(\"{escaped_url}\", width: 100%, height: 100%, fit: \"cover\"))\n\n"));
-                                } else if !alt.is_empty() {
-                                    typst.push_str(&format!("\n#figure(image(\"{escaped_url}\"), caption: [{alt}])\n\n"));
+                                } else if !alt.is_empty() || id.is_some() {
+                                    let mut fig = format!("\n#figure({img_call}");
+                                    if !alt.is_empty() {
+                                        fig.push_str(&format!(", caption: [{alt}]"));
+                                    }
+                                    fig.push(')');
+                                    if let Some(ref label) = id {
+                                        fig.push_str(&format!(" <{label}>"));
+                                    }
+                                    fig.push_str("\n\n");
+                                    typst.push_str(&fig);
                                 } else {
-                                    typst.push_str(&format!("\n#align(center)[#image(\"{escaped_url}\")]\n\n"));
+                                    typst.push_str(&format!("\n#align(center)[#{img_call}]\n\n"));
                                 }
                             } else {
-                                if !alt.is_empty() {
-                                    typst.push_str(&format!("\n#figure(image(\"{escaped_url}\"), caption: [{alt}])\n\n"));
+                                if !alt.is_empty() || id.is_some() {
+                                    let mut fig = format!("\n#figure({img_call}");
+                                    if !alt.is_empty() {
+                                        fig.push_str(&format!(", caption: [{alt}]"));
+                                    }
+                                    fig.push(')');
+                                    if let Some(ref label) = id {
+                                        fig.push_str(&format!(" <{label}>"));
+                                    }
+                                    fig.push_str("\n\n");
+                                    typst.push_str(&fig);
                                 } else {
-                                    typst.push_str(&format!("\n#align(center)[#image(\"{escaped_url}\")]\n\n"));
+                                    typst.push_str(&format!("\n#align(center)[#{img_call}]\n\n"));
                                 }
                             }
                         }
@@ -804,52 +1110,70 @@ pub fn markdown_to_typst(
                         typst.push_str("\n\n");
                     }
                     TagEnd::TableHead => {
-                    in_table_header = false;
-                }
-                TagEnd::TableRow => {}
-                TagEnd::TableCell => {
-                    if in_table_header {
-                        table_col_count += 1;
+                        in_table_header = false;
                     }
-                    table_cells.push(current_cell.trim().to_string());
-                    current_cell.clear();
-                }
-                TagEnd::Table => {
-                    in_table = false;
-                    let cols = if table_col_count > 0 { table_col_count } else { 1 };
-                    let align_str = if !table_alignments.is_empty() {
-                        let items: Vec<&str> = table_alignments.iter().copied().take(cols).collect();
-                        items.join(", ")
-                    } else {
-                        "left".to_string()
-                    };
-                    typst.push_str(&format!("#table(\n  columns: {cols},\n  align: ({align_str}),\n"));
-                    if table_col_count > 0 && table_cells.len() >= table_col_count {
-                        let header_slice = &table_cells[..table_col_count];
-                        let header_args: Vec<String> = header_slice
-                            .iter()
-                            .map(|c| format!("[*{c}*]"))
-                            .collect();
-                        typst.push_str(&format!("  table.header({}),\n", header_args.join(", ")));
-                        for cell in &table_cells[table_col_count..] {
-                            typst.push_str(&format!("  [{cell}],\n"));
+                    TagEnd::TableRow => {}
+                    TagEnd::TableCell => {
+                        if in_table_header {
+                            table_col_count += 1;
                         }
-                    } else {
-                        for cell in &table_cells {
-                            typst.push_str(&format!("  [{cell}],\n"));
+                        table_cells.push(current_cell.trim().to_string());
+                        current_cell.clear();
+                    }
+                    TagEnd::Table => {
+                        in_table = false;
+                        let cols = if table_col_count > 0 { table_col_count } else { 1 };
+                        let align_str = if !table_alignments.is_empty() {
+                            let items: Vec<&str> = table_alignments.iter().copied().take(cols).collect();
+                            items.join(", ")
+                        } else {
+                            "left".to_string()
+                        };
+                        let mut tbl_str = format!("table(\n  columns: {cols},\n  align: ({align_str}),\n");
+                        if table_col_count > 0 && table_cells.len() >= table_col_count {
+                            let header_slice = &table_cells[..table_col_count];
+                            let header_args: Vec<String> = header_slice
+                                .iter()
+                                .map(|c| format!("[*{c}*]"))
+                                .collect();
+                            tbl_str.push_str(&format!("  table.header({}),\n", header_args.join(", ")));
+                            for cell in &table_cells[table_col_count..] {
+                                tbl_str.push_str(&format!("  [{cell}],\n"));
+                            }
+                        } else {
+                            for cell in &table_cells {
+                                tbl_str.push_str(&format!("  [{cell}],\n"));
+                            }
+                        }
+                        tbl_str.push(')');
+
+                        if let Some((caption, label)) = pending_table_caption.take() {
+                            let mut fig = format!("\n#figure(\n  {tbl_str},\n  caption: [{caption}],\n)");
+                            if let Some(ref l) = label {
+                                fig.push_str(&format!(" <{l}>"));
+                            }
+                            fig.push_str("\n\n");
+                            typst.push_str(&fig);
+                        } else {
+                            typst.push_str(&format!("#{tbl_str}\n\n"));
                         }
                     }
-                    typst.push_str(")\n\n");
-                }
-                _ => {}
+                    _ => {}
                 }
             }
             Event::Text(text) => {
                 if in_footnote_def {
+                    i += 1;
+                    continue;
+                }
+                if let Some((_, ref mut h_buf)) = current_heading {
+                    h_buf.push_str(&text);
+                    i += 1;
                     continue;
                 }
                 if let Some((_, ref mut img_alt)) = current_image {
                     img_alt.push_str(&text);
+                    i += 1;
                     continue;
                 }
                 if let Some((_, ref mut link_text)) = current_link {
@@ -861,6 +1185,7 @@ pub fn markdown_to_typst(
                     typst.push_str(&text);
                 } else {
                     let mut s = convert_sub_super(&text);
+                    s = convert_cross_references(&s);
                     if s.contains(r"\newpage") || s.contains(r"\pagebreak") || s.contains(r"\clearpage") {
                         s = s.replace(r"\newpage", "\n#pagebreak()\n")
                              .replace(r"\pagebreak", "\n#pagebreak()\n")
@@ -880,6 +1205,7 @@ pub fn markdown_to_typst(
             }
             Event::Html(html) => {
                 if in_footnote_def {
+                    i += 1;
                     continue;
                 }
                 if html.contains("pagebreak") || html.contains("page-break") || html.contains("newpage") {
@@ -888,6 +1214,7 @@ pub fn markdown_to_typst(
             }
             Event::FootnoteReference(name) => {
                 if in_footnote_def {
+                    i += 1;
                     continue;
                 }
                 let body = footnote_defs.get(name.as_ref()).cloned().unwrap_or_default();
@@ -895,6 +1222,7 @@ pub fn markdown_to_typst(
             }
             Event::TaskListMarker(checked) => {
                 if in_footnote_def {
+                    i += 1;
                     continue;
                 }
                 if checked {
@@ -905,12 +1233,21 @@ pub fn markdown_to_typst(
             }
             Event::Code(code) => {
                 if in_footnote_def {
+                    i += 1;
+                    continue;
+                }
+                if let Some((_, ref mut h_buf)) = current_heading {
+                    h_buf.push('`');
+                    h_buf.push_str(&code);
+                    h_buf.push('`');
+                    i += 1;
                     continue;
                 }
                 if let Some((_, ref mut img_alt)) = current_image {
                     img_alt.push('`');
                     img_alt.push_str(&code);
                     img_alt.push('`');
+                    i += 1;
                     continue;
                 }
                 if let Some((_, ref mut link_text)) = current_link {
@@ -930,6 +1267,15 @@ pub fn markdown_to_typst(
             }
             Event::InlineMath(math) => {
                 if in_footnote_def {
+                    i += 1;
+                    continue;
+                }
+                if let Some((_, ref mut h_buf)) = current_heading {
+                    let converted = convert_latex_math_to_typst(&math);
+                    h_buf.push('$');
+                    h_buf.push_str(converted.trim());
+                    h_buf.push('$');
+                    i += 1;
                     continue;
                 }
                 let converted = convert_latex_math_to_typst(&math);
@@ -942,10 +1288,39 @@ pub fn markdown_to_typst(
             }
             Event::DisplayMath(math) => {
                 if in_footnote_def {
+                    i += 1;
                     continue;
                 }
-                let converted = convert_latex_math_to_typst(&math);
-                let s = format!("\n$ {} $\n\n", converted.trim());
+                let mut eq_label = None;
+                if let Some(Event::Text(next_text)) = events.get_mut(i + 1) {
+                    let trimmed = next_text.trim_start();
+                    if trimmed.starts_with('{') {
+                        if let Some(brace_end) = trimmed.find('}') {
+                            let attr = trimmed[1..brace_end].trim();
+                            if attr.starts_with('#') {
+                                eq_label = Some(attr[1..].replace(':', "-"));
+                                let remainder = trimmed[brace_end + 1..].to_string();
+                                *next_text = remainder.into();
+                            }
+                        }
+                    }
+                }
+                let mut math_str = math.to_string();
+                if let Some(pos) = math_str.find(r"\label{") {
+                    if let Some(end) = math_str[pos..].find('}') {
+                        let raw_label = &math_str[pos + 7..pos + end];
+                        if eq_label.is_none() {
+                            eq_label = Some(raw_label.replace(':', "-"));
+                        }
+                        math_str.replace_range(pos..pos + end + 1, "");
+                    }
+                }
+                let converted = convert_latex_math_to_typst(&math_str);
+                let mut s = format!("\n$ {} $", converted.trim());
+                if let Some(ref label) = eq_label {
+                    s.push_str(&format!(" <{label}>"));
+                }
+                s.push_str("\n\n");
                 if in_table {
                     current_cell.push_str(&s);
                 } else {
@@ -954,6 +1329,7 @@ pub fn markdown_to_typst(
             }
             Event::Rule => {
                 if in_footnote_def {
+                    i += 1;
                     continue;
                 }
                 if is_slides {
@@ -964,6 +1340,7 @@ pub fn markdown_to_typst(
             }
             Event::SoftBreak => {
                 if in_footnote_def {
+                    i += 1;
                     continue;
                 }
                 if in_table {
@@ -974,6 +1351,7 @@ pub fn markdown_to_typst(
             }
             Event::HardBreak => {
                 if in_footnote_def {
+                    i += 1;
                     continue;
                 }
                 if in_table {
@@ -984,6 +1362,7 @@ pub fn markdown_to_typst(
             }
             _ => {}
         }
+        i += 1;
     }
 
     if bibliography && !references.is_empty() {
@@ -1086,5 +1465,57 @@ mod tests {
         let typst = markdown_to_typst(md, false, false, "en", None);
         assert!(typst.contains("#figure(image(\"figures/arch.png\"), caption: [Architecture Pipeline])"));
         assert!(typst.contains("#align(center)[#image(\"logo.svg\")]"));
+    }
+
+    #[test]
+    fn test_pandoc_image_attributes() {
+        let md = "![Architecture Pipeline](figures/arch.png){width=50% #fig:pipeline}\n\n![](logo.svg){width=10cm height=5cm}\n\n![Relative](banner.png){width=0.8\\linewidth}";
+        let typst = markdown_to_typst(md, false, false, "en", None);
+        assert!(typst.contains("#figure(image(\"figures/arch.png\", width: 50%), caption: [Architecture Pipeline]) <fig-pipeline>"));
+        assert!(typst.contains("#align(center)[#image(\"logo.svg\", width: 10cm, height: 5cm)]"));
+        assert!(typst.contains("#figure(image(\"banner.png\", width: 80%), caption: [Relative])"));
+    }
+
+    #[test]
+    fn test_pandoc_cross_references() {
+        let md = "As seen in @fig:pipeline and @tbl:results, we refer to @sec:intro and @eq:euler.";
+        let typst = markdown_to_typst(md, false, false, "en", None);
+        assert!(typst.contains("@fig-pipeline"));
+        assert!(typst.contains("@tbl-results"));
+        assert!(typst.contains("@sec-intro"));
+        assert!(typst.contains("@eq-euler"));
+    }
+
+    #[test]
+    fn test_pandoc_heading_attributes() {
+        let md = "# Introduction {#sec:intro}\n\n## Appendix {-}\n\n### Extra Notes {.unnumbered #sec:extra}";
+        let typst = markdown_to_typst(md, false, false, "en", None);
+        assert!(typst.contains("= Introduction <sec-intro>"));
+        assert!(typst.contains("#heading(level: 2, numbering: none)[Appendix]"));
+        assert!(typst.contains("#heading(level: 3, numbering: none)[Extra Notes] <sec-extra>"));
+    }
+
+    #[test]
+    fn test_pandoc_callout_divs() {
+        let md = "::: note\nThis is a standard note.\n:::\n\n::: {.warning title=\"Caution Alert\"}\nDanger ahead!\n:::";
+        let typst = markdown_to_typst(md, false, false, "en", None);
+        assert!(typst.contains("#botox_callout(\"note\", \"\")[\nThis is a standard note."));
+        assert!(typst.contains("#botox_callout(\"warning\", \"Caution Alert\")[\nDanger ahead!"));
+    }
+
+    #[test]
+    fn test_pandoc_display_math_label() {
+        let md = "$$ E = m c^2 $$ {#eq:einstein}\n\n$$ a^2 + b^2 = c^2 \\label{eq:pythagoras} $$";
+        let typst = markdown_to_typst(md, false, false, "en", None);
+        assert!(typst.contains("<eq-einstein>"));
+        assert!(typst.contains("<eq-pythagoras>"));
+    }
+
+    #[test]
+    fn test_pandoc_table_caption_and_label() {
+        let md = "Table: Forwarding performance summary. {#tbl:perf}\n\n| Technique | Speedup |\n| --- | --- |\n| Full | 1.45x |";
+        let typst = markdown_to_typst(md, false, false, "en", None);
+        assert!(typst.contains("caption: [Forwarding performance summary.]"));
+        assert!(typst.contains("<tbl-perf>"));
     }
 }
