@@ -58,34 +58,96 @@ pub struct BotoxPagesOutput {
     pub headings: Vec<BotoxHeadingInfo>,
 }
 
-pub fn compile_typst(
-    typst_markup: &str,
-    output_path: &Path,
-    resource_dir: Option<&Path>,
-) -> Result<(), String> {
-    let mut fonts: Vec<typst::text::Font> = Vec::new();
-
-    // 1. Embedded fonts (New Computer Modern, Math, etc.)
+static EMBEDDED_FONTS: std::sync::LazyLock<Vec<typst::text::Font>> = std::sync::LazyLock::new(|| {
+    let mut fonts = Vec::new();
     for font_bytes in typst_assets::fonts() {
         let bytes = typst::foundations::Bytes::new(font_bytes);
         for font in typst::text::Font::iter(bytes) {
             fonts.push(font);
         }
     }
+    fonts
+});
 
-    // 2. System fonts (discovers monospace, sans-serif, etc.)
-    let mut db = fontdb::Database::new();
-    db.load_system_fonts();
-    for face in db.faces() {
-        if let fontdb::Source::File(ref path) = face.source {
-            if let Ok(data) = std::fs::read(path) {
-                let bytes = typst::foundations::Bytes::new(data);
-                if let Some(font) = typst::text::Font::new(bytes, face.index) {
-                    fonts.push(font);
+fn is_embedded_font(name: &str) -> bool {
+    let n = name.trim().trim_matches('"').trim_matches('\'').to_lowercase();
+    n == "new computer modern"
+        || n == "new computer modern math"
+        || n == "dejavu sans mono"
+        || n == "libertinus serif"
+        || n.is_empty()
+}
+
+fn load_needed_fonts(typst_markup: &str) -> Vec<typst::text::Font> {
+    let mut fonts = EMBEDDED_FONTS.clone();
+
+    // Check if custom fonts are referenced in typst_markup:
+    // e.g. `font: "..."` or `font: ("...", "...")`
+    let mut custom_fonts: Vec<String> = Vec::new();
+    let mut idx = 0;
+    while let Some(pos) = typst_markup[idx..].find("font:") {
+        let start = idx + pos + 5;
+        let rest = &typst_markup[start..];
+        let end = rest.find(['\n', ';']).unwrap_or(rest.len().min(120));
+        let slice = &rest[..end];
+
+        let mut in_quote = false;
+        let mut quote_char = '"';
+        let mut cur = String::new();
+        for ch in slice.chars() {
+            if in_quote {
+                if ch == quote_char {
+                    in_quote = false;
+                    let trimmed = cur.trim();
+                    if !is_embedded_font(trimmed)
+                        && !custom_fonts.iter().any(|f| f.eq_ignore_ascii_case(trimmed))
+                    {
+                        custom_fonts.push(trimmed.to_string());
+                    }
+                    cur.clear();
+                } else {
+                    cur.push(ch);
+                }
+            } else if ch == '"' || ch == '\'' {
+                in_quote = true;
+                quote_char = ch;
+            }
+        }
+        idx = start + end;
+    }
+
+    if !custom_fonts.is_empty() {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        for face in db.faces() {
+            let matches_custom = face.families.iter().any(|(fam, _)| {
+                custom_fonts.iter().any(|cf| fam.eq_ignore_ascii_case(cf))
+            }) || custom_fonts
+                .iter()
+                .any(|cf| face.post_script_name.eq_ignore_ascii_case(cf));
+
+            if matches_custom {
+                if let fontdb::Source::File(ref path) = face.source {
+                    if let Ok(data) = std::fs::read(path) {
+                        let bytes = typst::foundations::Bytes::new(data);
+                        if let Some(font) = typst::text::Font::new(bytes, face.index) {
+                            fonts.push(font);
+                        }
+                    }
                 }
             }
         }
     }
+
+    fonts
+}
+
+pub fn compile_typst(
+    typst_markup: &str,
+    output_path: &Path,
+    resource_dir: Option<&Path>,
+) -> Result<(), String> {
+    let fonts = load_needed_fonts(typst_markup);
 
     let res_dir = resource_dir
         .map(|p| p.to_path_buf())
