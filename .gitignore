@@ -19,3 +19,7 @@ Thumbs.db
 *.tmp
 *.log
 debug_fail.typ
+
+# Local generated output
+/README.pdf
+
