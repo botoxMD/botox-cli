@@ -36,6 +36,7 @@ pub fn wrap_document(body_typst: &str, fm: &Value, config: &DocumentConfig, cli_
     // 2. Typography
     let lang = fm.get("lang")
         .and_then(|v| v.as_str())
+        .or_else(|| config.lang.as_deref())
         .unwrap_or("en");
 
     let font_raw = cli_font
@@ -53,6 +54,7 @@ pub fn wrap_document(body_typst: &str, fm: &Value, config: &DocumentConfig, cli_
 
     let monofont_raw = fm.get("monofont")
         .and_then(|v| v.as_str())
+        .or_else(|| config.monofont.as_deref())
         .unwrap_or("DejaVu Sans Mono");
 
     let monofont_family = if monofont_raw.eq_ignore_ascii_case("Courier New") || monofont_raw.eq_ignore_ascii_case("Courier") {

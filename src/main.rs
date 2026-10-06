@@ -89,15 +89,19 @@ fn main() {
     }
 
     if args[1] == "config" {
-        let (_, path) = config::BotoxConfig::load(None);
+        let (resolved_cfg, paths) = config::BotoxConfig::load(None, None);
         println!("Configuration status:");
-        if let Some(p) = path {
-            println!("Active config: {}", p.display());
-            if let Ok(c) = std::fs::read_to_string(&p) {
-                println!("\n{c}");
+        if !paths.is_empty() {
+            println!("Loaded configuration sources (in priority order):");
+            for p in &paths {
+                println!("  - {}", p.display());
             }
         } else {
-            println!("No configuration file found. Using internal defaults.");
+            println!("No custom configuration files found. Using internal defaults.");
+        }
+        println!("\nActive resolved configuration:");
+        if let Ok(yaml) = serde_yaml::to_string(&resolved_cfg) {
+            println!("{yaml}");
         }
         return;
     }
@@ -189,7 +193,7 @@ fn main() {
     }
 
     let output_path = output_file.unwrap_or_else(|| input_path.with_extension("pdf"));
-    let (config_data, _) = config::BotoxConfig::load(custom_config.as_deref());
+    let (config_data, _) = config::BotoxConfig::load(custom_config.as_deref(), input_path.parent());
     let doc_config = config_data.document.unwrap_or_default();
     let slides_config = config_data.slides.unwrap_or_default();
 
@@ -204,7 +208,10 @@ fn main() {
     let (fm, body_md) = extract_frontmatter(&raw_content);
     let is_slides = detect_is_slides(&fm, explicit_slides, explicit_pdf);
 
-    let lang = fm.get("lang").and_then(|v| v.as_str()).unwrap_or("en");
+    let lang = fm.get("lang")
+        .and_then(|v| v.as_str())
+        .or_else(|| doc_config.lang.as_deref())
+        .unwrap_or("en");
     let biblio_title = fm.get("biblio-title")
         .or_else(|| fm.get("bibliography-title"))
         .or_else(|| fm.get("references-title"))

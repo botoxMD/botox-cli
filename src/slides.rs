@@ -17,11 +17,15 @@ pub fn wrap_slides(slides_typst: &str, fm: &Value, config: &SlidesConfig) -> Str
     };
 
     let bg_color = fm.get("backgroundColor")
+        .or_else(|| fm.get("background_color"))
+        .or_else(|| fm.get("background-color"))
         .and_then(|v| v.as_str())
+        .or_else(|| config.background_color.as_deref())
         .unwrap_or(default_bg);
 
     let text_color = fm.get("color")
         .and_then(|v| v.as_str())
+        .or_else(|| config.color.as_deref())
         .unwrap_or(default_text);
 
     let font = fm.get("font")
@@ -116,4 +120,35 @@ fn is_title_slide(slide_text: &str) -> bool {
     let has_h1 = slide_text.lines().any(|l| l.starts_with("= "));
     let has_h2 = slide_text.lines().any(|l| l.starts_with("== "));
     has_h1 && !has_h2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_slides_settings_cascade() {
+        // 1. Neither folder nor file defines theme -> built-in default ("default" -> fill #f8fafc)
+        let default_cfg = SlidesConfig::defaults();
+        let empty_fm = serde_yaml::from_str("{}").unwrap();
+        let typst1 = wrap_slides("= Title Slide", &empty_fm, &default_cfg);
+        assert!(typst1.contains("rgb(\"#f8fafc\")"), "Should take built-in default background");
+
+        // 2. Folder defines theme: academic, file defines nothing -> takes folder's "academic" (#ffffff)
+        let mut folder_cfg = SlidesConfig::defaults();
+        folder_cfg.theme = Some("academic".to_string());
+        let typst2 = wrap_slides("= Title Slide", &empty_fm, &folder_cfg);
+        assert!(typst2.contains("rgb(\"#ffffff\")"), "Should take folder's academic background");
+
+        // 3. Folder defines theme: academic, but file defines theme: nord -> takes file's "nord" (#2e3440)
+        let nord_fm = serde_yaml::from_str("theme: nord").unwrap();
+        let typst3 = wrap_slides("= Title Slide", &nord_fm, &folder_cfg);
+        assert!(typst3.contains("rgb(\"#2e3440\")"), "File's nord theme should override folder's academic theme");
+
+        // 4. Folder defines theme: academic, file overrides color only -> theme is still academic, text is overridden
+        let custom_fm = serde_yaml::from_str("color: \"#123456\"").unwrap();
+        let typst4 = wrap_slides("= Title Slide", &custom_fm, &folder_cfg);
+        assert!(typst4.contains("rgb(\"#ffffff\")"), "Should keep folder's academic background");
+        assert!(typst4.contains("rgb(\"#123456\")"), "Should take file's custom text color");
+    }
 }
