@@ -4,6 +4,15 @@ use serde_yaml::Value;
 pub fn wrap_document(body_typst: &str, fm: &Value, config: &DocumentConfig, cli_toc: Option<bool>, cli_author: Option<&str>, cli_font: Option<&str>) -> String {
     let mut out = String::new();
 
+    let title = extract_title(fm);
+    let authors = extract_authors(fm, config.author.as_deref(), cli_author);
+    let date_str = extract_date(fm);
+
+    // 0. PDF Document Metadata
+    if let Some(doc_meta) = build_document_metadata(title.as_deref(), &authors, date_str.as_deref()) {
+        out.push_str(&doc_meta);
+    }
+
     // 1. Paper and Margins
     let papersize = fm.get("papersize")
         .and_then(|v| v.as_str())
@@ -219,34 +228,9 @@ pub fn wrap_document(body_typst: &str, fm: &Value, config: &DocumentConfig, cli_
     out.push_str("#show heading.where(level: 3): it => block(above: 1.1em, below: 0.6em)[#it]\n\n");
 
     // 3. Title block
-    let title = fm.get("title").and_then(|v| v.as_str());
     let subtitle = fm.get("subtitle").and_then(|v| v.as_str());
 
-    let authors: Vec<String> = if let Some(ca) = cli_author {
-        vec![ca.to_string()]
-    } else if let Some(a) = fm.get("author") {
-        if let Some(s) = a.as_str() {
-            vec![s.to_string()]
-        } else if let Some(arr) = a.as_sequence() {
-            arr.iter().filter_map(|item| {
-                if let Some(s) = item.as_str() {
-                    Some(s.to_string())
-                } else if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
-                    Some(name.to_string())
-                } else {
-                    None
-                }
-            }).collect()
-        } else {
-            Vec::new()
-        }
-    } else if let Some(ref ca) = config.author {
-        vec![ca.clone()]
-    } else {
-        Vec::new()
-    };
-
-    let affiliation = if let Some(a) = fm.get("author") {
+    let affiliation = if let Some(a) = fm.get("author").or_else(|| fm.get("authors")) {
         if let Some(arr) = a.as_sequence() {
             arr.first().and_then(|item| item.get("affiliation").and_then(|v| v.as_str()))
         } else {
@@ -255,16 +239,6 @@ pub fn wrap_document(body_typst: &str, fm: &Value, config: &DocumentConfig, cli_
     } else {
         fm.get("affiliation").and_then(|v| v.as_str()).or_else(|| config.affiliation.as_deref())
     };
-
-    let date_str = fm.get("date").and_then(|v| {
-        if let Some(s) = v.as_str() {
-            Some(s.to_string())
-        } else if let Some(n) = v.as_i64() {
-            Some(n.to_string())
-        } else {
-            None
-        }
-    });
 
     let abstract_text = fm.get("abstract").and_then(|v| v.as_str());
     let keywords_str: Option<String> = fm.get("keywords").and_then(|v| {
@@ -280,7 +254,7 @@ pub fn wrap_document(body_typst: &str, fm: &Value, config: &DocumentConfig, cli_
 
     if title.is_some() || !authors.is_empty() {
         out.push_str("#align(center)[\n  #set par(justify: false)\n");
-        if let Some(t) = title {
+        if let Some(ref t) = title {
             out.push_str(&format!("  #text(size: 1.8em, weight: \"bold\")[{t}]\n\n"));
         }
         if let Some(sub) = subtitle {
@@ -431,5 +405,220 @@ fn parse_margins(fm: &Value, config: &DocumentConfig) -> (String, String) {
         }
     } else {
         ("2.5cm".to_string(), "2.5cm".to_string())
+    }
+}
+
+pub fn escape_typst_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str(r"\\"),
+            '"' => out.push_str(r#"\""#),
+            '\n' => out.push_str(r"\n"),
+            '\r' => {},
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+pub fn format_typst_date(d: &str) -> Option<String> {
+    let trimmed = d.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed == r"\today" || trimmed == "\\today" || trimmed.eq_ignore_ascii_case("today") {
+        return Some("datetime.today()".to_string());
+    }
+    if trimmed.eq_ignore_ascii_case("auto") {
+        return Some("auto".to_string());
+    }
+    if trimmed.eq_ignore_ascii_case("none") {
+        return Some("none".to_string());
+    }
+
+    let date_part = trimmed.split(['T', ' ']).next().unwrap_or(trimmed);
+    let parts: Vec<&str> = date_part.split(['-', '/']).collect();
+    if parts.len() == 3 {
+        if let (Ok(y), Ok(m), Ok(day)) = (parts[0].parse::<i32>(), parts[1].parse::<u8>(), parts[2].parse::<u8>()) {
+            if (1..=12).contains(&m) && (1..=31).contains(&day) {
+                return Some(format!("datetime(year: {y}, month: {m}, day: {day})"));
+            }
+        }
+    } else if parts.len() == 2 {
+        if let (Ok(y), Ok(m)) = (parts[0].parse::<i32>(), parts[1].parse::<u8>()) {
+            if (1..=12).contains(&m) {
+                return Some(format!("datetime(year: {y}, month: {m}, day: 1)"));
+            }
+        }
+    } else if parts.len() == 1 {
+        if let Ok(y) = parts[0].parse::<i32>() {
+            if (1000..=9999).contains(&y) {
+                return Some(format!("datetime(year: {y}, month: 1, day: 1)"));
+            }
+        }
+    }
+    Some("auto".to_string())
+}
+
+pub fn extract_title(fm: &Value) -> Option<String> {
+    fm.get("title").and_then(|v| {
+        if let Some(s) = v.as_str() {
+            Some(s.to_string())
+        } else if let Some(n) = v.as_i64() {
+            Some(n.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+pub fn extract_authors(fm: &Value, config_author: Option<&str>, cli_author: Option<&str>) -> Vec<String> {
+    if let Some(ca) = cli_author {
+        vec![ca.to_string()]
+    } else if let Some(a) = fm.get("author").or_else(|| fm.get("authors")) {
+        if let Some(s) = a.as_str() {
+            vec![s.to_string()]
+        } else if let Some(arr) = a.as_sequence() {
+            arr.iter().filter_map(|item| {
+                if let Some(s) = item.as_str() {
+                    Some(s.to_string())
+                } else if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
+                    Some(name.to_string())
+                } else {
+                    None
+                }
+            }).collect()
+        } else {
+            Vec::new()
+        }
+    } else if let Some(ca) = config_author {
+        vec![ca.to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+pub fn extract_date(fm: &Value) -> Option<String> {
+    fm.get("date").and_then(|v| {
+        if let Some(s) = v.as_str() {
+            Some(s.to_string())
+        } else if let Some(n) = v.as_i64() {
+            Some(n.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+pub fn build_document_metadata(
+    title: Option<&str>,
+    authors: &[String],
+    date: Option<&str>,
+) -> Option<String> {
+    let mut fields = Vec::new();
+
+    if let Some(t) = title {
+        fields.push(format!("title: \"{}\"", escape_typst_string(t)));
+    }
+
+    if !authors.is_empty() {
+        if authors.len() == 1 {
+            fields.push(format!("author: \"{}\"", escape_typst_string(&authors[0])));
+        } else {
+            let author_strs = authors
+                .iter()
+                .map(|a| format!("\"{}\"", escape_typst_string(a)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            fields.push(format!("author: ({author_strs})"));
+        }
+    }
+
+    if let Some(d) = date {
+        if let Some(formatted_date) = format_typst_date(d) {
+            fields.push(format!("date: {formatted_date}"));
+        }
+    }
+
+    if fields.is_empty() {
+        None
+    } else {
+        Some(format!("#set document({})\n", fields.join(", ")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_escape_typst_string() {
+        assert_eq!(escape_typst_string("Normal Title"), "Normal Title");
+        assert_eq!(
+            escape_typst_string(r#"Quotes "and" Backslashes \here\"#),
+            r#"Quotes \"and\" Backslashes \\here\\"#
+        );
+        assert_eq!(escape_typst_string("Line1\nLine2\r"), r"Line1\nLine2");
+    }
+
+    #[test]
+    fn test_format_typst_date() {
+        assert_eq!(format_typst_date(r"\today").as_deref(), Some("datetime.today()"));
+        assert_eq!(format_typst_date("today").as_deref(), Some("datetime.today()"));
+        assert_eq!(format_typst_date("2026-10-07").as_deref(), Some("datetime(year: 2026, month: 10, day: 7)"));
+        assert_eq!(format_typst_date("2026-10").as_deref(), Some("datetime(year: 2026, month: 10, day: 1)"));
+        assert_eq!(format_typst_date("2026").as_deref(), Some("datetime(year: 2026, month: 1, day: 1)"));
+        assert_eq!(format_typst_date("auto").as_deref(), Some("auto"));
+        assert_eq!(format_typst_date("none").as_deref(), Some("none"));
+        assert_eq!(format_typst_date("October 2026").as_deref(), Some("auto"));
+        assert_eq!(format_typst_date(""), None);
+    }
+
+    #[test]
+    fn test_document_metadata_emission() {
+        let default_cfg = DocumentConfig::defaults();
+
+        // 1. Title, single author, ISO date
+        let fm: Value = serde_yaml::from_str(r#"
+title: "Autonomous Agents"
+author: "Ada Lovelace"
+date: "2026-10-07"
+"#).unwrap();
+        let doc = wrap_document("Hello world", &fm, &default_cfg, None, None, None);
+        assert!(doc.starts_with("#set document(title: \"Autonomous Agents\", author: \"Ada Lovelace\", date: datetime(year: 2026, month: 10, day: 7))\n"));
+
+        // 2. Escaped quotes and backslashes in title, multiple authors
+        let fm_esc: Value = serde_yaml::from_str(r#"
+title: 'The "Art" of \Coding\'
+author:
+  - "Alice Smith"
+  - "Bob Jones"
+date: \today
+"#).unwrap();
+        let doc_esc = wrap_document("Hello world", &fm_esc, &default_cfg, None, None, None);
+        assert!(doc_esc.contains(r#"#set document(title: "The \"Art\" of \\Coding\\", author: ("Alice Smith", "Bob Jones"), date: datetime.today())"#));
+
+        // 3. Fallback to config author when frontmatter author is absent
+        let mut cfg_with_author = DocumentConfig::defaults();
+        cfg_with_author.author = Some("Config Author".to_string());
+        let fm_no_author: Value = serde_yaml::from_str(r#"
+title: "Config Fallback"
+"#).unwrap();
+        let doc_cfg_auth = wrap_document("Hello world", &fm_no_author, &cfg_with_author, None, None, None);
+        assert!(doc_cfg_auth.contains(r#"#set document(title: "Config Fallback", author: "Config Author")"#));
+
+        // 4. CLI author overrides everything
+        let doc_cli_auth = wrap_document("Hello world", &fm, &cfg_with_author, None, Some("CLI Override"), None);
+        assert!(doc_cli_auth.contains(r#"author: "CLI Override""#));
+
+        // 5. Empty metadata produces no #set document
+        let empty_fm: Value = serde_yaml::from_str("{}").unwrap();
+        let empty_cfg = DocumentConfig {
+            author: None,
+            ..DocumentConfig::defaults()
+        };
+        let doc_empty = wrap_document("Hello world", &empty_fm, &empty_cfg, None, None, None);
+        assert!(!doc_empty.contains("#set document("));
     }
 }

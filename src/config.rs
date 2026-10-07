@@ -86,6 +86,7 @@ pub struct SlidesConfig {
     pub font: Option<String>,
     pub background_color: Option<String>,
     pub color: Option<String>,
+    pub author: Option<String>,
 }
 
 impl Default for SlidesConfig {
@@ -102,6 +103,7 @@ impl SlidesConfig {
             font: Some("New Computer Modern".to_string()),
             background_color: None,
             color: None,
+            author: None,
         }
     }
 
@@ -111,6 +113,7 @@ impl SlidesConfig {
         if other.font.is_some() { self.font = other.font.clone(); }
         if other.background_color.is_some() { self.background_color = other.background_color.clone(); }
         if other.color.is_some() { self.color = other.color.clone(); }
+        if other.author.is_some() { self.author = other.author.clone(); }
     }
 }
 

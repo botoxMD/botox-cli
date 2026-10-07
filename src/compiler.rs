@@ -187,6 +187,18 @@ pub fn compile_typst(
         format_compilation_error(&e)
     })?;
 
+    if output_path.as_os_str() == "-" {
+        let pdf_bytes = typst_pdf::pdf(&doc, &typst_pdf::PdfOptions::default())
+            .map_err(|e| format!("PDF export error: {e:?}"))?;
+        use std::io::Write;
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(&pdf_bytes)
+            .map_err(|e| format!("Failed to write PDF to stdout: {e}"))?;
+        stdout.flush()
+            .map_err(|e| format!("Failed to flush stdout: {e}"))?;
+        return Ok(());
+    }
+
     if let Some(parent) = output_path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)
@@ -297,9 +309,44 @@ pub fn compile_typst_to_pdf(
     compile_typst(typst_markup, output_path, resource_dir)
 }
 
+#[allow(dead_code)]
+pub fn compile_typst_to_pdf_bytes(
+    typst_markup: &str,
+    resource_dir: Option<&Path>,
+) -> Result<Vec<u8>, String> {
+    let fonts = load_needed_fonts(typst_markup);
+
+    let res_dir = resource_dir
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    let engine = TypstEngine::builder()
+        .main_file(typst_markup)
+        .fonts(fonts)
+        .add_file_resolver(BotoxFileResolver { resource_dir: res_dir })
+        .build();
+
+    let compilation_result = engine.compile();
+    let doc: typst_layout::PagedDocument = compilation_result.output.map_err(|e| {
+        format_compilation_error(&e)
+    })?;
+
+    typst_pdf::pdf(&doc, &typst_pdf::PdfOptions::default())
+        .map_err(|e| format!("PDF export error: {e:?}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_compile_typst_to_pdf_bytes() {
+        let markup = "= Test PDF Stream\nPipeline verification";
+        let res = compile_typst_to_pdf_bytes(markup, None);
+        assert!(res.is_ok(), "PDF compile error: {:?}", res.err());
+        let bytes = res.unwrap();
+        assert!(bytes.starts_with(b"%PDF-"), "Stream must begin with %PDF- header");
+    }
 
     #[test]
     fn test_compile_typst_to_svg_and_json() {

@@ -21,7 +21,8 @@ Commands:
   config                  Display currently active configuration settings and loaded sources
 
 Common Options:
-  -o, --output <file>     Output PDF file path (default: <input>.pdf)
+  -o, --output <file>     Output PDF file path (default: <input>.pdf, or '-' for stdout)
+  -w, --watch             Watch input file and directory for changes and recompile automatically
   --config <file>         Custom configuration YAML path
 
 Documentation Options:
@@ -305,6 +306,162 @@ fn detect_is_slides(fm: &Value, explicit_slides: bool, explicit_pdf: bool) -> bo
     false
 }
 
+fn get_timestamp() -> String {
+    unsafe {
+        let mut now: libc::time_t = 0;
+        libc::time(&mut now);
+        let mut tm: libc::tm = std::mem::zeroed();
+        if !libc::localtime_r(&now, &mut tm).is_null() {
+            format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+        } else {
+            let secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            format!("{:02}:{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60)
+        }
+    }
+}
+
+fn is_relevant_watch_file(path: &std::path::Path, output_path: &std::path::Path) -> bool {
+    if path == output_path {
+        return false;
+    }
+    let file_name = match path.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n,
+        None => return false,
+    };
+    if file_name.starts_with('.') || file_name.ends_with('~') {
+        return false;
+    }
+    let ext = match path.extension().and_then(|e| e.to_str()) {
+        Some(e) => e.to_lowercase(),
+        None => return false,
+    };
+    matches!(
+        ext.as_str(),
+        "md" | "markdown" | "yaml" | "yml" | "typ" | "bib" | "png" | "jpg" | "jpeg" | "svg" | "webp" | "gif"
+    )
+}
+
+fn take_watch_snapshot(
+    input_path: &std::path::Path,
+    output_path: &std::path::Path,
+    doc_dir: Option<&std::path::Path>,
+    custom_config: Option<&std::path::Path>,
+) -> Vec<(PathBuf, std::time::SystemTime, u64)> {
+    let mut list = Vec::new();
+
+    if let Ok(meta) = std::fs::metadata(input_path) {
+        let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        list.push((input_path.to_path_buf(), mtime, meta.len()));
+    }
+
+    if let Some(cfg) = custom_config {
+        if let Ok(meta) = std::fs::metadata(cfg) {
+            let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+            list.push((cfg.to_path_buf(), mtime, meta.len()));
+        }
+    }
+
+    let dir = doc_dir.or_else(|| input_path.parent());
+    if let Some(d) = dir {
+        if let Ok(read_dir) = std::fs::read_dir(d) {
+            for entry in read_dir.flatten() {
+                let path = entry.path();
+                if path != input_path && is_relevant_watch_file(&path, output_path) {
+                    if let Ok(meta) = entry.metadata() {
+                        if meta.is_file() {
+                            let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                            list.push((path, mtime, meta.len()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    list.sort_by(|a, b| a.0.cmp(&b.0));
+    list
+}
+
+fn compile_once(
+    input_path: &std::path::Path,
+    output_path: &std::path::Path,
+    doc_dir: Option<&std::path::Path>,
+    config_data: &config::BotoxConfig,
+    explicit_pdf: bool,
+    explicit_slides: bool,
+    cli_toc: Option<bool>,
+    cli_author: Option<&str>,
+    cli_font: Option<&str>,
+    cli_bibliography: Option<bool>,
+    is_stdin: bool,
+) -> Result<(bool, std::time::Duration), String> {
+    let raw_content = if is_stdin {
+        use std::io::Read;
+        let mut buffer = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buffer)
+            .map_err(|e| format!("Error reading from stdin: {e}"))?;
+        buffer
+    } else {
+        std::fs::read_to_string(input_path)
+            .map_err(|e| format!("Error reading '{}': {e}", input_path.display()))?
+    };
+
+    let (fm, body_md) = extract_frontmatter(&raw_content);
+    let is_slides = detect_is_slides(&fm, explicit_slides, explicit_pdf);
+
+    let doc_config = config_data.document.clone().unwrap_or_default();
+    let slides_config = config_data.slides.clone().unwrap_or_default();
+
+    let lang = fm.get("lang")
+        .and_then(|v| v.as_str())
+        .or_else(|| doc_config.lang.as_deref())
+        .unwrap_or("en");
+    let biblio_title = fm.get("biblio-title")
+        .or_else(|| fm.get("bibliography-title"))
+        .or_else(|| fm.get("references-title"))
+        .and_then(|v| v.as_str());
+
+    let should_enable_bib = if let Some(cli) = cli_bibliography {
+        cli
+    } else if let Some(fm_bib) = fm.get("bibliography")
+        .or_else(|| fm.get("links-as-references"))
+        .or_else(|| fm.get("cite-links"))
+    {
+        match fm_bib {
+            Value::Bool(b) => *b,
+            Value::String(s) => !s.is_empty() && s != "false" && s != "no" && s != "off",
+            _ => false,
+        }
+    } else {
+        doc_config.bibliography.unwrap_or(true)
+    };
+
+    let typst_markup = if is_slides {
+        let body_typst = markdown::markdown_to_typst(body_md, true, should_enable_bib, lang, biblio_title);
+        slides::wrap_slides(&body_typst, &fm, &slides_config, cli_author)
+    } else {
+        let body_typst = markdown::markdown_to_typst(body_md, false, should_enable_bib, lang, biblio_title);
+        document::wrap_document(
+            &body_typst,
+            &fm,
+            &doc_config,
+            cli_toc,
+            cli_author,
+            cli_font,
+        )
+    };
+
+    let start = std::time::Instant::now();
+    let resource_dir = doc_dir;
+    compiler::compile_typst(&typst_markup, output_path, resource_dir)?;
+    let duration = start.elapsed();
+    Ok((is_slides, duration))
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 || args[1] == "-h" || args[1] == "--help" {
@@ -345,6 +502,7 @@ fn main() {
     let mut cli_resource_dir: Option<PathBuf> = None;
     let mut explicit_pdf = false;
     let mut explicit_slides = false;
+    let mut watch_mode = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -360,6 +518,9 @@ fn main() {
             }
             "--slides" => {
                 explicit_slides = true;
+            }
+            "-w" | "--watch" => {
+                watch_mode = true;
             }
             "--toc" => {
                 cli_toc = Some(true);
@@ -431,12 +592,18 @@ fn main() {
         std::process::exit(1);
     }
 
+    if is_stdin && watch_mode {
+        eprintln!("Error: Cannot use watch mode when reading from stdin.");
+        std::process::exit(1);
+    }
+
     let default_output = if is_stdin {
         PathBuf::from("output.pdf")
     } else {
         input_path.with_extension("pdf")
     };
     let output_path = output_file.unwrap_or(default_output);
+    let is_stdout = output_path.as_os_str() == "-";
 
     let doc_dir = cli_resource_dir.or_else(|| {
         if is_stdin {
@@ -447,83 +614,132 @@ fn main() {
     });
 
     let (config_data, _) = config::BotoxConfig::load(custom_config.as_deref(), doc_dir.as_deref());
-    let doc_config = config_data.document.unwrap_or_default();
-    let slides_config = config_data.slides.unwrap_or_default();
 
-    let raw_content = if is_stdin {
-        use std::io::Read;
-        let mut buffer = String::new();
-        match std::io::stdin().read_to_string(&mut buffer) {
-            Ok(_) => buffer,
-            Err(e) => {
-                eprintln!("Error reading from stdin: {e}");
-                std::process::exit(1);
-            }
-        }
-    } else {
-        match std::fs::read_to_string(&input_path) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("Error reading '{}': {e}", input_path.display());
-                std::process::exit(1);
-            }
-        }
-    };
-
-    let (fm, body_md) = extract_frontmatter(&raw_content);
-    let is_slides = detect_is_slides(&fm, explicit_slides, explicit_pdf);
-
-    let lang = fm.get("lang")
-        .and_then(|v| v.as_str())
-        .or_else(|| doc_config.lang.as_deref())
-        .unwrap_or("en");
-    let biblio_title = fm.get("biblio-title")
-        .or_else(|| fm.get("bibliography-title"))
-        .or_else(|| fm.get("references-title"))
-        .and_then(|v| v.as_str());
-
-    let should_enable_bib = if let Some(cli) = cli_bibliography {
-        cli
-    } else if let Some(fm_bib) = fm.get("bibliography")
-        .or_else(|| fm.get("links-as-references"))
-        .or_else(|| fm.get("cite-links"))
-    {
-        match fm_bib {
-            Value::Bool(b) => *b,
-            Value::String(s) => !s.is_empty() && s != "false" && s != "no" && s != "off",
-            _ => false,
-        }
-    } else {
-        doc_config.bibliography.unwrap_or(true)
-    };
-
-    let typst_markup = if is_slides {
-        let body_typst = markdown::markdown_to_typst(body_md, true, should_enable_bib, lang, biblio_title);
-        slides::wrap_slides(&body_typst, &fm, &slides_config)
-    } else {
-        let body_typst = markdown::markdown_to_typst(body_md, false, should_enable_bib, lang, biblio_title);
-        document::wrap_document(
-            &body_typst,
-            &fm,
-            &doc_config,
+    if !watch_mode {
+        match compile_once(
+            &input_path,
+            &output_path,
+            doc_dir.as_deref(),
+            &config_data,
+            explicit_pdf,
+            explicit_slides,
             cli_toc,
             cli_author.as_deref(),
             cli_font.as_deref(),
-        )
-    };
+            cli_bibliography,
+            is_stdin,
+        ) {
+            Ok((is_slides, duration)) => {
+                if !is_stdout {
+                    let mode_str = if is_slides { "Presentation slides" } else { "LaTeX PDF document" };
+                    println!("Compiled {} -> '{}' in {:.2?}", mode_str, output_path.display(), duration);
+                }
+            }
+            Err(e) => {
+                eprintln!("Compilation failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
 
-    let start = std::time::Instant::now();
-    let resource_dir = doc_dir.as_deref();
-    match compiler::compile_typst(&typst_markup, &output_path, resource_dir) {
-        Ok(()) => {
-            let duration = start.elapsed();
+    // Watch mode: compile once, then poll for changes
+    match compile_once(
+        &input_path,
+        &output_path,
+        doc_dir.as_deref(),
+        &config_data,
+        explicit_pdf,
+        explicit_slides,
+        cli_toc,
+        cli_author.as_deref(),
+        cli_font.as_deref(),
+        cli_bibliography,
+        false,
+    ) {
+        Ok((is_slides, duration)) => {
             let mode_str = if is_slides { "Presentation slides" } else { "LaTeX PDF document" };
-            println!("Compiled {} -> '{}' in {:.2?}", mode_str, output_path.display(), duration);
+            if is_stdout {
+                eprintln!("[{}] Compiled {} -> stdout in {:.2?}", get_timestamp(), mode_str, duration);
+            } else {
+                println!("Compiled {} -> '{}' in {:.2?}", mode_str, output_path.display(), duration);
+            }
         }
         Err(e) => {
-            eprintln!("Compilation failed: {e}");
-            std::process::exit(1);
+            eprintln!("[{}] Initial compilation failed: {e}", get_timestamp());
         }
+    }
+
+    let start_time = get_timestamp();
+    if is_stdout {
+        eprintln!("[{start_time}] Watching '{}' for changes (Ctrl+C to stop)...", input_path.display());
+    } else {
+        println!("[{start_time}] Watching '{}' for changes (Ctrl+C to stop)...", input_path.display());
+    }
+
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
+    let _ = ctrlc::set_handler(move || {
+        r.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
+
+    let mut last_snapshot = take_watch_snapshot(&input_path, &output_path, doc_dir.as_deref(), custom_config.as_deref());
+
+    while running.load(std::sync::atomic::Ordering::SeqCst) {
+        for _ in 0..5 {
+            if !running.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if !running.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+
+        let current_snapshot = take_watch_snapshot(&input_path, &output_path, doc_dir.as_deref(), custom_config.as_deref());
+        if current_snapshot != last_snapshot {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let current_snapshot = take_watch_snapshot(&input_path, &output_path, doc_dir.as_deref(), custom_config.as_deref());
+            last_snapshot = current_snapshot;
+
+            let (updated_cfg, _) = config::BotoxConfig::load(custom_config.as_deref(), doc_dir.as_deref());
+
+            match compile_once(
+                &input_path,
+                &output_path,
+                doc_dir.as_deref(),
+                &updated_cfg,
+                explicit_pdf,
+                explicit_slides,
+                cli_toc,
+                cli_author.as_deref(),
+                cli_font.as_deref(),
+                cli_bibliography,
+                false,
+            ) {
+                Ok((is_slides, duration)) => {
+                    let mode_str = if is_slides { "Presentation slides" } else { "LaTeX PDF document" };
+                    let now = get_timestamp();
+                    let target = if is_stdout { "stdout".to_string() } else { format!("'{}'", output_path.display()) };
+                    let msg = format!("[{now}] Recompiled {mode_str} -> {target} in {:.2?}", duration);
+                    if is_stdout {
+                        eprintln!("{msg}");
+                    } else {
+                        println!("{msg}");
+                    }
+                }
+                Err(e) => {
+                    let now = get_timestamp();
+                    eprintln!("[{now}] Compilation failed: {e}");
+                }
+            }
+        }
+    }
+
+    if is_stdout {
+        eprintln!("\nWatch mode stopped.");
+    } else {
+        println!("\nWatch mode stopped.");
     }
 }
 
