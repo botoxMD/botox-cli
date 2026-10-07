@@ -469,17 +469,53 @@ Angle \<stdio.h\>
     #[test]
     fn test_compact_two_column_float() {
         let markup = r#"
-#set page(paper: "a4", margin: (x: 1.8cm, y: 1.8cm), columns: 2, numbering: "1")
-#place(top, float: true, scope: "parent")[
-  #align(center)[#text(size: 16pt, weight: "bold")[My 2-Column Title]]
-  #v(1em)
-]
+#set page(paper: "a4", margin: (x: 1.8cm, y: 1.8cm), numbering: "1")
+#align(center)[#text(size: 18pt, weight: "bold")[Conference Paper Title]]
+#v(1.5em)
+#show: columns.with(2, gutter: 14pt)
 = Section 1
-This is body text in column 1.
+First column body text.
+#colbreak()
+= Section 2
+Second column body text.
 "#;
         let tmp_json = std::env::temp_dir().join("test_botox_2col.json");
         let res = compile_typst(markup, &tmp_json, None);
         assert!(res.is_ok(), "Typst compile error: {:?}", res.err());
+        let json_str = std::fs::read_to_string(&tmp_json).unwrap();
+        let json_val: serde_json::Value = serde_json::from_str(&json_str).expect("Valid JSON");
+        let svg = json_val["pages"][0].as_str().expect("SVG string");
+        let mut found_col1 = false;
+        let mut found_col2 = false;
+        for line in svg.split("<text").skip(1) {
+            if let Some(x_pos) = line.find("x=\"") {
+                let rest = &line[x_pos + 3..];
+                if let Some(quote_end) = rest.find('"') {
+                    if let Ok(x) = rest[..quote_end].parse::<f64>() {
+                        if (x - 51.02).abs() < 5.0 {
+                            found_col1 = true;
+                        } else if x > 280.0 && x < 350.0 {
+                            found_col2 = true;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(found_col1, "Should find text in column 1 (x ~ 51)");
+        assert!(found_col2, "Should find text in column 2 (x ~ 300)");
         let _ = std::fs::remove_file(tmp_json);
+    }
+
+    #[test]
+    fn test_compact_document_with_pagebreak_compilation() {
+        let md = "---\ntitle: Two Column Test\ntheme: compact\n---\n\n# Section 1\nFirst column text\n\n\\newpage\n\n# Section 2\nSecond column text\n";
+        let (fm, body_md) = crate::extract_frontmatter(md);
+        let body_typst = crate::markdown::markdown_to_typst(&body_md, false, false, "en", None);
+        let config = crate::config::DocumentConfig::defaults();
+        let typst_markup = crate::document::wrap_document(&body_typst, &fm, &config, None, None, None, None);
+        let tmp_pdf = std::env::temp_dir().join("test_botox_2col_pagebreak.pdf");
+        let res = compile_typst(&typst_markup, &tmp_pdf, None);
+        assert!(res.is_ok(), "Typst compile error: {:?}", res.err());
+        let _ = std::fs::remove_file(tmp_pdf);
     }
 }

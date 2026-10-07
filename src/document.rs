@@ -115,6 +115,7 @@ pub fn wrap_document(
 ) -> String {
     let mut out = String::new();
 
+    let theme_explicit = cli_theme.is_some() || fm.get("theme").is_some();
     let theme_raw = cli_theme
         .or_else(|| fm.get("theme").and_then(|v| v.as_str()))
         .or_else(|| config.theme.as_deref())
@@ -137,7 +138,7 @@ pub fn wrap_document(
         .unwrap_or("a4");
 
     let (def_mx, def_my) = doc_theme.default_margins();
-    let (margin_x, margin_y) = parse_margins(fm, config, def_mx, def_my);
+    let (margin_x, margin_y) = parse_margins(fm, config, def_mx, def_my, theme_explicit);
 
     let classoption = fm.get("classoption").and_then(|v| {
         if let Some(s) = v.as_str() {
@@ -153,11 +154,17 @@ pub fn wrap_document(
         .and_then(|v| v.as_u64())
         .map(|n| n as usize)
         .or_else(|| if classoption.contains("twocolumn") { Some(2) } else { None })
-        .or(config.columns)
+        .or_else(|| {
+            if theme_explicit {
+                Some(doc_theme.default_columns())
+            } else {
+                config.columns.or_else(|| Some(doc_theme.default_columns()))
+            }
+        })
         .unwrap_or_else(|| doc_theme.default_columns());
 
     out.push_str(&format!(
-        "#set page(\n  paper: \"{papersize}\",\n  margin: (x: {margin_x}, y: {margin_y}),\n  columns: {columns},\n  numbering: \"1\",\n)\n"
+        "#set page(\n  paper: \"{papersize}\",\n  margin: (x: {margin_x}, y: {margin_y}),\n  numbering: \"1\",\n)\n"
     ));
 
     // 2. Typography
@@ -168,7 +175,13 @@ pub fn wrap_document(
 
     let font_raw = cli_font
         .or_else(|| fm.get("mainfont").and_then(|v| v.as_str()))
-        .or_else(|| config.mainfont.as_deref())
+        .or_else(|| {
+            if theme_explicit {
+                Some(doc_theme.default_font())
+            } else {
+                config.mainfont.as_deref().or_else(|| Some(doc_theme.default_font()))
+            }
+        })
         .unwrap_or_else(|| doc_theme.default_font());
 
     let font_family = format_font_stack(font_raw);
@@ -198,7 +211,13 @@ pub fn wrap_document(
                 None
             }
         })
-        .or_else(|| config.fontsize.clone())
+        .or_else(|| {
+            if theme_explicit {
+                Some(doc_theme.default_fontsize().to_string())
+            } else {
+                config.fontsize.clone().or_else(|| Some(doc_theme.default_fontsize().to_string()))
+            }
+        })
         .unwrap_or_else(|| doc_theme.default_fontsize().to_string());
 
     if let Some(text_color) = doc_theme.default_text_color() {
@@ -595,9 +614,26 @@ pub fn wrap_document(
         date_str.as_deref(),
         abstract_text,
         keywords_str.as_deref(),
-        columns,
     );
     out.push_str(&rendered_header);
+
+    if columns > 1 {
+        let gutter = fm.get("column-gutter")
+            .or_else(|| fm.get("column_gutter"))
+            .and_then(|v| {
+                if let Some(s) = v.as_str() {
+                    Some(s.to_string())
+                } else if let Some(n) = v.as_i64() {
+                    Some(format!("{n}pt"))
+                } else if let Some(n) = v.as_f64() {
+                    Some(format!("{n}pt"))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "14pt".to_string());
+        out.push_str(&format!("#show: columns.with({columns}, gutter: {gutter})\n\n"));
+    }
 
     // 4. Table of Contents
     let should_include_toc = if let Some(cli) = cli_toc {
@@ -651,9 +687,24 @@ pub fn wrap_document(
     }
 
     // 5. Body
-    out.push_str(body_typst);
+    let processed_body = sanitize_column_pagebreaks(body_typst, columns);
+    out.push_str(&processed_body);
 
     out
+}
+
+pub fn sanitize_column_pagebreaks(content: &str, columns: usize) -> String {
+    if columns > 1 {
+        content
+            .replace("#pagebreak()", "#colbreak()")
+            .replace("#pagebreak(weak: true)", "#colbreak(weak: true)")
+            .replace("#pagebreak(weak: false)", "#colbreak(weak: false)")
+    } else {
+        content
+            .replace("#colbreak()", "#pagebreak()")
+            .replace("#colbreak(weak: true)", "#pagebreak(weak: true)")
+            .replace("#colbreak(weak: false)", "#pagebreak(weak: false)")
+    }
 }
 
 fn render_date_value(d: &str) -> String {
@@ -674,7 +725,6 @@ fn render_title_and_abstract(
     date_str: Option<&str>,
     abstract_text: Option<&str>,
     keywords_str: Option<&str>,
-    columns: usize,
 ) -> String {
     if title.is_none() && authors.is_empty() && abstract_text.is_none() {
         return String::new();
@@ -880,11 +930,7 @@ fn render_title_and_abstract(
         }
     }
 
-    if doc_theme == DocumentTheme::Compact && columns > 1 {
-        format!("#place(top, float: true, scope: \"parent\")[\n{b}]\n")
-    } else {
-        b
-    }
+    b
 }
 
 fn format_font_stack(font_raw: &str) -> String {
@@ -905,7 +951,7 @@ fn format_font_stack(font_raw: &str) -> String {
     }
 }
 
-fn parse_margins(fm: &Value, config: &DocumentConfig, default_x: &str, default_y: &str) -> (String, String) {
+fn parse_margins(fm: &Value, config: &DocumentConfig, default_x: &str, default_y: &str, theme_explicit: bool) -> (String, String) {
     if let Some(fm_m) = fm.get("margin") {
         if let Some(s) = fm_m.as_str() {
             return (s.to_string(), s.to_string());
@@ -948,17 +994,19 @@ fn parse_margins(fm: &Value, config: &DocumentConfig, default_x: &str, default_y
         }
     }
 
-    if let Some(ref m) = config.margin {
-        match m {
-            MarginConfig::Uniform(s) => (s.clone(), s.clone()),
-            MarginConfig::Axes { x, y } => (
-                x.clone().unwrap_or_else(|| default_x.to_string()),
-                y.clone().unwrap_or_else(|| default_y.to_string()),
-            ),
+    if !theme_explicit {
+        if let Some(ref m) = config.margin {
+            return match m {
+                MarginConfig::Uniform(s) => (s.clone(), s.clone()),
+                MarginConfig::Axes { x, y } => (
+                    x.clone().unwrap_or_else(|| default_x.to_string()),
+                    y.clone().unwrap_or_else(|| default_y.to_string()),
+                ),
+            };
         }
-    } else {
-        (default_x.to_string(), default_y.to_string())
     }
+
+    (default_x.to_string(), default_y.to_string())
 }
 
 pub fn escape_typst_string(s: &str) -> String {
@@ -1184,7 +1232,7 @@ title: "Config Fallback"
         let doc_acad = wrap_document("= Heading\nContent", &empty_fm, &default_cfg, None, None, None, None);
         assert!(doc_acad.contains("New Computer Modern"));
         assert!(doc_acad.contains("margin: (x: 2.5cm, y: 2.5cm)"));
-        assert!(doc_acad.contains("columns: 1"));
+        assert!(!doc_acad.contains("#show: columns.with"));
 
         // 2. Frontmatter theme: modern
         let modern_fm: Value = serde_yaml::from_str("theme: modern\ntitle: Modern Doc").unwrap();
@@ -1200,12 +1248,12 @@ title: "Config Fallback"
         assert!(doc_cli_tech.contains("margin: (x: 2cm, y: 2cm)"));
         assert!(doc_cli_tech.contains("rgb(\"#0f766e\")"));
 
-        // 4. Compact theme (2 columns with place float header)
+        // 4. Compact theme (2 columns with gutter)
         let compact_fm: Value = serde_yaml::from_str("theme: compact\ntitle: Conference Paper").unwrap();
         let doc_compact = wrap_document("= Section\nBody text", &compact_fm, &default_cfg, None, None, None, None);
-        assert!(doc_compact.contains("columns: 2"));
+        assert!(doc_compact.contains("#show: columns.with(2, gutter: 14pt)"));
         assert!(doc_compact.contains("margin: (x: 1.8cm, y: 1.8cm)"));
-        assert!(doc_compact.contains("#place(top, float: true, scope: \"parent\")"));
+        assert!(!doc_compact.contains("#place(top, float: true, scope: \"parent\")"));
 
         // 5. Minimal theme (unnumbered Swiss typography, 3cm margin)
         let minimal_fm: Value = serde_yaml::from_str("theme: minimal\ntitle: Swiss Typo").unwrap();
@@ -1219,5 +1267,28 @@ title: "Config Fallback"
         assert!(doc_elegant.contains("Linux Libertine"));
         assert!(doc_elegant.contains("margin: (x: 2.8cm, y: 2.8cm)"));
         assert!(doc_elegant.contains("rgb(\"#1c1917\")"));
+    }
+
+    #[test]
+    fn test_custom_column_gutter() {
+        let default_cfg = DocumentConfig::defaults();
+        let fm: Value = serde_yaml::from_str("columns: 3\ncolumn-gutter: 20pt\ntitle: Tri-Column").unwrap();
+        let doc = wrap_document("= Section\nBody", &fm, &default_cfg, None, None, None, None);
+        assert!(doc.contains("#show: columns.with(3, gutter: 20pt)"));
+    }
+
+    #[test]
+    fn test_column_pagebreak_sanitization() {
+        let default_cfg = DocumentConfig::defaults();
+        let fm: Value = serde_yaml::from_str("theme: compact\ntitle: Two Column").unwrap();
+        let doc = wrap_document("= Col 1\n#pagebreak()\n= Col 2", &fm, &default_cfg, None, None, None, None);
+        assert!(!doc.contains("#pagebreak()"));
+        assert!(doc.contains("#colbreak()"));
+
+        // Single column converts colbreak to pagebreak
+        let fm_single: Value = serde_yaml::from_str("columns: 1").unwrap();
+        let doc_single = wrap_document("= Sec 1\n#colbreak()\n= Sec 2", &fm_single, &default_cfg, None, None, None, None);
+        assert!(!doc_single.contains("#colbreak()"));
+        assert!(doc_single.contains("#pagebreak()"));
     }
 }

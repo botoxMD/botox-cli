@@ -584,6 +584,7 @@ fn convert_cross_references(s: &str) -> String {
 pub fn escape_typst_text(s: &str) -> String {
     let mut s = s.to_string();
     let has_newpage = s.contains(r"\newpage") || s.contains(r"\pagebreak") || s.contains(r"\clearpage");
+    let has_colbreak = s.contains(r"\columnbreak") || s.contains(r"\colbreak");
     let has_toc = s.contains(r"\tableofcontents");
     let has_lof = s.contains(r"\listoffigures");
     let has_lot = s.contains(r"\listoftables");
@@ -592,6 +593,10 @@ pub fn escape_typst_text(s: &str) -> String {
         s = s.replace(r"\newpage", "BOTOXCMDNEWPAGEBOTOX")
              .replace(r"\pagebreak", "BOTOXCMDNEWPAGEBOTOX")
              .replace(r"\clearpage", "BOTOXCMDNEWPAGEBOTOX");
+    }
+    if has_colbreak {
+        s = s.replace(r"\columnbreak", "BOTOXCMDCOLBREAKBOTOX")
+             .replace(r"\colbreak", "BOTOXCMDCOLBREAKBOTOX");
     }
     if has_toc {
         s = s.replace(r"\tableofcontents", "BOTOXCMDTOCBOTOX");
@@ -633,7 +638,7 @@ pub fn escape_typst_text(s: &str) -> String {
                 i += 8;
                 cmd_bracket_depth += 1;
                 continue;
-            } else if rest.starts_with("#pagebreak()") || rest.starts_with("#outline(") || rest.starts_with("#botox_callout(") || rest.starts_with("#heading(") || rest.starts_with("#figure(") {
+            } else if rest.starts_with("#pagebreak()") || rest.starts_with("#colbreak()") || rest.starts_with("#outline(") || rest.starts_with("#botox_callout(") || rest.starts_with("#heading(") || rest.starts_with("#figure(") {
                 out.push('#');
                 i += 1;
                 continue;
@@ -775,6 +780,9 @@ pub fn escape_typst_text(s: &str) -> String {
 
     if has_newpage {
         final_out = final_out.replace("BOTOXCMDNEWPAGEBOTOX", "\n#pagebreak()\n");
+    }
+    if has_colbreak {
+        final_out = final_out.replace("BOTOXCMDCOLBREAKBOTOX", "\n#colbreak()\n");
     }
     if has_toc {
         final_out = final_out.replace("BOTOXCMDTOCBOTOX", "\n#outline(depth: 3)\n");
@@ -1283,6 +1291,8 @@ pub fn markdown_to_typst(
                     typst.push_str("\n]\n\n");
                 } else if html.contains("pagebreak") || html.contains("page-break") || html.contains("newpage") {
                     typst.push_str("\n#pagebreak()\n\n");
+                } else if html.contains("colbreak") || html.contains("columnbreak") || html.contains("column-break") {
+                    typst.push_str("\n#colbreak()\n\n");
                 } else if html.trim().starts_with("<!--") && html.trim().ends_with("-->") {
                     // Raw HTML comment: ignore
                 } else {
@@ -1566,9 +1576,10 @@ Check [link](https://example.com/api?q="quoted") here.
 
     #[test]
     fn test_pagebreaks() {
-        let md = "Before\n\n\\newpage\n\nAfter";
+        let md = "Before\n\n\\newpage\n\nMiddle\n\n\\columnbreak\n\nAfter";
         let typst = markdown_to_typst(md, false, false, "en", None);
         assert!(typst.contains("#pagebreak()"));
+        assert!(typst.contains("#colbreak()"));
     }
 
     #[test]
