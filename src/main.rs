@@ -262,10 +262,16 @@ Check out the [Botox Documentation](https://github.com) for more examples.
 }
 
 fn extract_frontmatter(content: &str) -> (Value, &str) {
-    if content.starts_with("---") {
-        let parts: Vec<&str> = content.splitn(3, "---").collect();
+    let trimmed = content.trim_start();
+    if trimmed.starts_with("---") {
+        let parts: Vec<&str> = trimmed.splitn(3, "---").collect();
         if parts.len() >= 3 {
             if let Ok(val) = serde_yaml::from_str::<Value>(parts[1]) {
+                return (val, parts[2].trim_start());
+            }
+            // Fallback: sanitize unquoted \today which can cause YAML parser errors
+            let sanitized = parts[1].replace(r"\today", r#""\today""#);
+            if let Ok(val) = serde_yaml::from_str::<Value>(&sanitized) {
                 return (val, parts[2].trim_start());
             }
             return (Value::Null, parts[2].trim_start());
@@ -274,7 +280,13 @@ fn extract_frontmatter(content: &str) -> (Value, &str) {
     (Value::Null, content)
 }
 
-fn detect_is_slides(fm: &Value, explicit_slides: bool, explicit_pdf: bool) -> bool {
+fn detect_is_slides(
+    fm: &Value,
+    raw_content: &str,
+    input_path: &std::path::Path,
+    explicit_slides: bool,
+    explicit_pdf: bool,
+) -> bool {
     if explicit_slides {
         return true;
     }
@@ -282,27 +294,73 @@ fn detect_is_slides(fm: &Value, explicit_slides: bool, explicit_pdf: bool) -> bo
         return false;
     }
 
+    // 1. Check parsed YAML frontmatter mapping
     if let Some(map) = fm.as_mapping() {
-        let marp_key = Value::String("marp".to_string());
-        if let Some(v) = map.get(&marp_key) {
-            if v.as_bool() == Some(true) {
-                return true;
-            }
-        }
-
-        let theme_key = Value::String("theme".to_string());
-        if let Some(v) = map.get(&theme_key) {
-            if let Some(s) = v.as_str() {
-                if matches!(s.to_lowercase().as_str(), "gaia" | "uncover" | "default" | "bespoke") {
+        for (k, v) in map {
+            if let Some(key_str) = k.as_str() {
+                let key_lower = key_str.to_lowercase();
+                if key_lower == "marp" || key_lower == "slides" || key_lower == "slide" || key_lower == "presentation" {
+                    if v.as_bool() == Some(true) || v.as_str().map(|s| s.eq_ignore_ascii_case("true")).unwrap_or(false) {
+                        return true;
+                    }
+                }
+                if key_lower == "type" || key_lower == "format" || key_lower == "document-type" {
+                    if let Some(s) = v.as_str() {
+                        let s_lower = s.to_lowercase();
+                        if s_lower == "slides" || s_lower == "slide" || s_lower == "presentation" || s_lower == "deck" {
+                            return true;
+                        }
+                        if s_lower == "document" || s_lower == "article" || s_lower == "paper" || s_lower == "report" {
+                            return false;
+                        }
+                    }
+                }
+                if key_lower == "theme" {
+                    if let Some(s) = v.as_str() {
+                        if matches!(s.to_lowercase().as_str(), "gaia" | "uncover" | "nord" | "dark" | "bespoke") {
+                            return true;
+                        }
+                    }
+                }
+                if key_lower == "_class" {
                     return true;
                 }
             }
         }
+    }
 
-        let class_key = Value::String("_class".to_string());
-        if map.contains_key(&class_key) {
-            return true;
+    // 2. Direct text scan fallback across frontmatter in case YAML parsing failed
+    let trimmed = raw_content.trim_start();
+    if trimmed.starts_with("---") {
+        if let Some(end_idx) = trimmed[3..].find("---") {
+            let header = &trimmed[3..3 + end_idx];
+            for line in header.lines() {
+                let l = line.trim();
+                let lower = l.to_lowercase();
+                if lower.starts_with("marp:") && lower.contains("true") {
+                    return true;
+                }
+                if lower.starts_with("slides:") && lower.contains("true") {
+                    return true;
+                }
+                if lower.starts_with("presentation:") && lower.contains("true") {
+                    return true;
+                }
+                if lower.starts_with("type:") && (lower.contains("slide") || lower.contains("deck") || lower.contains("presentation")) {
+                    return true;
+                }
+            }
         }
+    }
+
+    // 3. Filename convention fallback (e.g. slides.md, deck.md, presentation.md)
+    let file_name = input_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if file_name.contains("slide") || file_name.contains("deck") || file_name.contains("presentation") {
+        return true;
     }
 
     false
@@ -414,7 +472,7 @@ fn compile_once(
     };
 
     let (fm, body_md) = extract_frontmatter(&raw_content);
-    let is_slides = detect_is_slides(&fm, explicit_slides, explicit_pdf);
+    let is_slides = detect_is_slides(&fm, &raw_content, input_path, explicit_slides, explicit_pdf);
 
     let doc_config = config_data.document.clone().unwrap_or_default();
     let slides_config = config_data.slides.clone().unwrap_or_default();
