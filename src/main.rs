@@ -27,6 +27,7 @@ Common Options:
 
 Documentation Options:
   --pdf                   Force PDF documentation mode
+  --theme <theme>         Document theme: academic (default), modern, elegant, technical, compact, minimal
   --toc                   Generate automatic Table of Contents
   --no-toc                Disable Table of Contents
   --author <name>         Author name (overrides frontmatter & config)
@@ -37,6 +38,7 @@ Documentation Options:
 
 Slide Options:
   --slides                Force presentation slide deck mode
+  --theme <theme>         Slide theme: default, academic, dark, nord
 "#);
 }
 
@@ -396,6 +398,7 @@ fn compile_once(
     cli_author: Option<&str>,
     cli_font: Option<&str>,
     cli_bibliography: Option<bool>,
+    cli_theme: Option<&str>,
     is_stdin: bool,
 ) -> Result<(bool, std::time::Duration), String> {
     let raw_content = if is_stdin {
@@ -442,7 +445,7 @@ fn compile_once(
 
     let typst_markup = if is_slides {
         let body_typst = markdown::markdown_to_typst(body_md, true, should_enable_bib, lang, biblio_title);
-        slides::wrap_slides(&body_typst, &fm, &slides_config, cli_author)
+        slides::wrap_slides(&body_typst, &fm, &slides_config, cli_author, cli_theme)
     } else {
         let body_typst = markdown::markdown_to_typst(body_md, false, should_enable_bib, lang, biblio_title);
         document::wrap_document(
@@ -452,6 +455,7 @@ fn compile_once(
             cli_toc,
             cli_author,
             cli_font,
+            cli_theme,
         )
     };
 
@@ -498,6 +502,7 @@ fn main() {
     let mut cli_toc: Option<bool> = None;
     let mut cli_author: Option<String> = None;
     let mut cli_font: Option<String> = None;
+    let mut cli_theme: Option<String> = None;
     let mut cli_bibliography: Option<bool> = None;
     let mut cli_resource_dir: Option<PathBuf> = None;
     let mut explicit_pdf = false;
@@ -533,6 +538,12 @@ fn main() {
             }
             "--no-bib" | "--no-bibliography" => {
                 cli_bibliography = Some(false);
+            }
+            "--theme" => {
+                i += 1;
+                if i < args.len() {
+                    cli_theme = Some(args[i].clone());
+                }
             }
             "-o" | "--output" => {
                 i += 1;
@@ -627,6 +638,7 @@ fn main() {
             cli_author.as_deref(),
             cli_font.as_deref(),
             cli_bibliography,
+            cli_theme.as_deref(),
             is_stdin,
         ) {
             Ok((is_slides, duration)) => {
@@ -655,6 +667,7 @@ fn main() {
         cli_author.as_deref(),
         cli_font.as_deref(),
         cli_bibliography,
+        cli_theme.as_deref(),
         false,
     ) {
         Ok((is_slides, duration)) => {
@@ -715,6 +728,7 @@ fn main() {
                 cli_author.as_deref(),
                 cli_font.as_deref(),
                 cli_bibliography,
+                cli_theme.as_deref(),
                 false,
             ) {
                 Ok((is_slides, duration)) => {

@@ -6,6 +6,7 @@ pub fn wrap_slides(
     fm: &Value,
     config: &SlidesConfig,
     cli_author: Option<&str>,
+    cli_theme: Option<&str>,
 ) -> String {
     let mut out = String::new();
 
@@ -27,8 +28,8 @@ pub fn wrap_slides(
         out.push_str(&doc_meta);
     }
 
-    let theme = fm.get("theme")
-        .and_then(|v| v.as_str())
+    let theme = cli_theme
+        .or_else(|| fm.get("theme").and_then(|v| v.as_str()))
         .or_else(|| config.theme.as_deref())
         .unwrap_or("default");
 
@@ -181,25 +182,29 @@ mod tests {
         // 1. Neither folder nor file defines theme -> built-in default ("default" -> fill #f8fafc)
         let default_cfg = SlidesConfig::defaults();
         let empty_fm = serde_yaml::from_str("{}").unwrap();
-        let typst1 = wrap_slides("= Title Slide", &empty_fm, &default_cfg, None);
+        let typst1 = wrap_slides("= Title Slide", &empty_fm, &default_cfg, None, None);
         assert!(typst1.contains("rgb(\"#f8fafc\")"), "Should take built-in default background");
 
         // 2. Folder defines theme: academic, file defines nothing -> takes folder's "academic" (#ffffff)
         let mut folder_cfg = SlidesConfig::defaults();
         folder_cfg.theme = Some("academic".to_string());
-        let typst2 = wrap_slides("= Title Slide", &empty_fm, &folder_cfg, None);
+        let typst2 = wrap_slides("= Title Slide", &empty_fm, &folder_cfg, None, None);
         assert!(typst2.contains("rgb(\"#ffffff\")"), "Should take folder's academic background");
 
         // 3. Folder defines theme: academic, but file defines theme: nord -> takes file's "nord" (#2e3440)
         let nord_fm = serde_yaml::from_str("theme: nord").unwrap();
-        let typst3 = wrap_slides("= Title Slide", &nord_fm, &folder_cfg, None);
+        let typst3 = wrap_slides("= Title Slide", &nord_fm, &folder_cfg, None, None);
         assert!(typst3.contains("rgb(\"#2e3440\")"), "File's nord theme should override folder's academic theme");
 
         // 4. Folder defines theme: academic, file overrides color only -> theme is still academic, text is overridden
         let custom_fm = serde_yaml::from_str("color: \"#123456\"").unwrap();
-        let typst4 = wrap_slides("= Title Slide", &custom_fm, &folder_cfg, None);
+        let typst4 = wrap_slides("= Title Slide", &custom_fm, &folder_cfg, None, None);
         assert!(typst4.contains("rgb(\"#ffffff\")"), "Should keep folder's academic background");
         assert!(typst4.contains("rgb(\"#123456\")"), "Should take file's custom text color");
+
+        // 5. CLI theme overrides everything
+        let typst5 = wrap_slides("= Title Slide", &nord_fm, &folder_cfg, None, Some("dark"));
+        assert!(typst5.contains("rgb(\"#0f172a\")"), "CLI dark theme should override everything");
     }
 
     #[test]
@@ -212,19 +217,19 @@ title: "AI Operating Systems"
 author: "Minus"
 date: "2026-10-07"
 "#).unwrap();
-        let typst = wrap_slides("= Slide 1\nContent", &fm, &default_cfg, None);
+        let typst = wrap_slides("= Slide 1\nContent", &fm, &default_cfg, None, None);
         assert!(typst.contains(r#"#set document(title: "AI Operating Systems", author: "Minus", date: datetime(year: 2026, month: 10, day: 7))"#));
 
         // 2. Title from first slide H1 when absent in frontmatter
         let empty_fm: Value = serde_yaml::from_str("{}").unwrap();
-        let typst2 = wrap_slides("= First Slide Heading\nBody text", &empty_fm, &default_cfg, Some("CLI Presenter"));
+        let typst2 = wrap_slides("= First Slide Heading\nBody text", &empty_fm, &default_cfg, Some("CLI Presenter"), None);
         assert!(typst2.contains(r#"#set document(title: "First Slide Heading", author: "CLI Presenter")"#));
 
         // 3. Config author fallback
         let mut cfg_with_author = SlidesConfig::defaults();
         cfg_with_author.author = Some("Slides Config Author".to_string());
         let fm_title_only: Value = serde_yaml::from_str("title: Deck").unwrap();
-        let typst3 = wrap_slides("Body", &fm_title_only, &cfg_with_author, None);
+        let typst3 = wrap_slides("Body", &fm_title_only, &cfg_with_author, None, None);
         assert!(typst3.contains(r#"#set document(title: "Deck", author: "Slides Config Author")"#));
     }
 }

@@ -465,4 +465,21 @@ Angle \<stdio.h\>
         assert!(res.is_ok(), "Typst compile error: {:?}", res.err());
         let _ = std::fs::remove_file(tmp_json);
     }
+
+    #[test]
+    fn test_compact_two_column_float() {
+        let markup = r#"
+#set page(paper: "a4", margin: (x: 1.8cm, y: 1.8cm), columns: 2, numbering: "1")
+#place(top, float: true, scope: "parent")[
+  #align(center)[#text(size: 16pt, weight: "bold")[My 2-Column Title]]
+  #v(1em)
+]
+= Section 1
+This is body text in column 1.
+"#;
+        let tmp_json = std::env::temp_dir().join("test_botox_2col.json");
+        let res = compile_typst(markup, &tmp_json, None);
+        assert!(res.is_ok(), "Typst compile error: {:?}", res.err());
+        let _ = std::fs::remove_file(tmp_json);
+    }
 }

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DocumentConfig {
+    pub theme: Option<String>,
     pub author: Option<String>,
     pub affiliation: Option<String>,
     pub fontsize: Option<String>,
@@ -30,29 +31,28 @@ impl Default for DocumentConfig {
 impl DocumentConfig {
     pub fn defaults() -> Self {
         Self {
+            theme: Some("academic".to_string()),
             author: None,
             affiliation: None,
-            fontsize: Some("11pt".to_string()),
-            mainfont: Some("New Computer Modern".to_string()),
+            fontsize: None,
+            mainfont: None,
             mathfont: Some("New Computer Modern Math".to_string()),
             monofont: Some("DejaVu Sans Mono".to_string()),
             papersize: Some("a4".to_string()),
-            columns: Some(1),
-            section_numbering: Some(true),
+            columns: None,
+            section_numbering: None,
             toc: Some(true),
             toc_depth: Some(3),
             toc_title: None,
-            margin: Some(MarginConfig::Axes {
-                x: Some("2.5cm".to_string()),
-                y: Some("2.5cm".to_string()),
-            }),
+            margin: None,
             bibliography: Some(true),
             lang: Some("en".to_string()),
-            linkcolor: Some("#0284c7".to_string()),
+            linkcolor: None,
         }
     }
 
     pub fn merge_with(&mut self, other: &Self) {
+        if other.theme.is_some() { self.theme = other.theme.clone(); }
         if other.author.is_some() { self.author = other.author.clone(); }
         if other.affiliation.is_some() { self.affiliation = other.affiliation.clone(); }
         if other.fontsize.is_some() { self.fontsize = other.fontsize.clone(); }
@@ -250,8 +250,7 @@ mod tests {
         assert_eq!(slides.paginate, Some(true));
 
         let doc = cfg.document.expect("doc config");
-        assert_eq!(doc.fontsize.as_deref(), Some("11pt"));
-        assert_eq!(doc.mainfont.as_deref(), Some("New Computer Modern"));
+        assert_eq!(doc.theme.as_deref(), Some("academic"));
         assert_eq!(doc.papersize.as_deref(), Some("a4"));
     }
 
@@ -262,6 +261,7 @@ mod tests {
 slides:
   theme: "academic"
 document:
+  theme: "modern"
   fontsize: "12pt"
   mainfont: "Times New Roman"
 "#;
@@ -277,6 +277,7 @@ document:
 
         let doc = base.document.expect("doc config");
         // Overridden
+        assert_eq!(doc.theme.as_deref(), Some("modern"));
         assert_eq!(doc.fontsize.as_deref(), Some("12pt"));
         assert_eq!(doc.mainfont.as_deref(), Some("Times New Roman"));
         // Preserved default
