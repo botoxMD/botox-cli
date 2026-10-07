@@ -51,11 +51,13 @@ pub struct BotoxHeadingInfo {
     pub y_ratio: f64,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct BotoxPagesOutput {
     pub num_pages: usize,
     pub pages: Vec<String>,
     pub headings: Vec<BotoxHeadingInfo>,
+    #[serde(default)]
+    pub is_slides: bool,
 }
 
 static EMBEDDED_FONTS: std::sync::LazyLock<Vec<typst::text::Font>> = std::sync::LazyLock::new(|| {
@@ -356,10 +358,15 @@ pub fn compile_typst(
                 );
             }
 
+            let is_slides = doc.pages().first().map(|p| {
+                p.frame.width().to_pt() > p.frame.height().to_pt()
+            }).unwrap_or(false);
+
             let output_struct = BotoxPagesOutput {
                 num_pages: pages.len(),
                 pages,
                 headings,
+                is_slides,
             };
             let json_str = serde_json::to_string(&output_struct)
                 .map_err(|e| format!("Failed to serialize pages to JSON: {e}"))?;

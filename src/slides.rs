@@ -37,6 +37,8 @@ pub fn wrap_slides(
         "dark" => ("#0f172a", "#f8fafc"),
         "nord" => ("#2e3440", "#eceff4"),
         "academic" => ("#ffffff", "#1a1a1a"),
+        "gaia" => ("#fbfbf8", "#333333"),
+        "uncover" => ("#fafafa", "#0f172a"),
         _ => ("#f8fafc", "#0f172a"),
     };
 
@@ -64,10 +66,14 @@ pub fn wrap_slides(
 
     let heading_color = match theme {
         "dark" | "nord" => "#f8fafc",
+        "gaia" => "#903020",
+        "uncover" => "#0284c7",
         _ => "#0f172a",
     };
     let muted_color = match theme {
         "dark" | "nord" => "#94a3b8",
+        "gaia" => "#85756c",
+        "uncover" => "#64748b",
         _ => "#475569",
     };
 
