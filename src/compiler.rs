@@ -58,6 +58,8 @@ pub struct BotoxPagesOutput {
     pub headings: Vec<BotoxHeadingInfo>,
     #[serde(default)]
     pub is_slides: bool,
+    #[serde(default)]
+    pub pause_indices: Vec<usize>,
 }
 
 static EMBEDDED_FONTS: std::sync::LazyLock<Vec<typst::text::Font>> = std::sync::LazyLock::new(|| {
@@ -229,6 +231,25 @@ pub fn compile_typst(
         out
     }
 
+    fn frame_has_pause_step(frame: &typst_library::layout::Frame) -> bool {
+        for (_, item) in frame.items() {
+            match item {
+                typst_library::layout::FrameItem::Text(text_item) => {
+                    if text_item.text.contains("botox-pause-step") {
+                        return true;
+                    }
+                }
+                typst_library::layout::FrameItem::Group(group) => {
+                    if frame_has_pause_step(&group.frame) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     fn extract_text_layer(
         frame: &typst_library::layout::Frame,
         parent_ts: typst_library::layout::Transform,
@@ -239,7 +260,7 @@ pub fn compile_typst(
             match item {
                 typst_library::layout::FrameItem::Text(text_item) => {
                     let text = text_item.text.as_str();
-                    if text.trim().is_empty() {
+                    if text.trim().is_empty() || text.contains("botox-pause-step") {
                         continue;
                     }
                     let x = item_ts.tx.to_pt();
@@ -340,11 +361,23 @@ pub fn compile_typst(
         }
         "json" => {
             let svg_opts = typst_svg::SvgOptions::default();
-            let pages: Vec<String> = doc
-                .pages()
-                .iter()
-                .map(|p| inject_text_layer(typst_svg::svg(p, &svg_opts), &p.frame))
-                .collect();
+            let mut pause_indices = Vec::new();
+            let mut pages: Vec<String> = Vec::with_capacity(doc.pages().len());
+
+            for (page_idx, p) in doc.pages().iter().enumerate() {
+                let is_pause = frame_has_pause_step(&p.frame);
+                if is_pause {
+                    pause_indices.push(page_idx);
+                }
+                let mut svg = inject_text_layer(typst_svg::svg(p, &svg_opts), &p.frame);
+                if is_pause {
+                    if let Some(pos) = svg.find("<svg") {
+                        let insert_pos = pos + 4;
+                        svg.insert_str(insert_pos, r#" data-pause-step="true" class="pause-step""#);
+                    }
+                }
+                pages.push(svg);
+            }
 
             let mut headings = Vec::new();
             for (page_idx, page) in doc.pages().iter().enumerate() {
@@ -367,6 +400,7 @@ pub fn compile_typst(
                 pages,
                 headings,
                 is_slides,
+                pause_indices,
             };
             let json_str = serde_json::to_string(&output_struct)
                 .map_err(|e| format!("Failed to serialize pages to JSON: {e}"))?;
@@ -1024,5 +1058,19 @@ Second column body text.
         let res = compile_typst(&typst_markup, &tmp_pdf, None);
         assert!(res.is_ok(), "Typst compile error: {:?}", res.err());
         let _ = std::fs::remove_file(tmp_pdf);
+    }
+
+    #[test]
+    fn test_pause_step_tagging_in_json() {
+        let markup = "= Slide 1\n#place(top + left)[#text(size: 0.001pt, fill: rgb(0, 0, 0, 0))[botox-pause-step]]\n#pagebreak()\n= Slide 1 Complete";
+        let tmp_json = std::env::temp_dir().join("test_pause_tag.json");
+        assert!(compile_typst(markup, &tmp_json, None).is_ok());
+        let json_str = std::fs::read_to_string(&tmp_json).expect("Read JSON");
+        let parsed: BotoxPagesOutput = serde_json::from_str(&json_str).expect("Valid JSON");
+        assert_eq!(parsed.num_pages, 2);
+        assert_eq!(parsed.pause_indices, vec![0]);
+        assert!(parsed.pages[0].contains("data-pause-step=\"true\""));
+        assert!(!parsed.pages[1].contains("data-pause-step=\"true\""));
+        let _ = std::fs::remove_file(tmp_json);
     }
 }

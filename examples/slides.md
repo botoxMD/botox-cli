@@ -2,8 +2,7 @@
 marp: true
 title: "Next-Generation Systems with Botox"
 author: "Systems Architecture Group"
-date: \today
-theme: default
+theme: gaia
 paginate: true
 ---
 

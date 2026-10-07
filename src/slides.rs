@@ -172,21 +172,30 @@ pub fn wrap_slides(
                 "#place(center + horizon)[\n  #align(center)[\n    #show heading.where(level: 1): it => block(below: 0.6em)[#text(size: 2.1em, weight: \"bold\", fill: rgb(\"{heading_color}\"))[#it.body]]\n    #show heading.where(level: 3): it => block(below: 0.4em)[#text(size: 1.15em, style: \"italic\", fill: rgb(\"{muted_color}\"))[#it.body]]\n    {trimmed}\n  ]\n]\n"
             ));
         } else if trimmed.contains("#botox_pause()") {
-            let chunks: Vec<&str> = trimmed.split("#botox_pause()").collect();
+            let raw_chunks: Vec<&str> = trimmed.split("#botox_pause()").collect();
+            let mut valid_chunks: Vec<&str> = raw_chunks
+                .into_iter()
+                .map(|c| c.trim())
+                .filter(|c| !c.is_empty())
+                .collect();
+            if valid_chunks.is_empty() {
+                valid_chunks.push(trimmed);
+            }
+            let total_steps = valid_chunks.len();
             let mut accumulated = String::new();
-            for (step_idx, chunk) in chunks.iter().enumerate() {
-                let c = chunk.trim();
-                if c.is_empty() && step_idx > 0 {
-                    continue;
-                }
+            for (step_idx, chunk) in valid_chunks.iter().enumerate() {
                 if step_idx > 0 {
                     out.push_str("\n#pagebreak()\n\n");
                 }
                 if !accumulated.is_empty() {
                     accumulated.push_str("\n\n");
                 }
-                accumulated.push_str(c);
+                accumulated.push_str(chunk);
                 out.push_str(&accumulated);
+
+                if step_idx + 1 < total_steps {
+                    out.push_str("\n#place(top + left)[#text(size: 0.001pt, fill: rgb(0, 0, 0, 0))[botox-pause-step]]\n");
+                }
             }
             out.push('\n');
         } else {
