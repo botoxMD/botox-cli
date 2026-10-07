@@ -52,13 +52,38 @@ fn parse_callout_header(rest: &str) -> (String, String) {
     (kind, title)
 }
 
+fn parse_github_callout_header(s: &str) -> Option<(String, String)> {
+    let trimmed = s.trim_start();
+    if !trimmed.starts_with("[!") {
+        return None;
+    }
+    let rest = &trimmed[2..];
+    let end_bracket = rest.find(']')?;
+    let kind_raw = &rest[..end_bracket];
+    let kind = match kind_raw.to_ascii_lowercase().as_str() {
+        "note" | "info" => "note",
+        "tip" | "hint" => "tip",
+        "important" => "important",
+        "warning" => "warning",
+        "caution" | "danger" => "caution",
+        _ => return None,
+    };
+    let title = rest[end_bracket + 1..].trim();
+    Some((kind.to_string(), title.to_string()))
+}
+
 fn preprocess_pandoc(markdown: &str) -> String {
     let mut result = String::with_capacity(markdown.len());
     let mut in_code_fence = false;
+    let mut in_github_callout = false;
 
     for line in markdown.lines() {
         let trimmed = line.trim_start();
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            if in_github_callout {
+                result.push_str("\n<!--botox:callout:end-->\n\n");
+                in_github_callout = false;
+            }
             in_code_fence = !in_code_fence;
             result.push_str(line);
             result.push('\n');
@@ -69,6 +94,37 @@ fn preprocess_pandoc(markdown: &str) -> String {
             result.push_str(line);
             result.push('\n');
             continue;
+        }
+
+        if in_github_callout {
+            if trimmed.starts_with('>') {
+                let inner = trimmed[1..].trim_start();
+                if let Some((next_kind, next_title)) = parse_github_callout_header(inner) {
+                    result.push_str("\n<!--botox:callout:end-->\n\n");
+                    result.push_str(&format!("<!--botox:callout:start:{next_kind}:{next_title}-->\n"));
+                    continue;
+                }
+                let mut content = &trimmed[1..];
+                if content.starts_with(' ') {
+                    content = &content[1..];
+                }
+                result.push_str(content);
+                result.push('\n');
+                continue;
+            } else {
+                result.push_str("\n<!--botox:callout:end-->\n\n");
+                in_github_callout = false;
+                // fall through to process `line`
+            }
+        }
+
+        if trimmed.starts_with('>') {
+            let inner = trimmed[1..].trim_start();
+            if let Some((kind, title)) = parse_github_callout_header(inner) {
+                in_github_callout = true;
+                result.push_str(&format!("\n<!--botox:callout:start:{kind}:{title}-->\n"));
+                continue;
+            }
         }
 
         if trimmed.starts_with(":::") {
@@ -84,6 +140,10 @@ fn preprocess_pandoc(markdown: &str) -> String {
 
         result.push_str(line);
         result.push('\n');
+    }
+
+    if in_github_callout {
+        result.push_str("\n<!--botox:callout:end-->\n\n");
     }
 
     result
@@ -1647,6 +1707,16 @@ Check [link](https://example.com/api?q="quoted") here.
         let typst = markdown_to_typst(md, false, false, "en", None);
         assert!(typst.contains("#botox_callout(\"note\", \"\")[\nThis is a standard note."));
         assert!(typst.contains("#botox_callout(\"warning\", \"Caution Alert\")[\nDanger ahead!"));
+    }
+
+    #[test]
+    fn test_github_callouts() {
+        let md = "> [!NOTE]\n> This is a GitHub note.\n\n> [!TIP] Pro Tip\n> Remember to save your work.\n\n> [!IMPORTANT]\n> Critical instruction here.\n\n> [!WARNING]\n> High voltage!";
+        let typst = markdown_to_typst(md, false, false, "en", None);
+        assert!(typst.contains("#botox_callout(\"note\", \"\")[\nThis is a GitHub note."));
+        assert!(typst.contains("#botox_callout(\"tip\", \"Pro Tip\")[\nRemember to save your work."));
+        assert!(typst.contains("#botox_callout(\"important\", \"\")[\nCritical instruction here."));
+        assert!(typst.contains("#botox_callout(\"warning\", \"\")[\nHigh voltage!"));
     }
 
     #[test]
