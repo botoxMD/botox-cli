@@ -142,6 +142,28 @@ fn load_needed_fonts(typst_markup: &str) -> Vec<typst::text::Font> {
     fonts
 }
 
+fn format_compilation_error(e: &typst_as_lib::TypstAsLibError) -> String {
+    match e {
+        typst_as_lib::TypstAsLibError::TypstSource(diags) => {
+            let mut msgs = Vec::new();
+            for d in diags {
+                let mut msg = d.message.to_string();
+                if !d.hints.is_empty() {
+                    let hints: Vec<String> = d.hints.iter().map(|h| h.v.to_string()).collect();
+                    msg.push_str(&format!(" (hint: {})", hints.join("; ")));
+                }
+                msgs.push(msg);
+            }
+            if msgs.is_empty() {
+                "Compilation failed with unspecified Typst error".to_string()
+            } else {
+                msgs.join("\n")
+            }
+        }
+        _ => format!("Compilation error: {e}"),
+    }
+}
+
 pub fn compile_typst(
     typst_markup: &str,
     output_path: &Path,
@@ -162,7 +184,7 @@ pub fn compile_typst(
     let compilation_result = engine.compile();
     let doc: typst_layout::PagedDocument = compilation_result.output.map_err(|e| {
         let _ = std::fs::write("/tmp/debug_fail.typ", typst_markup);
-        format!("Typst compilation error: {e:?}\n(Dumped markup to /tmp/debug_fail.typ)")
+        format_compilation_error(&e)
     })?;
 
     if let Some(parent) = output_path.parent() {
@@ -296,6 +318,27 @@ mod tests {
         assert!(json_str.contains("\"pages\":[\"<svg"));
 
         let _ = std::fs::remove_file(tmp_svg);
+        let _ = std::fs::remove_file(tmp_json);
+    }
+
+    #[test]
+    fn test_typst_escapes() {
+        let markup = r#"
+= Test Escapes
+Multiplicity 1..\*
+Email user\@example.com
+Issue \#42
+Brackets \[test\]
+Dollar \$100
+Underscore \_foo\_
+Tilde \~tilde
+Slash \/\/comment
+Backslash \\
+Angle \<stdio.h\>
+"#;
+        let tmp_json = std::env::temp_dir().join("test_botox_escapes.json");
+        let res = compile_typst(markup, &tmp_json, None);
+        assert!(res.is_ok(), "Typst compile error: {:?}", res.err());
         let _ = std::fs::remove_file(tmp_json);
     }
 }

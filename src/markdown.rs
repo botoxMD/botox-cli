@@ -15,62 +15,6 @@ fn find_matching_brace(s: &str, open_pos: usize) -> Option<usize> {
     None
 }
 
-fn convert_sub_super(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let n = chars.len();
-    let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-
-    while i < n {
-        let c = chars[i];
-        if c == '~' {
-            let prev_is_tilde = i > 0 && chars[i - 1] == '~';
-            let next_is_tilde = i + 1 < n && chars[i + 1] == '~';
-            if !prev_is_tilde && !next_is_tilde {
-                let mut j = i + 1;
-                while j < n && chars[j] != '~' && chars[j] != ' ' && chars[j] != '\n' && chars[j] != '\t' {
-                    j += 1;
-                }
-                if j < n && chars[j] == '~' {
-                    let closing_next_is_tilde = j + 1 < n && chars[j + 1] == '~';
-                    if !closing_next_is_tilde && j > i + 1 {
-                        let sub: String = chars[i + 1..j].iter().collect();
-                        out.push_str(&format!("#sub[{sub}]"));
-                        i = j + 1;
-                        continue;
-                    }
-                }
-            }
-            out.push('~');
-            i += 1;
-        } else if c == '^' {
-            let prev_is_hat = i > 0 && chars[i - 1] == '^';
-            let next_is_hat = i + 1 < n && chars[i + 1] == '^';
-            if !prev_is_hat && !next_is_hat {
-                let mut j = i + 1;
-                while j < n && chars[j] != '^' && chars[j] != ' ' && chars[j] != '\n' && chars[j] != '\t' {
-                    j += 1;
-                }
-                if j < n && chars[j] == '^' {
-                    let closing_next_is_hat = j + 1 < n && chars[j + 1] == '^';
-                    if !closing_next_is_hat && j > i + 1 {
-                        let sup: String = chars[i + 1..j].iter().collect();
-                        out.push_str(&format!("#super[{sup}]"));
-                        i = j + 1;
-                        continue;
-                    }
-                }
-            }
-            out.push('^');
-            i += 1;
-        } else {
-            out.push(c);
-            i += 1;
-        }
-    }
-
-    out
-}
 
 fn parse_callout_header(rest: &str) -> (String, String) {
     let clean = rest.trim_matches(|c| c == '{' || c == '}').trim();
@@ -111,7 +55,6 @@ fn parse_callout_header(rest: &str) -> (String, String) {
 fn preprocess_pandoc(markdown: &str) -> String {
     let mut result = String::with_capacity(markdown.len());
     let mut in_code_fence = false;
-    let mut in_display_math = false;
 
     for line in markdown.lines() {
         let trimmed = line.trim_start();
@@ -131,90 +74,15 @@ fn preprocess_pandoc(markdown: &str) -> String {
         if trimmed.starts_with(":::") {
             let rest = trimmed.trim_start_matches(':').trim();
             if rest.is_empty() {
-                result.push_str("\n]\n\n");
+                result.push_str("\n<!--botox:callout:end-->\n\n");
             } else {
                 let (kind, title) = parse_callout_header(rest);
-                result.push_str(&format!("\n#botox_callout(\"{kind}\", \"{title}\")[\n"));
+                result.push_str(&format!("\n<!--botox:callout:start:{kind}:{title}-->\n"));
             }
             continue;
         }
 
-        let mut processed_line = String::with_capacity(line.len());
-        let mut chars = line.chars().peekable();
-        let mut text_segment = String::new();
-
-        while let Some(c) = chars.next() {
-            if in_display_math {
-                if c == '$' && chars.peek() == Some(&'$') {
-                    chars.next(); // consume second $
-                    processed_line.push_str("$$");
-                    in_display_math = false;
-                } else {
-                    processed_line.push(c);
-                }
-                continue;
-            }
-
-            if c == '`' {
-                if !text_segment.is_empty() {
-                    processed_line.push_str(&convert_sub_super(&text_segment));
-                    text_segment.clear();
-                }
-                processed_line.push('`');
-                while let Some(c2) = chars.next() {
-                    processed_line.push(c2);
-                    if c2 == '`' {
-                        break;
-                    }
-                }
-            } else if c == '$' {
-                if chars.peek() == Some(&'$') {
-                    // Display math starts
-                    chars.next(); // consume second $
-                    if !text_segment.is_empty() {
-                        processed_line.push_str(&convert_sub_super(&text_segment));
-                        text_segment.clear();
-                    }
-                    processed_line.push_str("$$");
-                    let mut closed = false;
-                    while let Some(c2) = chars.next() {
-                        if c2 == '$' && chars.peek() == Some(&'$') {
-                            chars.next(); // consume second $
-                            processed_line.push_str("$$");
-                            closed = true;
-                            break;
-                        } else {
-                            processed_line.push(c2);
-                        }
-                    }
-                    if !closed {
-                        in_display_math = true;
-                    }
-                } else {
-                    // Inline math starts with a single $
-                    if !text_segment.is_empty() {
-                        processed_line.push_str(&convert_sub_super(&text_segment));
-                        text_segment.clear();
-                    }
-                    processed_line.push('$');
-                    let mut prev_backslash = false;
-                    while let Some(c2) = chars.next() {
-                        processed_line.push(c2);
-                        if c2 == '$' && !prev_backslash {
-                            break;
-                        }
-                        prev_backslash = c2 == '\\' && !prev_backslash;
-                    }
-                }
-            } else {
-                text_segment.push(c);
-            }
-        }
-        if !text_segment.is_empty() {
-            processed_line.push_str(&convert_sub_super(&text_segment));
-        }
-
-        result.push_str(&processed_line);
+        result.push_str(line);
         result.push('\n');
     }
 
@@ -621,8 +489,8 @@ fn parse_image_attributes(s: &str) -> (Option<String>, Option<String>, Option<St
     let clean = s.replace(',', " ");
     for token in clean.split_whitespace() {
         let token = token.trim();
-        if token.starts_with('#') {
-            let raw_id = &token[1..];
+        if token.starts_with('#') || token.starts_with(r"\#") {
+            let raw_id = if token.starts_with(r"\#") { &token[2..] } else { &token[1..] };
             let clean_id = raw_id.replace(':', "-");
             if !clean_id.is_empty() {
                 id = Some(clean_id);
@@ -660,8 +528,9 @@ fn parse_heading_attributes(s: &str) -> (String, bool, Option<String>) {
             for token in inside.split_whitespace() {
                 if token == "-" || token == ".unnumbered" || token == "unnumbered" {
                     is_unnumbered = true;
-                } else if token.starts_with('#') {
-                    let clean_id = token[1..].replace(':', "-");
+                } else if token.starts_with('#') || token.starts_with(r"\#") {
+                    let raw_id = if token.starts_with(r"\#") { &token[2..] } else { &token[1..] };
+                    let clean_id = raw_id.replace(':', "-");
                     if !clean_id.is_empty() {
                         id = Some(clean_id);
                     }
@@ -712,6 +581,214 @@ fn convert_cross_references(s: &str) -> String {
     out
 }
 
+pub fn escape_typst_text(s: &str) -> String {
+    let mut s = s.to_string();
+    let has_newpage = s.contains(r"\newpage") || s.contains(r"\pagebreak") || s.contains(r"\clearpage");
+    let has_toc = s.contains(r"\tableofcontents");
+    let has_lof = s.contains(r"\listoffigures");
+    let has_lot = s.contains(r"\listoftables");
+
+    if has_newpage {
+        s = s.replace(r"\newpage", "BOTOXCMDNEWPAGEBOTOX")
+             .replace(r"\pagebreak", "BOTOXCMDNEWPAGEBOTOX")
+             .replace(r"\clearpage", "BOTOXCMDNEWPAGEBOTOX");
+    }
+    if has_toc {
+        s = s.replace(r"\tableofcontents", "BOTOXCMDTOCBOTOX");
+    }
+    if has_lof {
+        s = s.replace(r"\listoffigures", "BOTOXCMDLOFBOTOX");
+    }
+    if has_lot {
+        s = s.replace(r"\listoftables", "BOTOXCMDLOTBOTOX");
+    }
+
+    s = convert_cross_references(&s);
+
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let mut out = String::with_capacity(s.len() + 32);
+    let mut i = 0;
+
+    let mut cmd_bracket_depth = 0;
+
+    while i < n {
+        let c = chars[i];
+
+        // Check for recognized Botox / Typst commands that we generated
+        if c == '#' {
+            let rest: String = chars[i..].iter().take(16).collect();
+            if rest.starts_with("#sub[") {
+                out.push_str("#sub[");
+                i += 5;
+                cmd_bracket_depth += 1;
+                continue;
+            } else if rest.starts_with("#super[") {
+                out.push_str("#super[");
+                i += 7;
+                cmd_bracket_depth += 1;
+                continue;
+            } else if rest.starts_with("#strike[") {
+                out.push_str("#strike[");
+                i += 8;
+                cmd_bracket_depth += 1;
+                continue;
+            } else if rest.starts_with("#pagebreak()") || rest.starts_with("#outline(") || rest.starts_with("#botox_callout(") || rest.starts_with("#heading(") || rest.starts_with("#figure(") {
+                out.push('#');
+                i += 1;
+                continue;
+            } else {
+                out.push_str(r"\#");
+                i += 1;
+                continue;
+            }
+        }
+
+        // Check for brackets
+        if c == ']' {
+            if cmd_bracket_depth > 0 {
+                cmd_bracket_depth -= 1;
+                out.push(']');
+            } else {
+                out.push_str(r"\]");
+            }
+            i += 1;
+            continue;
+        }
+
+        if c == '[' {
+            out.push_str(r"\[");
+            i += 1;
+            continue;
+        }
+
+        // Check for subscript: ~text~
+        if c == '~' {
+            let prev_is_tilde = i > 0 && chars[i - 1] == '~';
+            let next_is_tilde = i + 1 < n && chars[i + 1] == '~';
+            if !prev_is_tilde && !next_is_tilde {
+                let mut j = i + 1;
+                while j < n && chars[j] != '~' && chars[j] != ' ' && chars[j] != '\n' && chars[j] != '\t' {
+                    j += 1;
+                }
+                if j < n && chars[j] == '~' {
+                    let closing_next_is_tilde = j + 1 < n && chars[j + 1] == '~';
+                    if !closing_next_is_tilde && j > i + 1 {
+                        let sub: String = chars[i + 1..j].iter().collect();
+                        let escaped_sub = escape_typst_text(&sub);
+                        out.push_str("BOTOXSUBSTART");
+                        out.push_str(&escaped_sub);
+                        out.push_str("BOTOXSUBEND");
+                        i = j + 1;
+                        continue;
+                    }
+                }
+            }
+            out.push_str(r"\~");
+            i += 1;
+            continue;
+        }
+
+        // Check for superscript: ^text^
+        if c == '^' {
+            let prev_is_hat = i > 0 && chars[i - 1] == '^';
+            let next_is_hat = i + 1 < n && chars[i + 1] == '^';
+            if !prev_is_hat && !next_is_hat {
+                let mut j = i + 1;
+                while j < n && chars[j] != '^' && chars[j] != ' ' && chars[j] != '\n' && chars[j] != '\t' {
+                    j += 1;
+                }
+                if j < n && chars[j] == '^' {
+                    let closing_next_is_hat = j + 1 < n && chars[j + 1] == '^';
+                    if !closing_next_is_hat && j > i + 1 {
+                        let sup: String = chars[i + 1..j].iter().collect();
+                        let escaped_sup = escape_typst_text(&sup);
+                        out.push_str("BOTOXSUPERSTART");
+                        out.push_str(&escaped_sup);
+                        out.push_str("BOTOXSUPEREND");
+                        i = j + 1;
+                        continue;
+                    }
+                }
+            }
+            out.push('^');
+            i += 1;
+            continue;
+        }
+
+        // Check for cross references
+        if c == '@' {
+            let rest: String = chars[i..].iter().take(6).collect();
+            if rest.starts_with("@fig-") || rest.starts_with("@tbl-") || rest.starts_with("@sec-") || rest.starts_with("@eq-") || rest.starts_with("@lst-") {
+                out.push('@');
+            } else {
+                out.push_str(r"\@");
+            }
+            i += 1;
+            continue;
+        }
+
+        // Check for comments (// or /*) or line-start description list marker (/ )
+        if c == '/' {
+            if (i + 1 < n && (chars[i + 1] == '/' || chars[i + 1] == '*'))
+                || ((i == 0 || chars[i - 1] == '\n') && i + 1 < n && chars[i + 1] == ' ')
+            {
+                out.push_str(r"\/");
+            } else {
+                out.push('/');
+            }
+            i += 1;
+            continue;
+        }
+
+        // Check for backslash
+        if c == '\\' {
+            out.push_str(r"\\");
+            i += 1;
+            continue;
+        }
+
+        // Check for list/heading start markers at line starts
+        if (c == '=' || c == '-' || c == '+') && (i == 0 || chars[i - 1] == '\n') && i + 1 < n && chars[i + 1] == ' ' {
+            out.push('\\');
+            out.push(c);
+            i += 1;
+            continue;
+        }
+
+        match c {
+            '*' => out.push_str(r"\*"),
+            '_' => out.push_str(r"\_"),
+            '$' => out.push_str(r"\$"),
+            '<' => out.push_str(r"\<"),
+            '>' => out.push_str(r"\>"),
+            _ => out.push(c),
+        }
+        i += 1;
+    }
+
+    let mut final_out = out
+        .replace("BOTOXSUBSTART", "#sub[")
+        .replace("BOTOXSUBEND", "]")
+        .replace("BOTOXSUPERSTART", "#super[")
+        .replace("BOTOXSUPEREND", "]");
+
+    if has_newpage {
+        final_out = final_out.replace("BOTOXCMDNEWPAGEBOTOX", "\n#pagebreak()\n");
+    }
+    if has_toc {
+        final_out = final_out.replace("BOTOXCMDTOCBOTOX", "\n#outline(depth: 3)\n");
+    }
+    if has_lof {
+        final_out = final_out.replace("BOTOXCMDLOFBOTOX", "\n#outline(target: figure.where(kind: image))\n");
+    }
+    if has_lot {
+        final_out = final_out.replace("BOTOXCMDLOTBOTOX", "\n#outline(target: figure.where(kind: table))\n");
+    }
+
+    final_out
+}
+
 pub fn markdown_to_typst(
     markdown: &str,
     is_slides: bool,
@@ -728,8 +805,6 @@ pub fn markdown_to_typst(
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
     options.insert(Options::ENABLE_MATH);
-    options.insert(Options::ENABLE_SUBSCRIPT);
-    options.insert(Options::ENABLE_SUPERSCRIPT);
     options.insert(Options::ENABLE_DEFINITION_LIST);
 
     // Pass 1: Parse and collect footnote definitions
@@ -749,7 +824,7 @@ pub fn markdown_to_typst(
             }
             Event::Text(t) => {
                 if let Some((_, ref mut text)) = current_footnote {
-                    text.push_str(&t);
+                    text.push_str(&escape_typst_text(&t));
                 }
             }
             Event::Code(c) => {
@@ -899,7 +974,8 @@ pub fn markdown_to_typst(
                         } else {
                             current_link = None;
                         }
-                        let link_code = format!("#link(\"{dest_url}\")[");
+                        let safe_url = dest_url.replace('\\', "/").replace('"', "\\\"");
+                        let link_code = format!("#link(\"{safe_url}\")[");
                         if in_table { current_cell.push_str(&link_code); } else { typst.push_str(&link_code); }
                     }
                     Tag::Image { dest_url, .. } => {
@@ -1148,7 +1224,8 @@ pub fn markdown_to_typst(
                         tbl_str.push(')');
 
                         if let Some((caption, label)) = pending_table_caption.take() {
-                            let mut fig = format!("\n#figure(\n  {tbl_str},\n  caption: [{caption}],\n)");
+                            let escaped_caption = escape_typst_text(&caption);
+                            let mut fig = format!("\n#figure(\n  {tbl_str},\n  caption: [{escaped_caption}],\n)");
                             if let Some(ref l) = label {
                                 fig.push_str(&format!(" <{l}>"));
                             }
@@ -1166,50 +1243,60 @@ pub fn markdown_to_typst(
                     i += 1;
                     continue;
                 }
+                let escaped = escape_typst_text(&text);
                 if let Some((_, ref mut h_buf)) = current_heading {
-                    h_buf.push_str(&text);
+                    h_buf.push_str(&escaped);
                     i += 1;
                     continue;
                 }
                 if let Some((_, ref mut img_alt)) = current_image {
-                    img_alt.push_str(&text);
+                    img_alt.push_str(&escaped);
                     i += 1;
                     continue;
                 }
                 if let Some((_, ref mut link_text)) = current_link {
-                    link_text.push_str(&text);
+                    link_text.push_str(&escaped);
                 }
                 if in_table {
-                    current_cell.push_str(&text);
+                    current_cell.push_str(&escaped);
                 } else if in_code_block {
                     typst.push_str(&text);
                 } else {
-                    let mut s = convert_sub_super(&text);
-                    s = convert_cross_references(&s);
-                    if s.contains(r"\newpage") || s.contains(r"\pagebreak") || s.contains(r"\clearpage") {
-                        s = s.replace(r"\newpage", "\n#pagebreak()\n")
-                             .replace(r"\pagebreak", "\n#pagebreak()\n")
-                             .replace(r"\clearpage", "\n#pagebreak()\n");
-                    }
-                    if s.contains(r"\tableofcontents") {
-                        s = s.replace(r"\tableofcontents", "\n#outline(depth: 3)\n");
-                    }
-                    if s.contains(r"\listoffigures") {
-                        s = s.replace(r"\listoffigures", "\n#outline(target: figure.where(kind: image))\n");
-                    }
-                    if s.contains(r"\listoftables") {
-                        s = s.replace(r"\listoftables", "\n#outline(target: figure.where(kind: table))\n");
-                    }
-                    typst.push_str(&s);
+                    typst.push_str(&escaped);
                 }
             }
-            Event::Html(html) => {
+            Event::Html(html) | Event::InlineHtml(html) => {
                 if in_footnote_def {
                     i += 1;
                     continue;
                 }
-                if html.contains("pagebreak") || html.contains("page-break") || html.contains("newpage") {
+                if html.contains("<!--botox:callout:start:") {
+                    let rest = html.split("<!--botox:callout:start:").nth(1).unwrap_or("");
+                    if let Some(content) = rest.split("-->").next() {
+                        let mut parts = content.splitn(2, ':');
+                        let kind = parts.next().unwrap_or("note");
+                        let title = parts.next().unwrap_or("");
+                        let escaped_title = escape_typst_text(title);
+                        typst.push_str(&format!("\n#botox_callout(\"{kind}\", \"{escaped_title}\")[\n"));
+                    }
+                } else if html.contains("<!--botox:callout:end-->") {
+                    typst.push_str("\n]\n\n");
+                } else if html.contains("pagebreak") || html.contains("page-break") || html.contains("newpage") {
                     typst.push_str("\n#pagebreak()\n\n");
+                } else if html.trim().starts_with("<!--") && html.trim().ends_with("-->") {
+                    // Raw HTML comment: ignore
+                } else {
+                    let trimmed = html.trim().to_lowercase();
+                    if trimmed == "<br>" || trimmed == "<br/>" || trimmed == "<br />" {
+                        typst.push_str(" \\ \n");
+                    } else {
+                        let escaped = escape_typst_text(&html);
+                        if in_table {
+                            current_cell.push_str(&escaped);
+                        } else {
+                            typst.push_str(&escaped);
+                        }
+                    }
                 }
             }
             Event::FootnoteReference(name) => {
@@ -1226,9 +1313,11 @@ pub fn markdown_to_typst(
                     continue;
                 }
                 if checked {
-                    typst.push_str("[x] ");
+                    let s = r"\[x\] ";
+                    if in_table { current_cell.push_str(s); } else { typst.push_str(s); }
                 } else {
-                    typst.push_str("[ ] ");
+                    let s = r"\[ \] ";
+                    if in_table { current_cell.push_str(s); } else { typst.push_str(s); }
                 }
             }
             Event::Code(code) => {
@@ -1360,7 +1449,6 @@ pub fn markdown_to_typst(
                     typst.push_str("\\\n");
                 }
             }
-            _ => {}
         }
         i += 1;
     }
@@ -1414,10 +1502,57 @@ mod tests {
     fn test_sub_super_and_strikethrough() {
         let md = "H~2~O and 10^6^ with ~~strike~~ and `code_with_~_and_^`";
         let typst = markdown_to_typst(md, false, false, "en", None);
+        println!("TYPST RESULT: {:?}", typst);
         assert!(typst.contains("#sub[2]"));
         assert!(typst.contains("#super[6]"));
         assert!(typst.contains("#strike[strike]"));
         assert!(typst.contains("`code_with_~_and_^`"));
+    }
+
+    #[test]
+    fn test_typst_syntax_escaping() {
+        let md = r#"
+# Multiplicity 1..* and Comparisons: x < 5 and y > 2
+
+Multiplicity is 1..* in text.
+Contact user@domain.com or see issue #42 and C#.
+Array index arr[0] and lone bracket ] alone.
+Price is $100 and $200.
+Code comment // not comment and /* unclosed
+Path is C:\Users\Name and home ~/Desktop.
+Variable foo_bar_baz.
+/ Term: this is not a typst description list
+Include <stdio.h> and break line<br>next line.
+- [ ] Incomplete task
+- [x] Done task
+Check [link](https://example.com/api?q="quoted") here.
+"#;
+        let typst = markdown_to_typst(md, false, false, "en", None);
+        assert!(typst.contains(r"1..\*"));
+        assert!(typst.contains(r"x \< 5 and y \> 2"));
+        assert!(typst.contains(r"user\@domain.com"));
+        assert!(typst.contains(r"\#42"));
+        assert!(typst.contains(r"C\#"));
+        assert!(typst.contains(r"arr\[0\]"));
+        assert!(typst.contains(r"\] alone"));
+        assert!(typst.contains(r"\$100"));
+        assert!(typst.contains(r"\$200"));
+        assert!(typst.contains(r"\// not comment"));
+        assert!(typst.contains(r"/\* unclosed"));
+        assert!(typst.contains(r"C:\\Users\\Name"));
+        assert!(typst.contains(r"\~/Desktop"));
+        assert!(typst.contains(r"foo\_bar\_baz"));
+        assert!(typst.contains(r"\/ Term:"));
+        assert!(typst.contains(r"\<stdio.h\>"));
+        assert!(typst.contains(r"\[ \]"));
+        assert!(typst.contains(r"\[x\]"));
+        assert!(typst.contains(r#"#link("https://example.com/api?q=\"quoted\"")"#));
+
+        // Verify it compiles into PDF/JSON through Typst engine without error!
+        let tmp_json = std::env::temp_dir().join("test_escaped_compilation.json");
+        let res = crate::compiler::compile_typst(&typst, &tmp_json, None);
+        assert!(res.is_ok(), "Typst compilation failed on escaped syntax: {:?}", res.err());
+        let _ = std::fs::remove_file(tmp_json);
     }
 
     #[test]
