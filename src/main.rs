@@ -315,13 +315,6 @@ fn detect_is_slides(
                         }
                     }
                 }
-                if key_lower == "theme" {
-                    if let Some(s) = v.as_str() {
-                        if matches!(s.to_lowercase().as_str(), "gaia" | "uncover" | "nord" | "dark" | "bespoke") {
-                            return true;
-                        }
-                    }
-                }
                 if key_lower == "_class" {
                     return true;
                 }
