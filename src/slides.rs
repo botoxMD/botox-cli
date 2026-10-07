@@ -72,7 +72,7 @@ pub fn wrap_slides(
     };
 
     let footer_code = if paginate {
-        "  footer: context {\n    let p = counter(page).get().first()\n    if p > 1 {\n      align(right, text(size: 12pt, fill: rgb(\"#64748b\"))[#p])\n    }\n  },\n"
+        "  footer: context {\n    let p = counter(\"slide\").get().first()\n    if p > 1 {\n      align(right, text(size: 12pt, fill: rgb(\"#64748b\"))[#p])\n    }\n  },\n"
     } else {
         ""
     };
@@ -142,7 +142,11 @@ pub fn wrap_slides(
     out.push_str("  ]\n");
     out.push_str("}\n\n");
 
+    out.push_str("#let botox_slide_counter = counter(\"slide\")\n");
+    out.push_str("#botox_slide_counter.step()\n\n");
+
     let raw_slides: Vec<&str> = slides_typst.split("#pagebreak()").collect();
+    let mut first_emitted = false;
 
     for (i, slide) in raw_slides.iter().enumerate() {
         let trimmed = slide.trim();
@@ -150,14 +154,35 @@ pub fn wrap_slides(
             continue;
         }
 
-        if i > 0 {
-            out.push_str("\n#pagebreak()\n\n");
+        let is_first_logical_slide = !first_emitted;
+        first_emitted = true;
+
+        if !is_first_logical_slide {
+            out.push_str("\n#pagebreak()\n#botox_slide_counter.step()\n\n");
         }
 
         if i == 0 && is_title_slide(trimmed) {
             out.push_str(&format!(
                 "#place(center + horizon)[\n  #align(center)[\n    #show heading.where(level: 1): it => block(below: 0.6em)[#text(size: 2.1em, weight: \"bold\", fill: rgb(\"{heading_color}\"))[#it.body]]\n    #show heading.where(level: 3): it => block(below: 0.4em)[#text(size: 1.15em, style: \"italic\", fill: rgb(\"{muted_color}\"))[#it.body]]\n    {trimmed}\n  ]\n]\n"
             ));
+        } else if trimmed.contains("#botox_pause()") {
+            let chunks: Vec<&str> = trimmed.split("#botox_pause()").collect();
+            let mut accumulated = String::new();
+            for (step_idx, chunk) in chunks.iter().enumerate() {
+                let c = chunk.trim();
+                if c.is_empty() && step_idx > 0 {
+                    continue;
+                }
+                if step_idx > 0 {
+                    out.push_str("\n#pagebreak()\n\n");
+                }
+                if !accumulated.is_empty() {
+                    accumulated.push_str("\n\n");
+                }
+                accumulated.push_str(c);
+                out.push_str(&accumulated);
+            }
+            out.push('\n');
         } else {
             out.push_str(trimmed);
             out.push('\n');
@@ -231,5 +256,18 @@ date: "2026-10-07"
         let fm_title_only: Value = serde_yaml::from_str("title: Deck").unwrap();
         let typst3 = wrap_slides("Body", &fm_title_only, &cfg_with_author, None, None);
         assert!(typst3.contains(r#"#set document(title: "Deck", author: "Slides Config Author")"#));
+    }
+
+    #[test]
+    fn test_slides_pause_incremental_stepping() {
+        let default_cfg = SlidesConfig::defaults();
+        let fm: Value = serde_yaml::from_str("{}").unwrap();
+        let slide_content = "== Features\n- Point 1\n#botox_pause()\n- Point 2";
+        let typst = wrap_slides(slide_content, &fm, &default_cfg, None, None);
+        assert!(typst.contains("botox_slide_counter"));
+        assert!(typst.contains("counter(\"slide\")"));
+        // Sub-slide 0 should contain Point 1, Sub-slide 1 should contain Point 1 and Point 2
+        assert!(typst.contains("== Features\n- Point 1"));
+        assert!(typst.contains("== Features\n- Point 1\n\n- Point 2"));
     }
 }

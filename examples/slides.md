@@ -110,8 +110,11 @@ All citation links remain clickable in exported PDF and SVG presentations.
 ### Key Takeaways
 
 - **Unified Format**: Share syntax between academic papers and slide decks.
+\pause
 - **Sub-Second Feedback**: Instant live reload during writing and editing.
-- **Publish Anywhere**: One-command export to PDF, SVG, and interactive preview.
+\pause
+- **Publish Anywhere**: One-command export to PDF, SVG, and standalone HTML.
+\pause
 
 > [!IMPORTANT]
 > Try other built-in slide themes by changing `theme: nord` or `theme: dark` in the frontmatter!

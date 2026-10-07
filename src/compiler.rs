@@ -460,12 +460,21 @@ body {{
   background: #000;
 }}
 .slide {{
-  display: none;
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
+  opacity: 0;
+  visibility: hidden;
+  transform: scale(0.985);
+  transition: opacity 0.28s cubic-bezier(0.4, 0, 0.2, 1), transform 0.28s cubic-bezier(0.4, 0, 0.2, 1), visibility 0.28s;
+  pointer-events: none;
 }}
 .slide.active {{
-  display: block;
+  opacity: 1;
+  visibility: visible;
+  transform: scale(1);
+  pointer-events: auto;
 }}
 .slide svg {{
   width: 100%;
@@ -617,7 +626,11 @@ body {{
     overflow: visible;
   }}
   .slide {{
+    position: relative !important;
     display: block !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    transform: none !important;
     page-break-after: always;
     break-after: page;
     height: 100vh;

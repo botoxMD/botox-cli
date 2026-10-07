@@ -127,6 +127,18 @@ fn preprocess_pandoc(markdown: &str) -> String {
             }
         }
 
+        let line_trimmed = trimmed.trim_end();
+        if line_trimmed == r"\pause" || line_trimmed == "<!-- pause -->" || line_trimmed == "<!--pause-->" || line_trimmed == "::: pause" {
+            result.push_str("\n<!--botox:pause-->\n\n");
+            continue;
+        }
+        if line.contains(r"\pause") {
+            let line_mod = line.replace(r"\pause", "<!--botox:pause-->");
+            result.push_str(&line_mod);
+            result.push('\n');
+            continue;
+        }
+
         if trimmed.starts_with(":::") {
             let rest = trimmed.trim_start_matches(':').trim();
             if rest.is_empty() {
@@ -649,6 +661,7 @@ pub fn escape_typst_text(s: &str) -> String {
     let has_lof = s.contains(r"\listoffigures");
     let has_lot = s.contains(r"\listoftables");
     let has_today = s.contains(r"\today");
+    let has_pause = s.contains(r"\pause");
 
     if has_newpage {
         s = s.replace(r"\newpage", "BOTOXCMDNEWPAGEBOTOX")
@@ -670,6 +683,9 @@ pub fn escape_typst_text(s: &str) -> String {
     }
     if has_today {
         s = s.replace(r"\today", "BOTOXCMDTODAYBOTOX");
+    }
+    if has_pause {
+        s = s.replace(r"\pause", "BOTOXCMDPAUSEBOTOX");
     }
 
     s = convert_cross_references(&s);
@@ -859,6 +875,9 @@ pub fn escape_typst_text(s: &str) -> String {
     }
     if has_today {
         final_out = final_out.replace("BOTOXCMDTODAYBOTOX", "#datetime.today().display(\"[day] [month repr:long] [year]\")");
+    }
+    if has_pause {
+        final_out = final_out.replace("BOTOXCMDPAUSEBOTOX", "\n#botox_pause()\n");
     }
 
     final_out
@@ -1360,6 +1379,8 @@ pub fn markdown_to_typst(
                     typst.push_str("\n#pagebreak()\n\n");
                 } else if html.contains("colbreak") || html.contains("columnbreak") || html.contains("column-break") {
                     typst.push_str("\n#colbreak()\n\n");
+                } else if html.contains("<!--botox:pause-->") || html.contains("pause") {
+                    typst.push_str("\n#botox_pause()\n\n");
                 } else if html.trim().starts_with("<!--") && html.trim().ends_with("-->") {
                     // Raw HTML comment: ignore
                 } else {
@@ -1548,7 +1569,11 @@ pub fn markdown_to_typst(
             _ => ("[Online]", "Available:"),
         };
 
-        typst.push_str("\n\n#v(2em)\n");
+        if is_slides {
+            typst.push_str("\n\n#pagebreak()\n\n");
+        } else {
+            typst.push_str("\n\n#v(2em)\n");
+        }
         typst.push_str(&format!("#heading(numbering: none)[{heading}] <references>\n\n"));
         typst.push_str("#set par(hanging-indent: 1.8em, justify: false)\n\n");
 
@@ -1747,5 +1772,12 @@ Check [link](https://example.com/api?q="quoted") here.
         let md = "Today's date is \\today in presentation.";
         let typst = markdown_to_typst(md, false, false, "en", None);
         assert!(typst.contains(r#"#datetime.today().display("[day] [month repr:long] [year]")"#));
+    }
+
+    #[test]
+    fn test_pause_extraction() {
+        let md = "Point 1\n\\pause\nPoint 2\n<!-- pause -->\nPoint 3";
+        let typst = markdown_to_typst(md, true, false, "en", None);
+        assert!(typst.contains("#botox_pause()"));
     }
 }

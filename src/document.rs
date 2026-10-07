@@ -687,7 +687,8 @@ pub fn wrap_document(
     }
 
     // 5. Body
-    let processed_body = sanitize_column_pagebreaks(body_typst, columns);
+    let clean_body = body_typst.replace("#botox_pause()", "");
+    let processed_body = sanitize_column_pagebreaks(&clean_body, columns);
     out.push_str(&processed_body);
 
     out
