@@ -212,6 +212,69 @@ pub fn compile_typst(
         .unwrap_or("")
         .to_lowercase();
 
+    fn xml_escape(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for c in s.chars() {
+            match c {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '"' => out.push_str("&quot;"),
+                '\'' => out.push_str("&apos;"),
+                _ => out.push(c),
+            }
+        }
+        out
+    }
+
+    fn extract_text_layer(
+        frame: &typst_library::layout::Frame,
+        parent_ts: typst_library::layout::Transform,
+        out: &mut String,
+    ) {
+        for (point, item) in frame.items() {
+            let item_ts = parent_ts.pre_concat(typst_library::layout::Transform::translate(point.x, point.y));
+            match item {
+                typst_library::layout::FrameItem::Text(text_item) => {
+                    let text = text_item.text.as_str();
+                    if text.trim().is_empty() {
+                        continue;
+                    }
+                    let x = item_ts.tx.to_pt();
+                    let y = item_ts.ty.to_pt();
+                    let size = (text_item.size.to_pt() * item_ts.sy.get()).abs();
+                    let width = (text_item.width().to_pt() * item_ts.sx.get()).abs();
+                    let escaped = xml_escape(text);
+
+                    use std::fmt::Write;
+                    let _ = write!(
+                        out,
+                        r#"<text x="{x:.2}" y="{y:.2}" font-size="{size:.2}pt" textLength="{width:.2}" lengthAdjust="spacingAndGlyphs" fill="transparent" stroke="none" style="cursor: text; user-select: text;">{escaped}</text>"#
+                    );
+                }
+                typst_library::layout::FrameItem::Group(group) => {
+                    let group_ts = item_ts.pre_concat(group.transform);
+                    extract_text_layer(&group.frame, group_ts, out);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn inject_text_layer(mut svg: String, frame: &typst_library::layout::Frame) -> String {
+        let mut text_elements = String::new();
+        extract_text_layer(frame, typst_library::layout::Transform::identity(), &mut text_elements);
+        if !text_elements.is_empty() {
+            if let Some(idx) = svg.rfind("</svg>") {
+                svg.insert_str(
+                    idx,
+                    &format!(r#"<g class="botox-text-layer" style="user-select: text; -webkit-user-select: text; pointer-events: auto;">{text_elements}</g>"#),
+                );
+            }
+        }
+        svg
+    }
+
     fn extract_frame_headings(
         frame: &typst_library::layout::Frame,
         parent_ts: typst_library::layout::Transform,
@@ -228,11 +291,25 @@ pub fn compile_typst(
                     let is_heading = size >= 12.8;
                     let trimmed = text_item.text.trim();
                     if is_heading && !trimmed.is_empty() {
-                        out.push(BotoxHeadingInfo {
-                            page_index,
-                            text: trimmed.to_string(),
-                            y_ratio: (y / page_height).clamp(0.0, 1.0),
-                        });
+                        let cur_ratio = (y / page_height).clamp(0.0, 1.0);
+                        if let Some(last) = out.last_mut() {
+                            if last.page_index == page_index && (last.y_ratio - cur_ratio).abs() < 0.008 {
+                                last.text.push(' ');
+                                last.text.push_str(trimmed);
+                            } else {
+                                out.push(BotoxHeadingInfo {
+                                    page_index,
+                                    text: trimmed.to_string(),
+                                    y_ratio: cur_ratio,
+                                });
+                            }
+                        } else {
+                            out.push(BotoxHeadingInfo {
+                                page_index,
+                                text: trimmed.to_string(),
+                                y_ratio: cur_ratio,
+                            });
+                        }
                     }
                 }
                 typst_library::layout::FrameItem::Group(group) => {
@@ -249,7 +326,7 @@ pub fn compile_typst(
             let svg_opts = typst_svg::SvgOptions::default();
             let svg_content = if doc.pages().len() <= 1 {
                 if let Some(first_page) = doc.pages().first() {
-                    typst_svg::svg(first_page, &svg_opts)
+                    inject_text_layer(typst_svg::svg(first_page, &svg_opts), &first_page.frame)
                 } else {
                     String::from("<svg></svg>")
                 }
@@ -264,7 +341,7 @@ pub fn compile_typst(
             let pages: Vec<String> = doc
                 .pages()
                 .iter()
-                .map(|p| typst_svg::svg(p, &svg_opts))
+                .map(|p| inject_text_layer(typst_svg::svg(p, &svg_opts), &p.frame))
                 .collect();
 
             let mut headings = Vec::new();
