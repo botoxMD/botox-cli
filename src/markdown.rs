@@ -648,6 +648,7 @@ pub fn escape_typst_text(s: &str) -> String {
     let has_toc = s.contains(r"\tableofcontents");
     let has_lof = s.contains(r"\listoffigures");
     let has_lot = s.contains(r"\listoftables");
+    let has_today = s.contains(r"\today");
 
     if has_newpage {
         s = s.replace(r"\newpage", "BOTOXCMDNEWPAGEBOTOX")
@@ -666,6 +667,9 @@ pub fn escape_typst_text(s: &str) -> String {
     }
     if has_lot {
         s = s.replace(r"\listoftables", "BOTOXCMDLOTBOTOX");
+    }
+    if has_today {
+        s = s.replace(r"\today", "BOTOXCMDTODAYBOTOX");
     }
 
     s = convert_cross_references(&s);
@@ -852,6 +856,9 @@ pub fn escape_typst_text(s: &str) -> String {
     }
     if has_lot {
         final_out = final_out.replace("BOTOXCMDLOTBOTOX", "\n#outline(target: figure.where(kind: table))\n");
+    }
+    if has_today {
+        final_out = final_out.replace("BOTOXCMDTODAYBOTOX", "#datetime.today().display(\"[day] [month repr:long] [year]\")");
     }
 
     final_out
@@ -1733,5 +1740,12 @@ Check [link](https://example.com/api?q="quoted") here.
         let typst = markdown_to_typst(md, false, false, "en", None);
         assert!(typst.contains("caption: [Forwarding performance summary.]"));
         assert!(typst.contains("<tbl-perf>"));
+    }
+
+    #[test]
+    fn test_today_replacement() {
+        let md = "Today's date is \\today in presentation.";
+        let typst = markdown_to_typst(md, false, false, "en", None);
+        assert!(typst.contains(r#"#datetime.today().display("[day] [month repr:long] [year]")"#));
     }
 }

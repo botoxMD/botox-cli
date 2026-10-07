@@ -366,6 +366,27 @@ pub fn compile_typst(
             std::fs::write(output_path, json_str)
                 .map_err(|e| format!("Failed to write output JSON file '{}': {e}", output_path.display()))?;
         }
+        "html" | "htm" => {
+            let svg_opts = typst_svg::SvgOptions::default();
+            let pages: Vec<String> = doc
+                .pages()
+                .iter()
+                .map(|p| inject_text_layer(typst_svg::svg(p, &svg_opts), &p.frame))
+                .collect();
+
+            let is_presentation = doc.pages().first().map(|p| {
+                p.frame.width().to_pt() > p.frame.height().to_pt()
+            }).unwrap_or(false);
+
+            let html_content = if is_presentation {
+                render_slides_html(&pages)
+            } else {
+                render_document_html(&pages)
+            };
+
+            std::fs::write(output_path, html_content)
+                .map_err(|e| format!("Failed to write output HTML file '{}': {e}", output_path.display()))?;
+        }
         _ => {
             let pdf_bytes = typst_pdf::pdf(&doc, &typst_pdf::PdfOptions::default())
                 .map_err(|e| format!("PDF export error: {e:?}"))?;
@@ -375,6 +396,478 @@ pub fn compile_typst(
     }
 
     Ok(())
+}
+
+fn render_slides_html(pages: &[String]) -> String {
+    let mut slides_html = String::new();
+    let mut overview_html = String::new();
+
+    for (i, svg) in pages.iter().enumerate() {
+        let idx = i + 1;
+        let active_cls = if i == 0 { " active" } else { "" };
+        slides_html.push_str(&format!(
+            "<div class=\"slide{active_cls}\" data-slide=\"{idx}\">{svg}</div>\n"
+        ));
+        overview_html.push_str(&format!(
+            "<div class=\"overview-item{active_cls}\" data-target=\"{idx}\">{svg}<span class=\"overview-badge\">{idx}</span></div>\n"
+        ));
+    }
+
+    let total = pages.len();
+
+    format!(r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Botox Presentation</title>
+<style>
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{
+  background: #0f172a;
+  color: #f8fafc;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  overflow: hidden;
+  height: 100vh;
+  width: 100vw;
+  user-select: none;
+}}
+.progress-bar {{
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 3px;
+  background: #3b82f6;
+  width: 0%;
+  transition: width 0.25s ease;
+  z-index: 1000;
+}}
+.viewport {{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  width: 100vw;
+}}
+.stage {{
+  width: min(96vw, calc(96vh * (16 / 9)));
+  height: min(96vh, calc(96vw * (9 / 16)));
+  aspect-ratio: 16 / 9;
+  position: relative;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
+  border-radius: 6px;
+  overflow: hidden;
+  background: #000;
+}}
+.slide {{
+  display: none;
+  width: 100%;
+  height: 100%;
+}}
+.slide.active {{
+  display: block;
+}}
+.slide svg {{
+  width: 100%;
+  height: 100%;
+  display: block;
+}}
+/* Overview Grid */
+.overview {{
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.95);
+  backdrop-filter: blur(12px);
+  z-index: 500;
+  overflow-y: auto;
+  padding: 40px 24px;
+}}
+.overview.active {{
+  display: block;
+}}
+.overview-header {{
+  max-width: 1300px;
+  margin: 0 auto 24px auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}}
+.overview-title {{
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #e2e8f0;
+}}
+.overview-close {{
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  color: #fff;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}}
+.overview-close:hover {{
+  background: rgba(255, 255, 255, 0.2);
+}}
+.overview-grid {{
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 20px;
+  max-width: 1300px;
+  margin: 0 auto;
+}}
+.overview-item {{
+  aspect-ratio: 16 / 9;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, outline 0.15s ease;
+  background: #111;
+}}
+.overview-item:hover {{
+  transform: translateY(-3px) scale(1.02);
+  box-shadow: 0 8px 24px rgba(59, 130, 246, 0.4);
+}}
+.overview-item.active {{
+  outline: 3px solid #3b82f6;
+}}
+.overview-item svg {{
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}}
+.overview-badge {{
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+}}
+/* On-Screen Controls */
+.osc {{
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(30, 41, 59, 0.85);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 30px;
+  padding: 6px 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #cbd5e1;
+  font-size: 13px;
+  z-index: 200;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  opacity: 0.25;
+  transition: opacity 0.3s ease;
+}}
+.osc:hover, body.active-controls .osc {{
+  opacity: 1;
+}}
+.osc-btn {{
+  background: transparent;
+  border: none;
+  color: #cbd5e1;
+  cursor: pointer;
+  padding: 5px 9px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+}}
+.osc-btn:hover {{
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}}
+.osc-counter {{
+  padding: 0 6px;
+  font-weight: 600;
+  color: #94a3b8;
+}}
+@media print {{
+  body {{
+    background: #fff;
+    overflow: visible;
+    height: auto;
+  }}
+  .progress-bar, .osc, .overview {{ display: none !important; }}
+  .viewport {{
+    display: block;
+    height: auto;
+    width: auto;
+  }}
+  .stage {{
+    width: 100%;
+    height: auto;
+    box-shadow: none;
+    border-radius: 0;
+    overflow: visible;
+  }}
+  .slide {{
+    display: block !important;
+    page-break-after: always;
+    break-after: page;
+    height: 100vh;
+  }}
+}}
+</style>
+</head>
+<body>
+<div class="progress-bar" id="progressBar"></div>
+
+<div class="viewport">
+  <div class="stage">
+    {slides_html}
+  </div>
+</div>
+
+<div class="osc">
+  <button class="osc-btn" id="prevBtn" title="Previous Slide (Left/Up)">&#9664;</button>
+  <span class="osc-counter" id="counter">1 / {total}</span>
+  <button class="osc-btn" id="nextBtn" title="Next Slide (Right/Down/Space)">&#9654;</button>
+  <button class="osc-btn" id="overviewBtn" title="Toggle Overview (O / Esc)">&#8862; Grid</button>
+  <button class="osc-btn" id="fsBtn" title="Toggle Fullscreen (F)">&#x26F6;</button>
+</div>
+
+<div class="overview" id="overview">
+  <div class="overview-header">
+    <span class="overview-title">Slide Overview ({total} slides)</span>
+    <button class="overview-close" id="closeOverviewBtn">Close (Esc)</button>
+  </div>
+  <div class="overview-grid">
+    {overview_html}
+  </div>
+</div>
+
+<script>
+(function() {{
+  const total = {total};
+  let current = 1;
+  const slides = document.querySelectorAll('.slide');
+  const overviewItems = document.querySelectorAll('.overview-item');
+  const counter = document.getElementById('counter');
+  const progressBar = document.getElementById('progressBar');
+  const overview = document.getElementById('overview');
+
+  function update() {{
+    slides.forEach((s, idx) => {{
+      s.classList.toggle('active', idx + 1 === current);
+    }});
+    overviewItems.forEach((item, idx) => {{
+      item.classList.toggle('active', idx + 1 === current);
+    }});
+    counter.textContent = current + ' / ' + total;
+    progressBar.style.width = ((current / total) * 100) + '%';
+    window.location.hash = current;
+  }}
+
+  function gotoSlide(n) {{
+    if (n < 1) n = 1;
+    if (n > total) n = total;
+    current = n;
+    update();
+  }}
+
+  function next() {{ gotoSlide(current + 1); }}
+  function prev() {{ gotoSlide(current - 1); }}
+
+  function toggleOverview() {{
+    const isOpen = overview.classList.toggle('active');
+    if (isOpen) {{
+      const activeItem = overview.querySelector('.overview-item.active');
+      if (activeItem) activeItem.scrollIntoView({{ block: 'nearest' }});
+    }}
+  }}
+
+  function toggleFullscreen() {{
+    if (!document.fullscreenElement) {{
+      document.documentElement.requestFullscreen().catch(() => {{}});
+    }} else {{
+      document.exitFullscreen().catch(() => {{}});
+    }}
+  }}
+
+  document.getElementById('nextBtn').addEventListener('click', next);
+  document.getElementById('prevBtn').addEventListener('click', prev);
+  document.getElementById('overviewBtn').addEventListener('click', toggleOverview);
+  document.getElementById('closeOverviewBtn').addEventListener('click', toggleOverview);
+  document.getElementById('fsBtn').addEventListener('click', toggleFullscreen);
+
+  overviewItems.forEach(item => {{
+    item.addEventListener('click', () => {{
+      const target = parseInt(item.getAttribute('data-target'), 10);
+      gotoSlide(target);
+      overview.classList.remove('active');
+    }});
+  }});
+
+  // Keyboard navigation
+  window.addEventListener('keydown', (e) => {{
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    switch(e.key) {{
+      case 'ArrowRight':
+      case 'ArrowDown':
+      case 'PageDown':
+      case ' ':
+      case 'Enter':
+      case 'n':
+      case 'N':
+        if (!overview.classList.contains('active')) next();
+        break;
+      case 'ArrowLeft':
+      case 'ArrowUp':
+      case 'PageUp':
+      case 'Backspace':
+      case 'p':
+      case 'P':
+        if (!overview.classList.contains('active')) prev();
+        break;
+      case 'Home':
+        gotoSlide(1);
+        break;
+      case 'End':
+        gotoSlide(total);
+        break;
+      case 'f':
+      case 'F':
+        toggleFullscreen();
+        break;
+      case 'o':
+      case 'O':
+        toggleOverview();
+        break;
+      case 'Escape':
+        if (overview.classList.contains('active')) {{
+          overview.classList.remove('active');
+        }}
+        break;
+    }}
+  }});
+
+  // Touch Swipe navigation
+  let touchStartX = 0;
+  window.addEventListener('touchstart', e => {{
+    touchStartX = e.changedTouches[0].screenX;
+  }}, {{ passive: true }});
+  window.addEventListener('touchend', e => {{
+    const diff = e.changedTouches[0].screenX - touchStartX;
+    if (Math.abs(diff) > 40) {{
+      if (diff < 0) next(); else prev();
+    }}
+  }}, {{ passive: true }});
+
+  // Fade controls on idle
+  let mouseTimer = null;
+  window.addEventListener('mousemove', () => {{
+    document.body.classList.add('active-controls');
+    clearTimeout(mouseTimer);
+    mouseTimer = setTimeout(() => {{
+      document.body.classList.remove('active-controls');
+    }}, 2500);
+  }});
+
+  // Read initial slide from hash
+  const hash = parseInt(window.location.hash.replace('#', ''), 10);
+  if (!isNaN(hash) && hash >= 1 && hash <= total) {{
+    current = hash;
+  }}
+  update();
+}})();
+</script>
+</body>
+</html>"#)
+}
+
+fn render_document_html(pages: &[String]) -> String {
+    let mut pages_html = String::new();
+    for (i, svg) in pages.iter().enumerate() {
+        let idx = i + 1;
+        pages_html.push_str(&format!(
+            "<div class=\"page\" id=\"page-{idx}\">{svg}<div class=\"page-number\">{idx}</div></div>\n"
+        ));
+    }
+
+    format!(r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Botox Document</title>
+<style>
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{
+  background: #f1f5f9;
+  color: #0f172a;
+  font-family: system-ui, -apple-system, sans-serif;
+  padding: 32px 16px;
+  min-height: 100vh;
+}}
+.container {{
+  max-width: 860px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}}
+.page {{
+  background: #fff;
+  border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
+  position: relative;
+  overflow: hidden;
+}}
+.page svg {{
+  width: 100%;
+  height: auto;
+  display: block;
+}}
+.page-number {{
+  position: absolute;
+  bottom: 8px;
+  right: 12px;
+  font-size: 11px;
+  color: #94a3b8;
+  pointer-events: none;
+}}
+@media print {{
+  body {{
+    background: #fff;
+    padding: 0;
+  }}
+  .container {{
+    max-width: none;
+    margin: 0;
+    gap: 0;
+  }}
+  .page {{
+    box-shadow: none;
+    border-radius: 0;
+    page-break-after: always;
+    break-after: page;
+  }}
+  .page-number {{ display: none; }}
+}}
+</style>
+</head>
+<body>
+<div class="container">
+  {pages_html}
+</div>
+</body>
+</html>"#)
 }
 
 #[allow(dead_code)]
@@ -441,8 +934,15 @@ mod tests {
         assert!(json_str.contains("\"num_pages\":1"));
         assert!(json_str.contains("\"pages\":[\"<svg"));
 
+        let tmp_html = std::env::temp_dir().join("test_botox_page.html");
+        assert!(compile_typst(markup, &tmp_html, None).is_ok());
+        let html_str = std::fs::read_to_string(&tmp_html).expect("Read HTML");
+        assert!(html_str.contains("<!DOCTYPE html>"));
+        assert!(html_str.contains("<svg"));
+
         let _ = std::fs::remove_file(tmp_svg);
         let _ = std::fs::remove_file(tmp_json);
+        let _ = std::fs::remove_file(tmp_html);
     }
 
     #[test]

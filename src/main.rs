@@ -21,7 +21,7 @@ Commands:
   config                  Display currently active configuration settings and loaded sources
 
 Common Options:
-  -o, --output <file>     Output PDF file path (default: <input>.pdf, or '-' for stdout)
+  -o, --output <file>     Output file path (.pdf, .html, .svg, .json, or '-' for stdout)
   -w, --watch             Watch input file and directory for changes and recompile automatically
   --config <file>         Custom configuration YAML path
 
@@ -466,6 +466,27 @@ fn compile_once(
     Ok((is_slides, duration))
 }
 
+fn format_mode_str(is_slides: bool, output_path: &std::path::Path) -> &'static str {
+    let ext = output_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    if is_slides {
+        if ext == "html" || ext == "htm" {
+            "HTML presentation slides"
+        } else if ext == "svg" {
+            "SVG presentation slides"
+        } else {
+            "Presentation slides"
+        }
+    } else {
+        if ext == "html" || ext == "htm" {
+            "HTML document"
+        } else if ext == "svg" {
+            "SVG document"
+        } else {
+            "LaTeX PDF document"
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 || args[1] == "-h" || args[1] == "--help" {
@@ -643,7 +664,7 @@ fn main() {
         ) {
             Ok((is_slides, duration)) => {
                 if !is_stdout {
-                    let mode_str = if is_slides { "Presentation slides" } else { "LaTeX PDF document" };
+                    let mode_str = format_mode_str(is_slides, &output_path);
                     println!("Compiled {} -> '{}' in {:.2?}", mode_str, output_path.display(), duration);
                 }
             }
@@ -671,7 +692,7 @@ fn main() {
         false,
     ) {
         Ok((is_slides, duration)) => {
-            let mode_str = if is_slides { "Presentation slides" } else { "LaTeX PDF document" };
+            let mode_str = format_mode_str(is_slides, &output_path);
             if is_stdout {
                 eprintln!("[{}] Compiled {} -> stdout in {:.2?}", get_timestamp(), mode_str, duration);
             } else {
@@ -732,7 +753,7 @@ fn main() {
                 false,
             ) {
                 Ok((is_slides, duration)) => {
-                    let mode_str = if is_slides { "Presentation slides" } else { "LaTeX PDF document" };
+                    let mode_str = format_mode_str(is_slides, &output_path);
                     let now = get_timestamp();
                     let target = if is_stdout { "stdout".to_string() } else { format!("'{}'", output_path.display()) };
                     let msg = format!("[{now}] Recompiled {mode_str} -> {target} in {:.2?}", duration);
