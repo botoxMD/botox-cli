@@ -17,12 +17,44 @@ pub fn get_cache_dir() -> PathBuf {
     std::env::temp_dir().join("botox_diagrams")
 }
 
+/// Minimize and canonicalize diagram source text so that stylistic variations
+/// (such as added newlines, blank lines, indentation changes, CRLF vs LF, or comment lines)
+/// do not alter the cache hash or trigger unnecessary Kroki requests.
+pub fn canonicalize_diagram_source(diagram_type: &str, code: &str) -> String {
+    let norm_type = diagram_type.trim().to_lowercase();
+    let mut lines = Vec::new();
+
+    for raw_line in code.lines() {
+        let line = raw_line.trim();
+        // Skip blank or whitespace-only lines
+        if line.is_empty() {
+            continue;
+        }
+
+        // Skip comments that have no effect on rendered output
+        if norm_type == "mermaid" {
+            // In Mermaid, %% is comment unless it's a %%{init: ...}%% directive
+            if line.starts_with("%%") && !line.starts_with("%%{") {
+                continue;
+            }
+        } else if (norm_type == "plantuml" || norm_type == "puml") && line.starts_with('\'') {
+            // In PlantUML, lines starting with ' are comments
+            continue;
+        }
+
+        lines.push(line);
+    }
+
+    lines.join("\n")
+}
+
 /// Compute a unique deterministic cache hash for a diagram.
 pub fn compute_diagram_hash(diagram_type: &str, code: &str) -> String {
+    let canonical = canonicalize_diagram_source(diagram_type, code);
     let mut hasher = Sha256::new();
     hasher.update(diagram_type.trim().to_lowercase().as_bytes());
     hasher.update(b":");
-    hasher.update(code.trim().as_bytes());
+    hasher.update(canonical.as_bytes());
     let result = hasher.finalize();
     result.iter().map(|b| format!("{:02x}", b)).collect()
 }
@@ -42,12 +74,17 @@ pub fn render_diagram(
         other => other,
     };
 
+    let canonical_code = canonicalize_diagram_source(norm_type, code);
+    if canonical_code.is_empty() {
+        return Err("Diagram source code is empty".to_string());
+    }
+
     let cache_dir = get_cache_dir();
     if let Err(e) = fs::create_dir_all(&cache_dir) {
         return Err(format!("Failed to create diagram cache dir: {e}"));
     }
 
-    let hash = compute_diagram_hash(norm_type, code);
+    let hash = compute_diagram_hash(norm_type, &canonical_code);
     let cache_file = cache_dir.join(format!("{hash}.svg"));
 
     // Check existing cache
@@ -77,7 +114,7 @@ pub fn render_diagram(
         .post(&target_url)
         .header("Content-Type", "text/plain; charset=utf-8")
         .header("User-Agent", "botox/0.1")
-        .send(code)
+        .send(&canonical_code)
         .map_err(|e| format!("Kroki connection failed: {e}"))?;
 
     let status = resp.status();
@@ -103,6 +140,26 @@ pub fn render_diagram(
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn test_canonicalize_and_hash_newline_invariant() {
+        let code1 = "graph TD\n  A --> B";
+        let code2 = "\n\n  graph TD  \n\n\n    A --> B\n\n";
+        let code3 = "%% comment\ngraph TD\n\n  A --> B\n";
+        assert_eq!(canonicalize_diagram_source("mermaid", code1), "graph TD\nA --> B");
+        assert_eq!(canonicalize_diagram_source("mermaid", code2), "graph TD\nA --> B");
+        assert_eq!(canonicalize_diagram_source("mermaid", code3), "graph TD\nA --> B");
+        assert_eq!(compute_diagram_hash("mermaid", code1), compute_diagram_hash("mermaid", code2));
+        assert_eq!(compute_diagram_hash("mermaid", code1), compute_diagram_hash("mermaid", code3));
+
+        let puml1 = "@startuml\nClient -> Server : Ping\n@enduml";
+        let puml2 = "\n\n@startuml\n\n  Client -> Server : Ping  \n\n@enduml\n\n";
+        let puml3 = "@startuml\n' some developer comment\nClient -> Server : Ping\n@enduml";
+        assert_eq!(canonicalize_diagram_source("plantuml", puml1), canonicalize_diagram_source("plantuml", puml2));
+        assert_eq!(canonicalize_diagram_source("plantuml", puml1), canonicalize_diagram_source("plantuml", puml3));
+        assert_eq!(compute_diagram_hash("plantuml", puml1), compute_diagram_hash("plantuml", puml2));
+        assert_eq!(compute_diagram_hash("plantuml", puml1), compute_diagram_hash("plantuml", puml3));
+    }
 
     #[test]
     fn test_compute_diagram_hash_deterministic() {

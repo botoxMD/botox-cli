@@ -2384,6 +2384,11 @@ Check [link](https://example.com/api?q="quoted") here.
         assert!(typst_cached.contains("caption: [Client-Server Architecture]"));
         assert!(typst_cached.contains("<fig-arch>"));
 
+        // Adding extra blank lines, spaces, and indentation hits the exact same cache file and produces identical output
+        let md_with_newlines = "```mermaid {caption=\"Client-Server Architecture\" #fig:arch}\n\n  graph LR  \n\n    Client --> Server\n\n\n```";
+        let typst_with_newlines = markdown_to_typst(md_with_newlines, false, false, "en", None, None, None, None, None);
+        assert_eq!(typst_cached, typst_with_newlines);
+
         let _ = std::fs::remove_file(cache_file);
 
         // Test 2: Fallback when Kroki is unreachable produces warning callout with raw code
