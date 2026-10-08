@@ -1265,7 +1265,6 @@ pub fn markdown_to_typst(
     let mut table_alignments: Vec<&'static str> = Vec::new();
     let mut current_cell = String::new();
     let mut in_table = false;
-    let mut in_code_block = false;
     let mut in_footnote_def = false;
     let mut references: Vec<(String, String)> = Vec::new();
     let mut current_link: Option<(String, String)> = None;
@@ -1330,26 +1329,26 @@ pub fn markdown_to_typst(
                         typst.push_str("#quote[");
                     }
                     Tag::CodeBlock(kind) => {
+                        let mut code = String::new();
+                        let mut j = i + 1;
+                        while j < num_events {
+                            match &events[j] {
+                                Event::Text(t) => {
+                                    code.push_str(t);
+                                    j += 1;
+                                }
+                                Event::End(TagEnd::CodeBlock) => {
+                                    break;
+                                }
+                                _ => {
+                                    j += 1;
+                                }
+                            }
+                        }
+                        i = j + 1;
+
                         if let pulldown_cmark::CodeBlockKind::Fenced(ref fence) = kind {
                             if let Some(spec) = parse_diagram_fence(fence) {
-                                let mut code = String::new();
-                                let mut j = i + 1;
-                                while j < num_events {
-                                    match &events[j] {
-                                        Event::Text(t) => {
-                                            code.push_str(t);
-                                            j += 1;
-                                        }
-                                        Event::End(TagEnd::CodeBlock) => {
-                                            break;
-                                        }
-                                        _ => {
-                                            j += 1;
-                                        }
-                                    }
-                                }
-                                i = j + 1;
-
                                 match crate::diagrams::render_diagram(&spec.diagram_type, &code, None) {
                                     Ok(cached_path) => {
                                         let path_str = cached_path.to_string_lossy().replace('\\', "/");
@@ -1386,8 +1385,19 @@ pub fn markdown_to_typst(
                                         } else {
                                             format!("{code}\n")
                                         };
+                                        let mut max_ticks = 0;
+                                        let mut cur_ticks = 0;
+                                        for ch in clean_code.chars() {
+                                            if ch == '`' {
+                                                cur_ticks += 1;
+                                                if cur_ticks > max_ticks { max_ticks = cur_ticks; }
+                                            } else {
+                                                cur_ticks = 0;
+                                            }
+                                        }
+                                        let fence_str = "`".repeat((max_ticks + 1).max(3));
                                         typst.push_str(&format!(
-                                            "\n#botox_callout(\"warning\", \"{title}\")[\n```{raw_lang}\n{clean_code}```\n]\n\n"
+                                            "\n#botox_callout(\"warning\", \"{title}\")[\n{fence_str}{raw_lang}\n{clean_code}{fence_str}\n]\n\n"
                                         ));
                                     }
                                 }
@@ -1395,12 +1405,29 @@ pub fn markdown_to_typst(
                             }
                         }
 
-                        in_code_block = true;
-                        typst.push_str("```");
-                        if let pulldown_cmark::CodeBlockKind::Fenced(lang) = kind {
-                            typst.push_str(&lang);
+                        // Regular code block (fenced or indented)
+                        let lang = match &kind {
+                            pulldown_cmark::CodeBlockKind::Fenced(l) => l.as_ref(),
+                            pulldown_cmark::CodeBlockKind::Indented => "",
+                        };
+                        let mut max_ticks = 0;
+                        let mut cur_ticks = 0;
+                        for ch in code.chars() {
+                            if ch == '`' {
+                                cur_ticks += 1;
+                                if cur_ticks > max_ticks { max_ticks = cur_ticks; }
+                            } else {
+                                cur_ticks = 0;
+                            }
                         }
-                        typst.push('\n');
+                        let fence_str = "`".repeat((max_ticks + 1).max(3));
+                        let clean_code = if code.ends_with('\n') {
+                            code
+                        } else {
+                            format!("{code}\n")
+                        };
+                        typst.push_str(&format!("{fence_str}{lang}\n{clean_code}{fence_str}\n\n"));
+                        continue;
                     }
                     Tag::List(_) => {
                         list_depth += 1;
@@ -1541,13 +1568,7 @@ pub fn markdown_to_typst(
                     TagEnd::BlockQuote(_) => {
                         typst.push_str("]\n\n");
                     }
-                    TagEnd::CodeBlock => {
-                        in_code_block = false;
-                        if !typst.ends_with('\n') {
-                            typst.push('\n');
-                        }
-                        typst.push_str("```\n\n");
-                    }
+                    TagEnd::CodeBlock => {}
                     TagEnd::List(_) => {
                         list_depth = list_depth.saturating_sub(1);
                         if list_depth == 0 {
@@ -1758,8 +1779,6 @@ pub fn markdown_to_typst(
                 }
                 if in_table {
                     current_cell.push_str(&escaped);
-                } else if in_code_block {
-                    typst.push_str(&text);
                 } else {
                     typst.push_str(&escaped);
                 }
@@ -2399,5 +2418,21 @@ Check [link](https://example.com/api?q="quoted") here.
 
         assert!(typst_fallback.contains("#botox_callout(\"warning\", \"Diagram rendering failed: Kroki unreachable\")"));
         assert!(typst_fallback.contains("```plantuml\nAlice -> Bob : Ping\n```"));
+    }
+
+    #[test]
+    fn test_nested_code_fence_with_fig_attribute() {
+        let md = "````markdown\n```mermaid {caption=\"High-Level Architecture\" width=75% #fig:arch}\ngraph TD\n  A --> B\n```\n````";
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
+        assert!(typst.starts_with("````markdown\n"));
+        assert!(typst.ends_with("````\n\n"));
+
+        let fm = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let config = crate::config::DocumentConfig::defaults();
+        let typst_markup = crate::document::wrap_document(&typst, &fm, &config, None, None, None, None);
+        let tmp_pdf = std::env::temp_dir().join("test_nested_fence.pdf");
+        let res = crate::compiler::compile_typst(&typst_markup, &tmp_pdf, None);
+        assert!(res.is_ok(), "Typst compile error: {:?}", res.err());
+        let _ = std::fs::remove_file(tmp_pdf);
     }
 }
