@@ -170,7 +170,7 @@ Attributes inside `{...}` support:
 
 ## Diagrams (Mermaid & PlantUML)
 
-Botox natively compiles Mermaid and PlantUML diagrams into vector graphics using **Kroki** with zero local dependencies (no Node.js, Chromium, Java, or CLI tools needed):
+Botox natively compiles Mermaid and PlantUML diagrams into vector graphics using **Kroki** (with companion **mermaid.ink** fallback) with zero local dependencies (no Node.js, Chromium, Java, or CLI tools needed):
 
 ````markdown
 ```mermaid {caption="High-Level Architecture" width=75% #fig:arch}
@@ -191,7 +191,7 @@ Server --> Client : Token Issued
 ````
 
 - **Local SVG Caching**: Generated SVGs are stored locally in `~/.cache/botox/diagrams/`. Subsequent compilations load from disk instantly (0ms) with zero network requests.
-- **Offline / Outage Fallback**: If Kroki is unreachable or returns an error, Botox gracefully renders the raw syntax-highlighted code block inside a warning callout box.
+- **Resilient Fallback**: If Kroki is unreachable, Mermaid diagrams automatically fall back to mermaid.ink. If completely offline, Botox gracefully renders the raw syntax-highlighted code block inside a warning callout box.
 - **Custom Endpoints**: Point to self-hosted Kroki instances via the `KROKI_ENDPOINT` environment variable.
 
 ## Cross-Referencing

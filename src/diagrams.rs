@@ -59,9 +59,44 @@ pub fn compute_diagram_hash(diagram_type: &str, code: &str) -> String {
     result.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-/// Render a diagram using Kroki with local caching.
+/// Fetch a Mermaid SVG directly from mermaid.ink as a companion fallback.
+pub fn fetch_mermaid_ink(canonical_code: &str) -> Result<Vec<u8>, String> {
+    use base64::prelude::*;
+    let encoded = BASE64_URL_SAFE.encode(canonical_code.as_bytes());
+    let url = format!("https://mermaid.ink/svg/{encoded}");
+
+    let client = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_millis(4000)))
+        .build()
+        .new_agent();
+
+    let mut resp = client
+        .get(&url)
+        .header("User-Agent", "botox/0.1")
+        .call()
+        .map_err(|e| format!("mermaid.ink connection failed: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("mermaid.ink returned HTTP {status}"));
+    }
+
+    let svg_bytes = resp
+        .body_mut()
+        .read_to_vec()
+        .map_err(|e| format!("Failed to read response from mermaid.ink: {e}"))?;
+
+    if svg_bytes.is_empty() {
+        return Err("mermaid.ink returned an empty SVG response".to_string());
+    }
+
+    Ok(svg_bytes)
+}
+
+/// Render a diagram using Kroki (or mermaid.ink fallback for Mermaid) with local caching.
 /// If the diagram was already rendered and cached, it is returned immediately (0ms).
 /// If not cached, it attempts an HTTP POST request to Kroki.
+/// For Mermaid, if Kroki fails or times out, it automatically falls back to mermaid.ink.
 /// On failure, returns an error message so the caller can render a fallback.
 pub fn render_diagram(
     diagram_type: &str,
@@ -106,30 +141,48 @@ pub fn render_diagram(
     let target_url = format!("{}/{}/svg", base_url.trim_end_matches('/'), norm_type);
 
     let client = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(5)))
+        .timeout_global(Some(Duration::from_millis(3500)))
         .build()
         .new_agent();
 
-    let mut resp = client
+    let kroki_res = client
         .post(&target_url)
         .header("Content-Type", "text/plain; charset=utf-8")
         .header("User-Agent", "botox/0.1")
-        .send(&canonical_code)
-        .map_err(|e| format!("Kroki connection failed: {e}"))?;
+        .send(&canonical_code);
 
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(format!("Kroki returned HTTP {status}"));
-    }
-
-    let svg_bytes = resp
-        .body_mut()
-        .read_to_vec()
-        .map_err(|e| format!("Failed to read response from Kroki: {e}"))?;
-
-    if svg_bytes.is_empty() {
-        return Err("Kroki returned an empty SVG response".to_string());
-    }
+    let svg_bytes = match kroki_res {
+        Ok(mut resp) => {
+            let status = resp.status();
+            if !status.is_success() {
+                if norm_type == "mermaid" {
+                    // Try mermaid.ink fallback
+                    fetch_mermaid_ink(&canonical_code)
+                        .map_err(|e| format!("Kroki returned HTTP {status}; fallback failed: {e}"))?
+                } else {
+                    return Err(format!("Kroki returned HTTP {status}"));
+                }
+            } else {
+                let bytes = resp
+                    .body_mut()
+                    .read_to_vec()
+                    .map_err(|e| format!("Failed to read response from Kroki: {e}"))?;
+                if bytes.is_empty() {
+                    return Err("Kroki returned an empty SVG response".to_string());
+                }
+                bytes
+            }
+        }
+        Err(e) => {
+            if norm_type == "mermaid" {
+                // Kroki connection failed or timed out, attempt mermaid.ink fallback
+                fetch_mermaid_ink(&canonical_code)
+                    .map_err(|ink_err| format!("Kroki unreachable ({e}); mermaid.ink failed ({ink_err})"))?
+            } else {
+                return Err(format!("Kroki connection failed: {e}"));
+            }
+        }
+    };
 
     fs::write(&cache_file, svg_bytes)
         .map_err(|e| format!("Failed to write diagram to cache: {e}"))?;
@@ -194,9 +247,19 @@ pub mod tests {
     #[test]
     fn test_render_diagram_unreachable_endpoint_fallback() {
         let test_code = "unique_uncached_diagram_test_code_12345";
-        let res = render_diagram("mermaid", test_code, Some("http://127.0.0.1:1"));
+        let res = render_diagram("plantuml", test_code, Some("http://127.0.0.1:1"));
         assert!(res.is_err());
         let err = res.unwrap_err();
         assert!(err.contains("Kroki connection failed") || err.contains("connection refused") || err.contains("failed"));
+    }
+
+    #[test]
+    fn test_fetch_mermaid_ink_direct() {
+        let code = "graph TD\n  A --> B";
+        if let Ok(svg) = fetch_mermaid_ink(code) {
+            let svg_str = String::from_utf8_lossy(&svg);
+            assert!(svg_str.contains("<svg"));
+            assert!(svg_str.contains("</svg>"));
+        }
     }
 }
