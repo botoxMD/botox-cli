@@ -20,6 +20,37 @@ pub struct DocumentConfig {
     pub lang: Option<String>,
     pub linkcolor: Option<String>,
     pub toc_title: Option<String>,
+    pub references: Option<ReferencesConfig>,
+    #[serde(default, deserialize_with = "deserialize_string_or_vec", alias = "exclude-references", alias = "exclude_references", alias = "exclude-links")]
+    pub exclude_references: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_string_or_vec", alias = "include-references", alias = "include_references", alias = "include-links")]
+    pub include_references: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct ReferencesConfig {
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
+    pub exclude: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
+    pub include: Option<Vec<String>>,
+}
+
+fn deserialize_string_or_vec<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrVec {
+        Single(String),
+        Multiple(Vec<String>),
+    }
+
+    let opt = Option::<StringOrVec>::deserialize(deserializer)?;
+    Ok(opt.map(|val| match val {
+        StringOrVec::Single(s) => vec![s],
+        StringOrVec::Multiple(v) => v,
+    }))
 }
 
 impl Default for DocumentConfig {
@@ -48,6 +79,9 @@ impl DocumentConfig {
             bibliography: Some(false),
             lang: Some("en".to_string()),
             linkcolor: None,
+            references: None,
+            exclude_references: None,
+            include_references: None,
         }
     }
 
@@ -69,6 +103,9 @@ impl DocumentConfig {
         if other.bibliography.is_some() { self.bibliography = other.bibliography; }
         if other.lang.is_some() { self.lang = other.lang.clone(); }
         if other.linkcolor.is_some() { self.linkcolor = other.linkcolor.clone(); }
+        if other.references.is_some() { self.references = other.references.clone(); }
+        if other.exclude_references.is_some() { self.exclude_references = other.exclude_references.clone(); }
+        if other.include_references.is_some() { self.include_references = other.include_references.clone(); }
     }
 }
 
@@ -121,6 +158,7 @@ impl SlidesConfig {
 pub struct BotoxConfig {
     pub document: Option<DocumentConfig>,
     pub slides: Option<SlidesConfig>,
+    pub references: Option<ReferencesConfig>,
 }
 
 impl Default for BotoxConfig {
@@ -134,6 +172,7 @@ impl BotoxConfig {
         Self {
             document: Some(DocumentConfig::defaults()),
             slides: Some(SlidesConfig::defaults()),
+            references: None,
         }
     }
 
@@ -150,6 +189,14 @@ impl BotoxConfig {
                 slides.merge_with(other_slides);
             } else {
                 self.slides = Some(other_slides.clone());
+            }
+        }
+        if let Some(ref other_ref) = other.references {
+            if let Some(ref mut r) = self.references {
+                if other_ref.exclude.is_some() { r.exclude = other_ref.exclude.clone(); }
+                if other_ref.include.is_some() { r.include = other_ref.include.clone(); }
+            } else {
+                self.references = Some(other_ref.clone());
             }
         }
     }

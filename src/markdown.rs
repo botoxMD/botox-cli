@@ -72,6 +72,104 @@ fn parse_github_callout_header(s: &str) -> Option<(String, String)> {
     Some((kind.to_string(), title.to_string()))
 }
 
+pub fn extract_host(url: &str) -> Option<&str> {
+    let without_scheme = if let Some(rest) = url.strip_prefix("https://") {
+        rest
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        rest
+    } else if let Some(rest) = url.strip_prefix("ftp://") {
+        rest
+    } else {
+        url
+    };
+    let host_and_port = without_scheme.split(&['/', '?', '#'][..]).next().unwrap_or("");
+    let host = host_and_port.split(':').next().unwrap_or("");
+    if host.is_empty() {
+        None
+    } else {
+        Some(host)
+    }
+}
+
+pub fn glob_match(pattern: &str, text: &str) -> bool {
+    let p_chars: Vec<char> = pattern.chars().collect();
+    let t_chars: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0, 0);
+    let (mut star_pi, mut star_ti) = (None, 0);
+
+    while ti < t_chars.len() {
+        if pi < p_chars.len() && (p_chars[pi] == '?' || p_chars[pi].to_ascii_lowercase() == t_chars[ti].to_ascii_lowercase()) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p_chars.len() && p_chars[pi] == '*' {
+            star_pi = Some(pi);
+            pi += 1;
+            star_ti = ti;
+        } else if let Some(spi) = star_pi {
+            pi = spi + 1;
+            star_ti += 1;
+            ti = star_ti;
+        } else {
+            return false;
+        }
+    }
+
+    while pi < p_chars.len() && p_chars[pi] == '*' {
+        pi += 1;
+    }
+
+    pi == p_chars.len()
+}
+
+pub fn url_matches_pattern(url: &str, pattern: &str) -> bool {
+    let pat = pattern.trim();
+    if pat.is_empty() {
+        return false;
+    }
+
+    let clean_url = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .or_else(|| url.strip_prefix("ftp://"))
+        .unwrap_or(url);
+
+    // 1. Wildcard glob match against full url and scheme-stripped url
+    if pat.contains('*') || pat.contains('?') {
+        if glob_match(pat, url) || glob_match(pat, clean_url) {
+            return true;
+        }
+        // Also try matching against host
+        if let Some(host) = extract_host(url) {
+            if glob_match(pat, host) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // 2. Clean scheme from pattern if present
+    let clean_pat = pat
+        .strip_prefix("https://")
+        .or_else(|| pat.strip_prefix("http://"))
+        .unwrap_or(pat)
+        .trim_end_matches('/');
+
+    // If pattern contains a path (e.g. "github.com/myorg" or "example.com/docs")
+    if clean_pat.contains('/') {
+        return clean_url.to_ascii_lowercase().starts_with(&clean_pat.to_ascii_lowercase())
+            || url.to_ascii_lowercase().contains(&pat.to_ascii_lowercase());
+    }
+
+    // If pattern is a domain name (e.g. "github.com", "x.com", "wikipedia.org")
+    if let Some(host) = extract_host(url) {
+        let host_lower = host.to_ascii_lowercase();
+        let pat_lower = clean_pat.to_ascii_lowercase();
+        return host_lower == pat_lower || host_lower.ends_with(&format!(".{pat_lower}"));
+    }
+
+    false
+}
+
 fn clean_command_title(mut rest: &str) -> Option<String> {
     rest = rest.trim();
     if rest.starts_with(':') {
@@ -1020,6 +1118,8 @@ pub fn markdown_to_typst(
     biblio_title: Option<&str>,
     toc_title: Option<&str>,
     toc_depth: Option<usize>,
+    ref_exclude: Option<&[String]>,
+    ref_include: Option<&[String]>,
 ) -> String {
     let preprocessed = preprocess_pandoc(markdown);
     let markdown = &preprocessed;
@@ -1196,7 +1296,24 @@ pub fn markdown_to_typst(
                         let is_external = dest_url.starts_with("http://")
                             || dest_url.starts_with("https://")
                             || dest_url.starts_with("ftp://");
-                        if should_index_citations && is_external {
+
+                        let is_excluded = if is_external {
+                            let not_in_include = if let Some(inc) = ref_include {
+                                !inc.iter().any(|pat| url_matches_pattern(&dest_url, pat))
+                            } else {
+                                false
+                            };
+                            let in_exclude = if let Some(exc) = ref_exclude {
+                                exc.iter().any(|pat| url_matches_pattern(&dest_url, pat))
+                            } else {
+                                false
+                            };
+                            not_in_include || in_exclude
+                        } else {
+                            true
+                        };
+
+                        if should_index_citations && is_external && !is_excluded {
                             current_link = Some((dest_url.to_string(), String::new()));
                         } else {
                             current_link = None;
@@ -1792,7 +1909,7 @@ mod tests {
     #[test]
     fn test_sub_super_and_strikethrough() {
         let md = "H~2~O and 10^6^ with ~~strike~~ and `code_with_~_and_^`";
-        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
         println!("TYPST RESULT: {:?}", typst);
         assert!(typst.contains("#sub[2]"));
         assert!(typst.contains("#super[6]"));
@@ -1818,7 +1935,7 @@ Include <stdio.h> and break line<br>next line.
 - [x] Done task
 Check [link](https://example.com/api?q="quoted") here.
 "#;
-        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
         assert!(typst.contains(r"1..\*"));
         assert!(typst.contains(r"x \< 5 and y \> 2"));
         assert!(typst.contains(r"user\@domain.com"));
@@ -1858,7 +1975,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_pagebreaks() {
         let md = "Before\n\n\\newpage\n\nMiddle\n\n\\columnbreak\n\nAfter";
-        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
         assert!(typst.contains("#pagebreak()"));
         assert!(typst.contains("#colbreak()"));
     }
@@ -1866,7 +1983,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_bibliography_link_transformation() {
         let md = "See [Rust](https://www.rust-lang.org) and [LLVM](https://llvm.org). Also [Rust Lang](https://www.rust-lang.org).";
-        let typst = markdown_to_typst(md, false, true, "en", None, None, None);
+        let typst = markdown_to_typst(md, false, true, "en", None, None, None, None, None);
         assert!(typst.contains("#link(<bib-1>)[\\"));
         assert!(typst.contains("#link(<bib-2>)[\\"));
         assert!(typst.contains("#heading(numbering: none)[References] <references>"));
@@ -1880,27 +1997,27 @@ Check [link](https://example.com/api?q="quoted") here.
     fn test_explicit_toc_spawning() {
         // Plain \toc
         let md1 = "# Chapter 1\n\n\\toc\n\n# Chapter 2";
-        let typ1 = markdown_to_typst(md1, false, false, "en", None, None, Some(3));
+        let typ1 = markdown_to_typst(md1, false, false, "en", None, None, Some(3), None, None);
         assert!(typ1.contains("#outline(depth: 3)"));
 
         // \toc with title
         let md2 = "# Intro\n\n\\toc Table of Contents\n\n# Main";
-        let typ2 = markdown_to_typst(md2, false, false, "en", None, None, Some(2));
+        let typ2 = markdown_to_typst(md2, false, false, "en", None, None, Some(2), None, None);
         assert!(typ2.contains("#outline(title: \"Table of Contents\", depth: 2)"));
 
         // \toc with quotes
         let md3 = "\\toc \"Agenda Overview\"";
-        let typ3 = markdown_to_typst(md3, false, false, "en", None, None, None);
+        let typ3 = markdown_to_typst(md3, false, false, "en", None, None, None, None, None);
         assert!(typ3.contains("#outline(title: \"Agenda Overview\", depth: 3)"));
 
         // \toc with braces
         let md4 = "\\toc {Document Outline}";
-        let typ4 = markdown_to_typst(md4, false, false, "en", None, None, None);
+        let typ4 = markdown_to_typst(md4, false, false, "en", None, None, None, None, None);
         assert!(typ4.contains("#outline(title: \"Document Outline\", depth: 3)"));
 
         // \tableofcontents
         let md5 = "\\tableofcontents Sommaire";
-        let typ5 = markdown_to_typst(md5, false, false, "fr", None, None, None);
+        let typ5 = markdown_to_typst(md5, false, false, "fr", None, None, None, None, None);
         assert!(typ5.contains("#outline(title: \"Sommaire\", depth: 3)"));
     }
 
@@ -1908,14 +2025,14 @@ Check [link](https://example.com/api?q="quoted") here.
     fn test_explicit_ref_spawning_and_removal() {
         // Document without \ref and bibliography=false: NO references rendered, normal links
         let md_clean = "Visit [Google](https://google.com) for searching.";
-        let typ_clean = markdown_to_typst(md_clean, false, false, "en", None, None, None);
+        let typ_clean = markdown_to_typst(md_clean, false, false, "en", None, None, None, None, None);
         assert!(!typ_clean.contains("<references>"));
         assert!(!typ_clean.contains("<bib-1>"));
         assert!(typ_clean.contains("#link(\"https://google.com\")[Google]"));
 
         // Document with explicit \ref Works Cited
         let md_ref = "# Introduction\n\nCheck out [Rust](https://rust-lang.org) and [Typst](https://typst.app).\n\n\\ref Works Cited";
-        let typ_ref = markdown_to_typst(md_ref, false, false, "en", None, None, None);
+        let typ_ref = markdown_to_typst(md_ref, false, false, "en", None, None, None, None, None);
         assert!(typ_ref.contains("#heading(numbering: none)[Works Cited] <references>"));
         assert!(typ_ref.contains("#link(<bib-1>)["));
         assert!(typ_ref.contains("<bib-1>"));
@@ -1925,24 +2042,63 @@ Check [link](https://example.com/api?q="quoted") here.
 
         // Document with \ref Sources in quotes
         let md_quotes = "See [Site](https://example.com).\n\n\\ref \"Sources and References\"";
-        let typ_quotes = markdown_to_typst(md_quotes, false, false, "en", None, None, None);
+        let typ_quotes = markdown_to_typst(md_quotes, false, false, "en", None, None, None, None, None);
         assert!(typ_quotes.contains("#heading(numbering: none)[Sources and References] <references>"));
 
         // Document with plain \ref
         let md_plain = "See [Site](https://example.com).\n\n\\ref";
-        let typ_plain = markdown_to_typst(md_plain, false, false, "en", None, None, None);
+        let typ_plain = markdown_to_typst(md_plain, false, false, "en", None, None, None, None, None);
         assert!(typ_plain.contains("#heading(numbering: none)[References] <references>"));
 
         // LaTeX cross-reference \ref{sec:intro} inside text must NOT trigger references block
         let md_latex = "As shown in section \\ref{sec:intro}.";
-        let typ_latex = markdown_to_typst(md_latex, false, false, "en", None, None, None);
+        let typ_latex = markdown_to_typst(md_latex, false, false, "en", None, None, None, None, None);
         assert!(!typ_latex.contains("<references>"));
+    }
+
+    #[test]
+    fn test_url_matches_pattern() {
+        assert!(url_matches_pattern("https://github.com/rust-lang/rust", "github.com"));
+        assert!(url_matches_pattern("https://www.github.com/rust-lang/rust", "github.com"));
+        assert!(url_matches_pattern("https://github.com", "*github.com*"));
+        assert!(url_matches_pattern("https://x.com/profile", "x.com"));
+        // Avoid false positive on substring in host:
+        assert!(!url_matches_pattern("https://latex.com/page", "x.com"));
+        // Glob matching:
+        assert!(url_matches_pattern("https://en.wikipedia.org/wiki/Rust", "*.org"));
+        assert!(url_matches_pattern("https://my-company.com/internal/docs", "my-company.com/*"));
+        assert!(!url_matches_pattern("https://other.com/internal/docs", "my-company.com/*"));
+    }
+
+    #[test]
+    fn test_references_exclusion_and_inclusion() {
+        let md = "See [GitHub](https://github.com/rust-lang/rust), [Twitter](https://x.com/rustlang), and [Rust Lang](https://rust-lang.org).\n\n\\ref";
+
+        // Exclude github.com and x.com:
+        let exc = vec!["github.com".to_string(), "x.com".to_string()];
+        let typ = markdown_to_typst(md, false, false, "en", None, None, None, Some(&exc), None);
+        // Only Rust Lang should be cited in bibliography as [1]
+        assert!(typ.contains("#link(<bib-1>)["));
+        assert!(!typ.contains("#link(<bib-2>)["));
+        assert!(typ.contains("<bib-1>"));
+        assert!(typ.contains("https://rust-lang.org"));
+        assert!(!typ.contains("<bib-2>"));
+        // GitHub and Twitter should be normal inline links without citation markers
+        assert!(typ.contains("#link(\"https://github.com/rust-lang/rust\")[GitHub]"));
+        assert!(typ.contains("#link(\"https://x.com/rustlang\")[Twitter]"));
+
+        // Inclusion whitelist: only rust-lang.org
+        let inc = vec!["rust-lang.org".to_string()];
+        let typ_inc = markdown_to_typst(md, false, false, "en", None, None, None, None, Some(&inc));
+        assert!(typ_inc.contains("#link(<bib-1>)["));
+        assert!(!typ_inc.contains("<bib-2>"));
+        assert!(typ_inc.contains("https://rust-lang.org"));
     }
 
     #[test]
     fn test_display_math_and_latex_superscript() {
         let md = "$$\\int_{-\\infty}^{+\\infty} e^{-x^2} \\, dx = \\sqrt{\\pi}$$\n\n$$\n\\sum_{k=0}^\\infty \\frac{1}{k!}\n$$";
-        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
         assert!(!typst.contains("#super"), "Math must not contain #super: {typst}");
         assert!(!typst.contains("#sub"), "Math must not contain #sub: {typst}");
         assert!(typst.contains("oo"), "Infinity should be oo: {typst}");
@@ -1952,7 +2108,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_image_rendering() {
         let md = "![Architecture Pipeline](figures/arch.png)\n\n![](logo.svg)";
-        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
         assert!(typst.contains("#figure(image(\"figures/arch.png\"), caption: [Architecture Pipeline])"));
         assert!(typst.contains("#align(center)[#image(\"logo.svg\")]"));
     }
@@ -1960,7 +2116,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_pandoc_image_attributes() {
         let md = "![Architecture Pipeline](figures/arch.png){width=50% #fig:pipeline}\n\n![](logo.svg){width=10cm height=5cm}\n\n![Relative](banner.png){width=0.8\\linewidth}";
-        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
         assert!(typst.contains("#figure(image(\"figures/arch.png\", width: 50%), caption: [Architecture Pipeline]) <fig-pipeline>"));
         assert!(typst.contains("#align(center)[#image(\"logo.svg\", width: 10cm, height: 5cm)]"));
         assert!(typst.contains("#figure(image(\"banner.png\", width: 80%), caption: [Relative])"));
@@ -1969,7 +2125,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_pandoc_cross_references() {
         let md = "As seen in @fig:pipeline and @tbl:results, we refer to @sec:intro and @eq:euler.";
-        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
         assert!(typst.contains("@fig-pipeline"));
         assert!(typst.contains("@tbl-results"));
         assert!(typst.contains("@sec-intro"));
@@ -1979,7 +2135,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_pandoc_heading_attributes() {
         let md = "# Introduction {#sec:intro}\n\n## Appendix {-}\n\n### Extra Notes {.unnumbered #sec:extra}";
-        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
         assert!(typst.contains("= Introduction <sec-intro>"));
         assert!(typst.contains("#heading(level: 2, numbering: none)[Appendix]"));
         assert!(typst.contains("#heading(level: 3, numbering: none)[Extra Notes] <sec-extra>"));
@@ -1988,7 +2144,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_pandoc_callout_divs() {
         let md = "::: note\nThis is a standard note.\n:::\n\n::: {.warning title=\"Caution Alert\"}\nDanger ahead!\n:::";
-        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
         assert!(typst.contains("#botox_callout(\"note\", \"\")[\nThis is a standard note."));
         assert!(typst.contains("#botox_callout(\"warning\", \"Caution Alert\")[\nDanger ahead!"));
     }
@@ -1996,7 +2152,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_github_callouts() {
         let md = "> [!NOTE]\n> This is a GitHub note.\n\n> [!TIP] Pro Tip\n> Remember to save your work.\n\n> [!IMPORTANT]\n> Critical instruction here.\n\n> [!WARNING]\n> High voltage!";
-        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
         assert!(typst.contains("#botox_callout(\"note\", \"\")[\nThis is a GitHub note."));
         assert!(typst.contains("#botox_callout(\"tip\", \"Pro Tip\")[\nRemember to save your work."));
         assert!(typst.contains("#botox_callout(\"important\", \"\")[\nCritical instruction here."));
@@ -2006,7 +2162,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_pandoc_display_math_label() {
         let md = "$$ E = m c^2 $$ {#eq:einstein}\n\n$$ a^2 + b^2 = c^2 \\label{eq:pythagoras} $$";
-        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
         assert!(typst.contains("<eq-einstein>"));
         assert!(typst.contains("<eq-pythagoras>"));
     }
@@ -2014,7 +2170,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_pandoc_table_caption_and_label() {
         let md = "Table: Forwarding performance summary. {#tbl:perf}\n\n| Technique | Speedup |\n| --- | --- |\n| Full | 1.45x |";
-        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
         assert!(typst.contains("caption: [Forwarding performance summary.]"));
         assert!(typst.contains("<tbl-perf>"));
     }
@@ -2022,14 +2178,14 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_today_replacement() {
         let md = "Today's date is \\today in presentation.";
-        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
         assert!(typst.contains(r#"#datetime.today().display("[day] [month repr:long] [year]")"#));
     }
 
     #[test]
     fn test_pause_extraction() {
         let md = "Point 1\n\\pause\nPoint 2\n<!-- pause -->\nPoint 3";
-        let typst = markdown_to_typst(md, true, false, "en", None, None, None);
+        let typst = markdown_to_typst(md, true, false, "en", None, None, None, None, None);
         assert!(typst.contains("#botox_pause()"));
     }
 }

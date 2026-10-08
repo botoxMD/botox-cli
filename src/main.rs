@@ -35,6 +35,8 @@ Documentation Options:
   -N, --number-sections   Number section headings
   -b, --bibliography      Transform web links into an IEEE-standard Bibliography
   --no-bibliography       Disable automatic Bibliography generation
+  --exclude-ref <pattern> Exclude matching URLs/domains from references (e.g. "github.com,x.com")
+  --include-ref <pattern> Only include matching URLs/domains in references
 
 Slide Options:
   --slides                Force presentation slide deck mode
@@ -452,6 +454,8 @@ fn compile_once(
     cli_font: Option<&str>,
     cli_bibliography: Option<bool>,
     cli_theme: Option<&str>,
+    cli_exclude_ref: &[String],
+    cli_include_ref: &[String],
     is_stdin: bool,
 ) -> Result<(bool, std::time::Duration), String> {
     let raw_content = if is_stdin {
@@ -507,11 +511,96 @@ fn compile_once(
         .map(|n| n as usize)
         .or(doc_config.toc_depth);
 
+    let extract_string_list = |val: &Value| -> Vec<String> {
+        if let Some(arr) = val.as_sequence() {
+            arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
+        } else if let Some(s) = val.as_str() {
+            vec![s.to_string()]
+        } else {
+            Vec::new()
+        }
+    };
+
+    let mut ref_exclude = Vec::new();
+    ref_exclude.extend_from_slice(cli_exclude_ref);
+    if let Some(ref cfg_ref) = config_data.references {
+        if let Some(ref exc) = cfg_ref.exclude {
+            ref_exclude.extend(exc.clone());
+        }
+    }
+    if let Some(ref cfg_ref) = doc_config.references {
+        if let Some(ref exc) = cfg_ref.exclude {
+            ref_exclude.extend(exc.clone());
+        }
+    }
+    if let Some(ref exc) = doc_config.exclude_references {
+        ref_exclude.extend(exc.clone());
+    }
+    if let Some(v) = fm.get("references").and_then(|r| r.get("exclude")) {
+        ref_exclude.extend(extract_string_list(v));
+    }
+    if let Some(v) = fm.get("exclude-references")
+        .or_else(|| fm.get("exclude_references"))
+        .or_else(|| fm.get("exclude-links"))
+        .or_else(|| fm.get("exclude_links"))
+    {
+        ref_exclude.extend(extract_string_list(v));
+    }
+
+    let mut ref_include = Vec::new();
+    ref_include.extend_from_slice(cli_include_ref);
+    if let Some(ref cfg_ref) = config_data.references {
+        if let Some(ref inc) = cfg_ref.include {
+            ref_include.extend(inc.clone());
+        }
+    }
+    if let Some(ref cfg_ref) = doc_config.references {
+        if let Some(ref inc) = cfg_ref.include {
+            ref_include.extend(inc.clone());
+        }
+    }
+    if let Some(ref inc) = doc_config.include_references {
+        ref_include.extend(inc.clone());
+    }
+    if let Some(v) = fm.get("references").and_then(|r| r.get("include")) {
+        ref_include.extend(extract_string_list(v));
+    }
+    if let Some(v) = fm.get("include-references")
+        .or_else(|| fm.get("include_references"))
+        .or_else(|| fm.get("include-links"))
+        .or_else(|| fm.get("include_links"))
+    {
+        ref_include.extend(extract_string_list(v));
+    }
+
+    let exclude_opt = if ref_exclude.is_empty() { None } else { Some(ref_exclude) };
+    let include_opt = if ref_include.is_empty() { None } else { Some(ref_include) };
+
     let typst_markup = if is_slides {
-        let body_typst = markdown::markdown_to_typst(body_md, true, should_enable_bib, lang, biblio_title, toc_title, toc_depth);
+        let body_typst = markdown::markdown_to_typst(
+            body_md,
+            true,
+            should_enable_bib,
+            lang,
+            biblio_title,
+            toc_title,
+            toc_depth,
+            exclude_opt.as_deref(),
+            include_opt.as_deref(),
+        );
         slides::wrap_slides(&body_typst, &fm, &slides_config, cli_author, cli_theme)
     } else {
-        let body_typst = markdown::markdown_to_typst(body_md, false, should_enable_bib, lang, biblio_title, toc_title, toc_depth);
+        let body_typst = markdown::markdown_to_typst(
+            body_md,
+            false,
+            should_enable_bib,
+            lang,
+            biblio_title,
+            toc_title,
+            toc_depth,
+            exclude_opt.as_deref(),
+            include_opt.as_deref(),
+        );
         document::wrap_document(
             &body_typst,
             &fm,
@@ -590,6 +679,8 @@ fn main() {
     let mut cli_theme: Option<String> = None;
     let mut cli_bibliography: Option<bool> = None;
     let mut cli_resource_dir: Option<PathBuf> = None;
+    let mut cli_exclude_ref: Vec<String> = Vec::new();
+    let mut cli_include_ref: Vec<String> = Vec::new();
     let mut explicit_pdf = false;
     let mut explicit_slides = false;
     let mut watch_mode = false;
@@ -623,6 +714,28 @@ fn main() {
             }
             "--no-bib" | "--no-bibliography" => {
                 cli_bibliography = Some(false);
+            }
+            "--exclude-ref" | "--exclude-references" | "--exclude-links" => {
+                i += 1;
+                if i < args.len() {
+                    for part in args[i].split(',') {
+                        let trimmed = part.trim();
+                        if !trimmed.is_empty() {
+                            cli_exclude_ref.push(trimmed.to_string());
+                        }
+                    }
+                }
+            }
+            "--include-ref" | "--include-references" | "--include-links" => {
+                i += 1;
+                if i < args.len() {
+                    for part in args[i].split(',') {
+                        let trimmed = part.trim();
+                        if !trimmed.is_empty() {
+                            cli_include_ref.push(trimmed.to_string());
+                        }
+                    }
+                }
             }
             "--theme" => {
                 i += 1;
@@ -724,6 +837,8 @@ fn main() {
             cli_font.as_deref(),
             cli_bibliography,
             cli_theme.as_deref(),
+            &cli_exclude_ref,
+            &cli_include_ref,
             is_stdin,
         ) {
             Ok((is_slides, duration)) => {
@@ -753,6 +868,8 @@ fn main() {
         cli_font.as_deref(),
         cli_bibliography,
         cli_theme.as_deref(),
+        &cli_exclude_ref,
+        &cli_include_ref,
         false,
     ) {
         Ok((is_slides, duration)) => {
@@ -814,6 +931,8 @@ fn main() {
                 cli_font.as_deref(),
                 cli_bibliography,
                 cli_theme.as_deref(),
+                &cli_exclude_ref,
+                &cli_include_ref,
                 false,
             ) {
                 Ok((is_slides, duration)) => {
