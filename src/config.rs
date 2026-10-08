@@ -3,35 +3,53 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DocumentConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub affiliation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fontsize: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mainfont: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mathfont: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub monofont: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub papersize: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub columns: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub section_numbering: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub toc: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub toc_depth: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub margin: Option<MarginConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bibliography: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub linkcolor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub toc_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub references: Option<ReferencesConfig>,
-    #[serde(default, deserialize_with = "deserialize_string_or_vec", alias = "exclude-references", alias = "exclude_references", alias = "exclude-links")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_string_or_vec", alias = "exclude-references", alias = "exclude_references", alias = "exclude-links")]
     pub exclude_references: Option<Vec<String>>,
-    #[serde(default, deserialize_with = "deserialize_string_or_vec", alias = "include-references", alias = "include_references", alias = "include-links")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_string_or_vec", alias = "include-references", alias = "include_references", alias = "include-links")]
     pub include_references: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct ReferencesConfig {
-    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_string_or_vec")]
     pub exclude: Option<Vec<String>>,
-    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_string_or_vec")]
     pub include: Option<Vec<String>>,
 }
 
@@ -118,11 +136,17 @@ pub enum MarginConfig {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SlidesConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub paginate: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub font: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub background_color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
 }
 
@@ -156,8 +180,11 @@ impl SlidesConfig {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct BotoxConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub document: Option<DocumentConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub slides: Option<SlidesConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub references: Option<ReferencesConfig>,
 }
 
@@ -276,13 +303,69 @@ impl BotoxConfig {
     }
 }
 
-fn dirs_home() -> Option<PathBuf> {
+pub fn dirs_home() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .and_then(|h| if h.is_empty() { None } else { Some(PathBuf::from(h)) })
         .or_else(|| {
             std::env::var_os("USERPROFILE")
                 .and_then(|h| if h.is_empty() { None } else { Some(PathBuf::from(h)) })
         })
+}
+
+pub fn global_config_path() -> PathBuf {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        if !appdata.trim().is_empty() {
+            return PathBuf::from(appdata).join("botox").join("config.yaml");
+        }
+    }
+    if let Some(home) = dirs_home() {
+        return home.join(".config").join("botox").join("config.yaml");
+    }
+    PathBuf::from("config.yaml")
+}
+
+pub fn generate_config_yaml(
+    author: &str,
+    affiliation: Option<&str>,
+    doc_theme: &str,
+    slide_theme: &str,
+    papersize: &str,
+    toc: bool,
+    bib: bool,
+) -> String {
+    let aff_line = match affiliation {
+        Some(a) if !a.trim().is_empty() => format!("  affiliation: \"{}\"\n", a.trim()),
+        _ => String::new(),
+    };
+
+    format!(
+r#"# Botox Global Configuration
+# Default style, author, and formatting for PDF documents and slides.
+
+document:
+  author: "{author}"
+{aff_line}  theme: "{doc_theme}"                    # academic, modern, elegant, technical, compact, minimal
+  fontsize: "11pt"
+  mainfont: "New Computer Modern"       # True LaTeX font
+  mathfont: "New Computer Modern Math"  # True LaTeX math font
+  monofont: "DejaVu Sans Mono"          # Monospace font
+  papersize: "{papersize}"              # a4 or us-letter
+  columns: 1                            # 1 or 2 (multi-column)
+  margin:
+    x: "2.5cm"
+    y: "2.5cm"
+  section_numbering: true               # Numbered sections: 1, 1.1
+  toc: {toc}                           # Enable Table of Contents by default
+  bibliography: {bib}                   # Transform web links into an automatic IEEE bibliography
+  lang: "en"
+
+slides:
+  theme: "{slide_theme}"                # default, academic, nord, dark
+  author: "{author}"
+  paginate: true
+  font: "New Computer Modern"
+"#
+    )
 }
 
 #[cfg(test)]
@@ -330,5 +413,30 @@ document:
         // Preserved default
         assert_eq!(doc.papersize.as_deref(), Some("a4"));
         assert_eq!(doc.monofont.as_deref(), Some("DejaVu Sans Mono"));
+    }
+
+    #[test]
+    fn test_generate_config_yaml_parseable() {
+        let yaml = generate_config_yaml(
+            "Test Author",
+            Some("Research Lab"),
+            "modern",
+            "nord",
+            "us-letter",
+            true,
+            false,
+        );
+        let parsed: BotoxConfig = serde_yaml::from_str(&yaml).expect("parse generated yaml");
+        let doc = parsed.document.expect("doc");
+        assert_eq!(doc.author.as_deref(), Some("Test Author"));
+        assert_eq!(doc.affiliation.as_deref(), Some("Research Lab"));
+        assert_eq!(doc.theme.as_deref(), Some("modern"));
+        assert_eq!(doc.papersize.as_deref(), Some("us-letter"));
+        assert_eq!(doc.toc, Some(true));
+        assert_eq!(doc.bibliography, Some(false));
+
+        let slides = parsed.slides.expect("slides");
+        assert_eq!(slides.theme.as_deref(), Some("nord"));
+        assert_eq!(slides.author.as_deref(), Some("Test Author"));
     }
 }

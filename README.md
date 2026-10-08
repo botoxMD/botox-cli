@@ -7,7 +7,7 @@ author:
   - name: "Core Architecture Team"
     affiliation: "Botox Project"
 date: \today
-fig:
+krocki-url: https://140.238.215.250.sslip.io/
 abstract: "Botox is a pure Rust, single-binary command-line suite that compiles standard Markdown documents into publication-grade LaTeX-style PDF documentation or presentation slide decks. Featuring an embedded in-process typesetting engine, authentic New Computer Modern typography, advanced TeX mathematics, native IEEE-standard bibliographies, and Pandoc extensions, Botox requires zero external runtime dependencies."
 ---
 
@@ -102,6 +102,9 @@ botox document.md --bib -o document.pdf
 botox document.md --toc -o document.pdf
 botox document.md --no-toc -o document.pdf
 
+# Run interactive setup wizard to configure user defaults
+botox setup
+
 # Inspect active configuration settings
 botox config
 ```
@@ -172,15 +175,14 @@ Attributes inside `{...}` support:
 
 Botox natively compiles Mermaid and PlantUML diagrams into vector graphics using **Kroki** (with companion **mermaid.ink** fallback) with zero local dependencies (no Node.js, Chromium, Java, or CLI tools needed):
 
-````markdown
-```mermaid {caption="High-Level Architecture" width=75% #fig:arch}
+```mermaid {caption="High-Level Architecture" width=30% #fig:arch}
 graph TD
   Client --> API[Botox CLI]
   API --> Engine[Embedded Typst Engine]
   Engine --> PDF[LaTeX PDF Document]
 ```
 
-```plantuml {caption="Authentication Handshake" #fig:auth}
+```plantuml
 @startuml
 Client -> Server : Request Token
 Server -> DB : Validate Credentials
@@ -188,7 +190,6 @@ DB --> Server : Valid
 Server --> Client : Token Issued
 @enduml
 ```
-````
 
 - **Local SVG Caching**: Generated SVGs are stored locally in `~/.cache/botox/diagrams/`. Subsequent compilations load from disk instantly (0ms) with zero network requests.
 - **Resilient Fallback**: If Kroki is unreachable, Mermaid diagrams automatically fall back to mermaid.ink. If completely offline, Botox gracefully renders the raw syntax-highlighted code block inside a warning callout box.

@@ -136,7 +136,7 @@ pub fn render_diagram(
         .map(|s| s.to_string())
         .or_else(|| std::env::var("KROKI_ENDPOINT").ok())
         .or_else(|| std::env::var("KROKI_URL").ok())
-        .unwrap_or_else(|| "https://kroki.io".to_string());
+        .unwrap_or_else(|| "https://140.238.215.250.sslip.io".to_string());
 
     let target_url = format!("{}/{}/svg", base_url.trim_end_matches('/'), norm_type);
 

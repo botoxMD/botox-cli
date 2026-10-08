@@ -13,6 +13,7 @@ fn show_help() {
        botox <pdf|slides> <input.md> [options]
        botox init <filename> [options]
        botox config
+       botox setup [options]
 
 Pure Rust single native binary: Transforms Markdown into LaTeX-quality PDF documents or presentation slides.
 Mode is detected automatically from frontmatter structure, or specified explicitly.
@@ -20,6 +21,7 @@ Mode is detected automatically from frontmatter structure, or specified explicit
 Commands:
   init <filename>         Initialize a new Markdown document or presentation slide deck
   config                  Display currently active configuration settings and loaded sources
+  setup                   Interactive configuration wizard to configure user defaults
 
 Common Options:
   -o, --output <file>     Output file path (.pdf, .html, .svg, .json, or '-' for stdout)
@@ -43,6 +45,250 @@ Slide Options:
   --slides                Force presentation slide deck mode
   --theme <theme>         Slide theme: default, academic, dark, nord
 "#);
+}
+
+fn handle_setup(args: &[String]) {
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        println!(r#"Usage: botox setup [options]
+
+Interactive configuration wizard to set global or local typesetting defaults.
+
+Options:
+  --global                Save to global configuration (~/.config/botox/config.yaml) [default]
+  --local                 Save to current directory (./botox.yaml)
+  --author <name>         Pre-set default author
+  --affiliation <org>     Pre-set default affiliation
+  --theme <theme>         Pre-set default document theme (academic, modern, elegant, technical, compact, minimal)
+  --slides-theme <theme>  Pre-set default slide theme (default, academic, dark, nord)
+  --papersize <size>      Pre-set default paper size (a4, us-letter)
+  --toc                   Enable Table of Contents by default
+  --no-toc                Disable Table of Contents by default
+  --bibliography          Enable automatic Bibliography by default
+  --no-bibliography       Disable automatic Bibliography by default
+  --non-interactive, -y   Save configuration without interactive prompts
+"#);
+        return;
+    }
+
+    let mut force_global = false;
+    let mut force_local = false;
+    let mut non_interactive = false;
+
+    let mut cli_author: Option<String> = None;
+    let mut cli_affiliation: Option<String> = None;
+    let mut cli_theme: Option<String> = None;
+    let mut cli_slides_theme: Option<String> = None;
+    let mut cli_papersize: Option<String> = None;
+    let mut cli_toc: Option<bool> = None;
+    let mut cli_bib: Option<bool> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--global" => force_global = true,
+            "--local" => force_local = true,
+            "--non-interactive" | "-y" => non_interactive = true,
+            "--author" => {
+                i += 1;
+                if i < args.len() { cli_author = Some(args[i].clone()); }
+            }
+            "--affiliation" => {
+                i += 1;
+                if i < args.len() { cli_affiliation = Some(args[i].clone()); }
+            }
+            "--theme" => {
+                i += 1;
+                if i < args.len() { cli_theme = Some(args[i].clone()); }
+            }
+            "--slides-theme" => {
+                i += 1;
+                if i < args.len() { cli_slides_theme = Some(args[i].clone()); }
+            }
+            "--papersize" => {
+                i += 1;
+                if i < args.len() { cli_papersize = Some(args[i].clone()); }
+            }
+            "--toc" => cli_toc = Some(true),
+            "--no-toc" => cli_toc = Some(false),
+            "--bibliography" => cli_bib = Some(true),
+            "--no-bibliography" => cli_bib = Some(false),
+            _ => {}
+        }
+        i += 1;
+    }
+
+    // Load existing config to propose current values as defaults
+    let (existing, _) = config::BotoxConfig::load(None, None);
+    let existing_doc = existing.document.unwrap_or_default();
+    let existing_slides = existing.slides.unwrap_or_default();
+
+    let default_author = cli_author
+        .or(existing_doc.author)
+        .or_else(|| std::env::var("USER").or_else(|_| std::env::var("USERNAME")).ok())
+        .unwrap_or_else(|| "Minus".to_string());
+
+    let default_affiliation = cli_affiliation
+        .or(existing_doc.affiliation)
+        .unwrap_or_default();
+
+    let default_doc_theme = cli_theme
+        .or(existing_doc.theme)
+        .unwrap_or_else(|| "academic".to_string());
+
+    let default_slides_theme = cli_slides_theme
+        .or(existing_slides.theme)
+        .unwrap_or_else(|| "default".to_string());
+
+    let default_papersize = cli_papersize
+        .or(existing_doc.papersize)
+        .unwrap_or_else(|| "a4".to_string());
+
+    let default_toc = cli_toc
+        .or(existing_doc.toc)
+        .unwrap_or(false);
+
+    let default_bib = cli_bib
+        .or(existing_doc.bibliography)
+        .unwrap_or(true);
+
+    let (chosen_author, chosen_affiliation, chosen_doc_theme, chosen_slides_theme, chosen_papersize, chosen_toc, chosen_bib, is_global) = if non_interactive {
+        (
+            default_author,
+            default_affiliation,
+            default_doc_theme,
+            default_slides_theme,
+            default_papersize,
+            default_toc,
+            default_bib,
+            !force_local,
+        )
+    } else {
+        println!("\n╔══════════════════════════════════════════════════════════════╗");
+        println!("║                Botox Setup & Defaults Wizard                 ║");
+        println!("╚══════════════════════════════════════════════════════════════╝");
+        println!("Configure your default author, themes, and typesetting styles.");
+        println!("Press [Enter] to keep the current value shown in brackets.\n");
+
+        let author = prompt_line("1. Default Author name", &default_author);
+        let affiliation = prompt_line("2. Default Affiliation / Institution", &default_affiliation);
+        let doc_theme = prompt_choice(
+            "3. Default Document Theme (academic, modern, elegant, technical, compact, minimal)",
+            &["academic", "modern", "elegant", "technical", "compact", "minimal"],
+            &default_doc_theme,
+        );
+        let slides_theme = prompt_choice(
+            "4. Default Slide Theme (default, academic, dark, nord)",
+            &["default", "academic", "dark", "nord"],
+            &default_slides_theme,
+        );
+        let papersize = prompt_choice(
+            "5. Paper Size (a4, us-letter)",
+            &["a4", "us-letter"],
+            &default_papersize,
+        );
+        let toc = prompt_bool("6. Enable Table of Contents by default in new documents?", default_toc);
+        let bib = prompt_bool("7. Enable automatic IEEE Bibliography from web links?", default_bib);
+
+        let target_global = if force_global {
+            true
+        } else if force_local {
+            false
+        } else {
+            let choice = prompt_line(
+                "8. Save configuration scope:\n   [1] Global (~/.config/botox/config.yaml - all projects)\n   [2] Local  (./botox.yaml - current folder only)\n   Choose 1 or 2",
+                "1",
+            );
+            choice.trim() != "2"
+        };
+
+        (author, affiliation, doc_theme, slides_theme, papersize, toc, bib, target_global)
+    };
+
+    let target_path = if is_global {
+        config::global_config_path()
+    } else {
+        PathBuf::from("botox.yaml")
+    };
+
+    if let Some(parent) = target_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+
+    let yaml_content = config::generate_config_yaml(
+        &chosen_author,
+        if chosen_affiliation.trim().is_empty() { None } else { Some(&chosen_affiliation) },
+        &chosen_doc_theme,
+        &chosen_slides_theme,
+        &chosen_papersize,
+        chosen_toc,
+        chosen_bib,
+    );
+
+    match std::fs::write(&target_path, yaml_content) {
+        Ok(()) => {
+            println!("\n✓ Successfully saved Botox defaults to '{}'", target_path.display());
+            println!("Summary of active defaults:");
+            println!("  - Author:            {}", chosen_author);
+            if !chosen_affiliation.trim().is_empty() {
+                println!("  - Affiliation:       {}", chosen_affiliation);
+            }
+            println!("  - Document Theme:    {}", chosen_doc_theme);
+            println!("  - Slide Theme:       {}", chosen_slides_theme);
+            println!("  - Paper Size:        {}", chosen_papersize);
+            println!("  - Table of Contents: {}", if chosen_toc { "Enabled" } else { "Disabled" });
+            println!("  - Bibliography:      {}", if chosen_bib { "Enabled" } else { "Disabled" });
+            println!("\nYou can re-run 'botox setup' anytime or edit the YAML file directly.\n");
+        }
+        Err(e) => {
+            eprintln!("Error saving configuration to '{}': {e}", target_path.display());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn prompt_line(prompt: &str, default: &str) -> String {
+    use std::io::{self, Write};
+    if default.is_empty() {
+        print!("{prompt}: ");
+    } else {
+        print!("{prompt} [{default}]: ");
+    }
+    let _ = io::stdout().flush();
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_ok() {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            default.to_string()
+        } else {
+            trimmed.to_string()
+        }
+    } else {
+        default.to_string()
+    }
+}
+
+fn prompt_bool(prompt: &str, default: bool) -> bool {
+    let def_str = if default { "Y/n" } else { "y/N" };
+    let prompt_full = format!("{prompt} [{def_str}]");
+    let res = prompt_line(&prompt_full, if default { "y" } else { "n" });
+    match res.trim().to_lowercase().as_str() {
+        "y" | "yes" | "true" | "1" => true,
+        "n" | "no" | "false" | "0" => false,
+        _ => default,
+    }
+}
+
+fn prompt_choice(prompt: &str, choices: &[&str], default: &str) -> String {
+    let input = prompt_line(prompt, default);
+    let trimmed = input.trim().to_lowercase();
+    for c in choices {
+        if trimmed == *c {
+            return c.to_string();
+        }
+    }
+    default.to_string()
 }
 
 fn handle_init(args: &[String]) {
@@ -653,6 +899,11 @@ fn main() {
         return;
     }
 
+    if args[1] == "setup" {
+        handle_setup(&args[2..]);
+        return;
+    }
+
     if args[1] == "config" {
         let (resolved_cfg, paths) = config::BotoxConfig::load(None, None);
         println!("Configuration status:");
@@ -1000,5 +1251,43 @@ mod tests {
         // CLI theme override
         let tpl2 = generate_init_template(true, &cfg, Some("nord"), Path::new("talk.md"));
         assert!(tpl2.contains("theme: nord"));
+    }
+
+    #[test]
+    fn test_handle_setup_non_interactive_local() {
+        let temp_dir = std::env::temp_dir().join("botox_setup_test");
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let orig_dir = std::env::current_dir().unwrap();
+        let _ = std::env::set_current_dir(&temp_dir);
+
+        let args = vec![
+            "--non-interactive".to_string(),
+            "--local".to_string(),
+            "--author".to_string(),
+            "Grace Hopper".to_string(),
+            "--theme".to_string(),
+            "modern".to_string(),
+            "--slides-theme".to_string(),
+            "nord".to_string(),
+            "--papersize".to_string(),
+            "us-letter".to_string(),
+            "--toc".to_string(),
+            "--bibliography".to_string(),
+        ];
+        handle_setup(&args);
+
+        let local_cfg = temp_dir.join("botox.yaml");
+        assert!(local_cfg.is_file(), "Local config should be generated");
+        let content = std::fs::read_to_string(&local_cfg).unwrap();
+        assert!(content.contains("author: \"Grace Hopper\""));
+        assert!(content.contains("theme: \"modern\""));
+        assert!(content.contains("theme: \"nord\""));
+        assert!(content.contains("papersize: \"us-letter\""));
+        assert!(content.contains("toc: true"));
+        assert!(content.contains("bibliography: true"));
+
+        let _ = std::fs::remove_file(local_cfg);
+        let _ = std::env::set_current_dir(orig_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 }
