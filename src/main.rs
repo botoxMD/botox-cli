@@ -606,20 +606,7 @@ fn detect_is_slides(
 }
 
 fn get_timestamp() -> String {
-    unsafe {
-        let mut now: libc::time_t = 0;
-        libc::time(&mut now);
-        let mut tm: libc::tm = std::mem::zeroed();
-        if !libc::localtime_r(&now, &mut tm).is_null() {
-            format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
-        } else {
-            let secs = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            format!("{:02}:{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60)
-        }
-    }
+    chrono::Local::now().format("%H:%M:%S").to_string()
 }
 
 fn is_relevant_watch_file(path: &std::path::Path, output_path: &std::path::Path) -> bool {

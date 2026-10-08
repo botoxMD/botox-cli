@@ -150,9 +150,9 @@ name = "botox"
 version = "0.1.2"
 dependencies = [
  "base64 0.23.1",
+ "chrono",
  "ctrlc",
  "fontdb",
- "libc",
  "pulldown-cmark",
  "serde",
  "serde_json",
