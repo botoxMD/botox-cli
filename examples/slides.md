@@ -2,7 +2,7 @@
 marp: true
 title: "Next-Generation Systems with Botox"
 author: "Systems Architecture Group"
-theme: gaia
+theme: uncover
 paginate: true
 ---
 

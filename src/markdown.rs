@@ -72,6 +72,109 @@ fn parse_github_callout_header(s: &str) -> Option<(String, String)> {
     Some((kind.to_string(), title.to_string()))
 }
 
+fn clean_command_title(mut rest: &str) -> Option<String> {
+    rest = rest.trim();
+    if rest.starts_with(':') {
+        rest = rest[1..].trim();
+    }
+    if (rest.starts_with('"') && rest.ends_with('"') && rest.len() >= 2)
+        || (rest.starts_with('\'') && rest.ends_with('\'') && rest.len() >= 2)
+        || (rest.starts_with('{') && rest.ends_with('}') && rest.len() >= 2)
+    {
+        rest = &rest[1..rest.len() - 1];
+    }
+    let trimmed = rest.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn parse_toc_line(line: &str) -> Option<Option<String>> {
+    let trimmed = line.trim();
+
+    if trimmed.starts_with("<!--") && trimmed.ends_with("-->") && trimmed.len() >= 7 {
+        let inner = trimmed[4..trimmed.len() - 3].trim();
+        if inner == "toc" || inner == "tableofcontents" {
+            return Some(None);
+        }
+        for prefix in &["toc", "tableofcontents"] {
+            if inner.starts_with(prefix) {
+                let rest = &inner[prefix.len()..];
+                if rest.starts_with(' ') || rest.starts_with(':') {
+                    return Some(clean_command_title(rest));
+                }
+            }
+        }
+    }
+
+    if trimmed == r"\toc" {
+        return Some(None);
+    }
+    if trimmed.starts_with(r"\toc ") || trimmed.starts_with(r"\toc:") || trimmed.starts_with(r"\toc{") {
+        return Some(clean_command_title(&trimmed[4..]));
+    }
+
+    if trimmed == r"\tableofcontents" {
+        return Some(None);
+    }
+    if trimmed.starts_with(r"\tableofcontents ") || trimmed.starts_with(r"\tableofcontents:") || trimmed.starts_with(r"\tableofcontents{") {
+        return Some(clean_command_title(&trimmed[16..]));
+    }
+
+    None
+}
+
+fn parse_ref_line(line: &str) -> Option<Option<String>> {
+    let trimmed = line.trim();
+
+    if trimmed.starts_with("<!--") && trimmed.ends_with("-->") && trimmed.len() >= 7 {
+        let inner = trimmed[4..trimmed.len() - 3].trim();
+        if inner == "ref" || inner == "references" || inner == "bibliography" {
+            return Some(None);
+        }
+        for prefix in &["ref", "references", "bibliography"] {
+            if inner.starts_with(prefix) {
+                let rest = &inner[prefix.len()..];
+                if rest.starts_with(' ') || rest.starts_with(':') {
+                    return Some(clean_command_title(rest));
+                }
+            }
+        }
+    }
+
+    if trimmed == r"\ref" {
+        return Some(None);
+    }
+    if trimmed.starts_with(r"\ref ") || trimmed.starts_with(r"\ref:") {
+        return Some(clean_command_title(&trimmed[4..]));
+    }
+    if trimmed.starts_with(r"\ref{") {
+        if !trimmed.contains(':') {
+            return Some(clean_command_title(&trimmed[4..]));
+        } else {
+            return None;
+        }
+    }
+
+    if trimmed == r"\references" {
+        return Some(None);
+    }
+    if trimmed.starts_with(r"\references ") || trimmed.starts_with(r"\references:") || trimmed.starts_with(r"\references{") {
+        return Some(clean_command_title(&trimmed[11..]));
+    }
+
+    if trimmed == r"\bibliography" {
+        return Some(None);
+    }
+    if trimmed.starts_with(r"\bibliography ") || trimmed.starts_with(r"\bibliography:") || trimmed.starts_with(r"\bibliography{") {
+        return Some(clean_command_title(&trimmed[13..]));
+    }
+
+    None
+}
+
 fn preprocess_pandoc(markdown: &str) -> String {
     let mut result = String::with_capacity(markdown.len());
     let mut in_code_fence = false;
@@ -136,6 +239,32 @@ fn preprocess_pandoc(markdown: &str) -> String {
             let line_mod = line.replace(r"\pause", "<!--botox:pause-->");
             result.push_str(&line_mod);
             result.push('\n');
+            continue;
+        }
+
+        if let Some(toc_title_opt) = parse_toc_line(line_trimmed) {
+            if in_github_callout {
+                result.push_str("\n<!--botox:callout:end-->\n\n");
+                in_github_callout = false;
+            }
+            if let Some(title) = toc_title_opt {
+                result.push_str(&format!("\n<!--botox:toc:{title}-->\n\n"));
+            } else {
+                result.push_str("\n<!--botox:toc-->\n\n");
+            }
+            continue;
+        }
+
+        if let Some(ref_title_opt) = parse_ref_line(line_trimmed) {
+            if in_github_callout {
+                result.push_str("\n<!--botox:callout:end-->\n\n");
+                in_github_callout = false;
+            }
+            if let Some(title) = ref_title_opt {
+                result.push_str(&format!("\n<!--botox:ref:{title}-->\n\n"));
+            } else {
+                result.push_str("\n<!--botox:ref-->\n\n");
+            }
             continue;
         }
 
@@ -889,9 +1018,13 @@ pub fn markdown_to_typst(
     bibliography: bool,
     lang: &str,
     biblio_title: Option<&str>,
+    toc_title: Option<&str>,
+    toc_depth: Option<usize>,
 ) -> String {
     let preprocessed = preprocess_pandoc(markdown);
     let markdown = &preprocessed;
+    let has_ref_command = preprocessed.contains("<!--botox:ref");
+    let should_index_citations = bibliography || has_ref_command;
 
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
@@ -1063,7 +1196,7 @@ pub fn markdown_to_typst(
                         let is_external = dest_url.starts_with("http://")
                             || dest_url.starts_with("https://")
                             || dest_url.starts_with("ftp://");
-                        if bibliography && is_external {
+                        if should_index_citations && is_external {
                             current_link = Some((dest_url.to_string(), String::new()));
                         } else {
                             current_link = None;
@@ -1381,6 +1514,36 @@ pub fn markdown_to_typst(
                     typst.push_str("\n#colbreak()\n\n");
                 } else if html.contains("<!--botox:pause-->") || html.contains("pause") {
                     typst.push_str("\n#botox_pause()\n\n");
+                } else if html.contains("<!--botox:toc") {
+                    let custom_title = if html.contains("<!--botox:toc:") {
+                        let rest = html.split("<!--botox:toc:").nth(1).unwrap_or("");
+                        let inner = rest.split("-->").next().unwrap_or("").trim();
+                        if !inner.is_empty() {
+                            Some(inner.to_string())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    let title_to_use = custom_title.as_deref().or(toc_title);
+                    let depth = toc_depth.unwrap_or(3);
+                    if let Some(t) = title_to_use {
+                        let escaped_t = escape_typst_text(t);
+                        typst.push_str(&format!("\n#outline(title: \"{escaped_t}\", depth: {depth})\n#v(1.5em)\n\n"));
+                    } else {
+                        typst.push_str(&format!("\n#outline(depth: {depth})\n#v(1.5em)\n\n"));
+                    }
+                } else if html.contains("<!--botox:ref") {
+                    let custom_title = if html.contains("<!--botox:ref:") {
+                        let rest = html.split("<!--botox:ref:").nth(1).unwrap_or("");
+                        let inner = rest.split("-->").next().unwrap_or("").trim();
+                        inner.to_string()
+                    } else {
+                        String::new()
+                    };
+                    typst.push_str(&format!("\nBOTOX_REF_PLACEHOLDER_START:{custom_title}:BOTOX_REF_PLACEHOLDER_END\n\n"));
                 } else if html.trim().starts_with("<!--") && html.trim().ends_with("-->") {
                     // Raw HTML comment: ignore
                 } else {
@@ -1551,7 +1714,7 @@ pub fn markdown_to_typst(
         i += 1;
     }
 
-    if bibliography && !references.is_empty() {
+    let format_references_block = |custom_heading: Option<&str>, refs: &[(String, String)], at_start_of_slide: bool| -> String {
         let default_heading = match lang {
             "fr" => "Références",
             "de" => "Literaturverzeichnis",
@@ -1559,7 +1722,7 @@ pub fn markdown_to_typst(
             "it" => "Riferimenti bibliografici",
             _ => "References",
         };
-        let heading = biblio_title.unwrap_or(default_heading);
+        let heading = custom_heading.unwrap_or_else(|| biblio_title.unwrap_or(default_heading));
 
         let (online_label, available_label) = match lang {
             "fr" => ("[En ligne]", "Disponible sur :"),
@@ -1569,15 +1732,18 @@ pub fn markdown_to_typst(
             _ => ("[Online]", "Available:"),
         };
 
+        let mut block = String::new();
         if is_slides {
-            typst.push_str("\n\n#pagebreak()\n\n");
+            if !at_start_of_slide {
+                block.push_str("\n\n#pagebreak()\n\n");
+            }
         } else {
-            typst.push_str("\n\n#v(2em)\n");
+            block.push_str("\n\n#v(2em)\n");
         }
-        typst.push_str(&format!("#heading(numbering: none)[{heading}] <references>\n\n"));
-        typst.push_str("#set par(hanging-indent: 1.8em, justify: false)\n\n");
+        block.push_str(&format!("#heading(numbering: none)[{heading}] <references>\n\n"));
+        block.push_str("#set par(hanging-indent: 1.8em, justify: false)\n\n");
 
-        for (i, (url, label)) in references.iter().enumerate() {
+        for (i, (url, label)) in refs.iter().enumerate() {
             let idx = i + 1;
 
             let is_url_label = label.is_empty()
@@ -1586,11 +1752,34 @@ pub fn markdown_to_typst(
                 || label.starts_with("https://");
 
             if is_url_label {
-                typst.push_str(&format!("#block[\\[{idx}\\] {online_label}. {available_label} #link(\"{url}\").] <bib-{idx}>\n\n"));
+                block.push_str(&format!("#block[\\[{idx}\\] {online_label}. {available_label} #link(\"{url}\").] <bib-{idx}>\n\n"));
             } else {
-                typst.push_str(&format!("#block[\\[{idx}\\] \"{label}\", {online_label}. {available_label} #link(\"{url}\").] <bib-{idx}>\n\n"));
+                block.push_str(&format!("#block[\\[{idx}\\] \"{label}\", {online_label}. {available_label} #link(\"{url}\").] <bib-{idx}>\n\n"));
             }
         }
+        block
+    };
+
+    while let Some(start_pos) = typst.find("BOTOX_REF_PLACEHOLDER_START:") {
+        if let Some(end_pos) = typst[start_pos..].find(":BOTOX_REF_PLACEHOLDER_END") {
+            let full_end = start_pos + end_pos + ":BOTOX_REF_PLACEHOLDER_END".len();
+            let title_raw = &typst[start_pos + "BOTOX_REF_PLACEHOLDER_START:".len()..start_pos + end_pos];
+            let custom_heading = if !title_raw.trim().is_empty() {
+                Some(title_raw.trim())
+            } else {
+                None
+            };
+            let at_start_of_slide = typst[..start_pos].trim_end().ends_with("#pagebreak()");
+            let ref_rendered = format_references_block(custom_heading, &references, at_start_of_slide);
+            typst.replace_range(start_pos..full_end, &ref_rendered);
+        } else {
+            break;
+        }
+    }
+
+    if !has_ref_command && bibliography && !references.is_empty() {
+        let ref_rendered = format_references_block(None, &references, false);
+        typst.push_str(&ref_rendered);
     }
 
     typst
@@ -1603,7 +1792,7 @@ mod tests {
     #[test]
     fn test_sub_super_and_strikethrough() {
         let md = "H~2~O and 10^6^ with ~~strike~~ and `code_with_~_and_^`";
-        let typst = markdown_to_typst(md, false, false, "en", None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
         println!("TYPST RESULT: {:?}", typst);
         assert!(typst.contains("#sub[2]"));
         assert!(typst.contains("#super[6]"));
@@ -1629,7 +1818,7 @@ Include <stdio.h> and break line<br>next line.
 - [x] Done task
 Check [link](https://example.com/api?q="quoted") here.
 "#;
-        let typst = markdown_to_typst(md, false, false, "en", None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
         assert!(typst.contains(r"1..\*"));
         assert!(typst.contains(r"x \< 5 and y \> 2"));
         assert!(typst.contains(r"user\@domain.com"));
@@ -1669,7 +1858,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_pagebreaks() {
         let md = "Before\n\n\\newpage\n\nMiddle\n\n\\columnbreak\n\nAfter";
-        let typst = markdown_to_typst(md, false, false, "en", None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
         assert!(typst.contains("#pagebreak()"));
         assert!(typst.contains("#colbreak()"));
     }
@@ -1677,7 +1866,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_bibliography_link_transformation() {
         let md = "See [Rust](https://www.rust-lang.org) and [LLVM](https://llvm.org). Also [Rust Lang](https://www.rust-lang.org).";
-        let typst = markdown_to_typst(md, false, true, "en", None);
+        let typst = markdown_to_typst(md, false, true, "en", None, None, None);
         assert!(typst.contains("#link(<bib-1>)[\\"));
         assert!(typst.contains("#link(<bib-2>)[\\"));
         assert!(typst.contains("#heading(numbering: none)[References] <references>"));
@@ -1688,9 +1877,72 @@ Check [link](https://example.com/api?q="quoted") here.
     }
 
     #[test]
+    fn test_explicit_toc_spawning() {
+        // Plain \toc
+        let md1 = "# Chapter 1\n\n\\toc\n\n# Chapter 2";
+        let typ1 = markdown_to_typst(md1, false, false, "en", None, None, Some(3));
+        assert!(typ1.contains("#outline(depth: 3)"));
+
+        // \toc with title
+        let md2 = "# Intro\n\n\\toc Table of Contents\n\n# Main";
+        let typ2 = markdown_to_typst(md2, false, false, "en", None, None, Some(2));
+        assert!(typ2.contains("#outline(title: \"Table of Contents\", depth: 2)"));
+
+        // \toc with quotes
+        let md3 = "\\toc \"Agenda Overview\"";
+        let typ3 = markdown_to_typst(md3, false, false, "en", None, None, None);
+        assert!(typ3.contains("#outline(title: \"Agenda Overview\", depth: 3)"));
+
+        // \toc with braces
+        let md4 = "\\toc {Document Outline}";
+        let typ4 = markdown_to_typst(md4, false, false, "en", None, None, None);
+        assert!(typ4.contains("#outline(title: \"Document Outline\", depth: 3)"));
+
+        // \tableofcontents
+        let md5 = "\\tableofcontents Sommaire";
+        let typ5 = markdown_to_typst(md5, false, false, "fr", None, None, None);
+        assert!(typ5.contains("#outline(title: \"Sommaire\", depth: 3)"));
+    }
+
+    #[test]
+    fn test_explicit_ref_spawning_and_removal() {
+        // Document without \ref and bibliography=false: NO references rendered, normal links
+        let md_clean = "Visit [Google](https://google.com) for searching.";
+        let typ_clean = markdown_to_typst(md_clean, false, false, "en", None, None, None);
+        assert!(!typ_clean.contains("<references>"));
+        assert!(!typ_clean.contains("<bib-1>"));
+        assert!(typ_clean.contains("#link(\"https://google.com\")[Google]"));
+
+        // Document with explicit \ref Works Cited
+        let md_ref = "# Introduction\n\nCheck out [Rust](https://rust-lang.org) and [Typst](https://typst.app).\n\n\\ref Works Cited";
+        let typ_ref = markdown_to_typst(md_ref, false, false, "en", None, None, None);
+        assert!(typ_ref.contains("#heading(numbering: none)[Works Cited] <references>"));
+        assert!(typ_ref.contains("#link(<bib-1>)["));
+        assert!(typ_ref.contains("<bib-1>"));
+        assert!(typ_ref.contains("<bib-2>"));
+        assert!(typ_ref.contains("https://rust-lang.org"));
+        assert!(typ_ref.contains("https://typst.app"));
+
+        // Document with \ref Sources in quotes
+        let md_quotes = "See [Site](https://example.com).\n\n\\ref \"Sources and References\"";
+        let typ_quotes = markdown_to_typst(md_quotes, false, false, "en", None, None, None);
+        assert!(typ_quotes.contains("#heading(numbering: none)[Sources and References] <references>"));
+
+        // Document with plain \ref
+        let md_plain = "See [Site](https://example.com).\n\n\\ref";
+        let typ_plain = markdown_to_typst(md_plain, false, false, "en", None, None, None);
+        assert!(typ_plain.contains("#heading(numbering: none)[References] <references>"));
+
+        // LaTeX cross-reference \ref{sec:intro} inside text must NOT trigger references block
+        let md_latex = "As shown in section \\ref{sec:intro}.";
+        let typ_latex = markdown_to_typst(md_latex, false, false, "en", None, None, None);
+        assert!(!typ_latex.contains("<references>"));
+    }
+
+    #[test]
     fn test_display_math_and_latex_superscript() {
         let md = "$$\\int_{-\\infty}^{+\\infty} e^{-x^2} \\, dx = \\sqrt{\\pi}$$\n\n$$\n\\sum_{k=0}^\\infty \\frac{1}{k!}\n$$";
-        let typst = markdown_to_typst(md, false, false, "en", None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
         assert!(!typst.contains("#super"), "Math must not contain #super: {typst}");
         assert!(!typst.contains("#sub"), "Math must not contain #sub: {typst}");
         assert!(typst.contains("oo"), "Infinity should be oo: {typst}");
@@ -1700,7 +1952,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_image_rendering() {
         let md = "![Architecture Pipeline](figures/arch.png)\n\n![](logo.svg)";
-        let typst = markdown_to_typst(md, false, false, "en", None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
         assert!(typst.contains("#figure(image(\"figures/arch.png\"), caption: [Architecture Pipeline])"));
         assert!(typst.contains("#align(center)[#image(\"logo.svg\")]"));
     }
@@ -1708,7 +1960,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_pandoc_image_attributes() {
         let md = "![Architecture Pipeline](figures/arch.png){width=50% #fig:pipeline}\n\n![](logo.svg){width=10cm height=5cm}\n\n![Relative](banner.png){width=0.8\\linewidth}";
-        let typst = markdown_to_typst(md, false, false, "en", None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
         assert!(typst.contains("#figure(image(\"figures/arch.png\", width: 50%), caption: [Architecture Pipeline]) <fig-pipeline>"));
         assert!(typst.contains("#align(center)[#image(\"logo.svg\", width: 10cm, height: 5cm)]"));
         assert!(typst.contains("#figure(image(\"banner.png\", width: 80%), caption: [Relative])"));
@@ -1717,7 +1969,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_pandoc_cross_references() {
         let md = "As seen in @fig:pipeline and @tbl:results, we refer to @sec:intro and @eq:euler.";
-        let typst = markdown_to_typst(md, false, false, "en", None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
         assert!(typst.contains("@fig-pipeline"));
         assert!(typst.contains("@tbl-results"));
         assert!(typst.contains("@sec-intro"));
@@ -1727,7 +1979,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_pandoc_heading_attributes() {
         let md = "# Introduction {#sec:intro}\n\n## Appendix {-}\n\n### Extra Notes {.unnumbered #sec:extra}";
-        let typst = markdown_to_typst(md, false, false, "en", None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
         assert!(typst.contains("= Introduction <sec-intro>"));
         assert!(typst.contains("#heading(level: 2, numbering: none)[Appendix]"));
         assert!(typst.contains("#heading(level: 3, numbering: none)[Extra Notes] <sec-extra>"));
@@ -1736,7 +1988,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_pandoc_callout_divs() {
         let md = "::: note\nThis is a standard note.\n:::\n\n::: {.warning title=\"Caution Alert\"}\nDanger ahead!\n:::";
-        let typst = markdown_to_typst(md, false, false, "en", None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
         assert!(typst.contains("#botox_callout(\"note\", \"\")[\nThis is a standard note."));
         assert!(typst.contains("#botox_callout(\"warning\", \"Caution Alert\")[\nDanger ahead!"));
     }
@@ -1744,7 +1996,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_github_callouts() {
         let md = "> [!NOTE]\n> This is a GitHub note.\n\n> [!TIP] Pro Tip\n> Remember to save your work.\n\n> [!IMPORTANT]\n> Critical instruction here.\n\n> [!WARNING]\n> High voltage!";
-        let typst = markdown_to_typst(md, false, false, "en", None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
         assert!(typst.contains("#botox_callout(\"note\", \"\")[\nThis is a GitHub note."));
         assert!(typst.contains("#botox_callout(\"tip\", \"Pro Tip\")[\nRemember to save your work."));
         assert!(typst.contains("#botox_callout(\"important\", \"\")[\nCritical instruction here."));
@@ -1754,7 +2006,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_pandoc_display_math_label() {
         let md = "$$ E = m c^2 $$ {#eq:einstein}\n\n$$ a^2 + b^2 = c^2 \\label{eq:pythagoras} $$";
-        let typst = markdown_to_typst(md, false, false, "en", None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
         assert!(typst.contains("<eq-einstein>"));
         assert!(typst.contains("<eq-pythagoras>"));
     }
@@ -1762,7 +2014,7 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_pandoc_table_caption_and_label() {
         let md = "Table: Forwarding performance summary. {#tbl:perf}\n\n| Technique | Speedup |\n| --- | --- |\n| Full | 1.45x |";
-        let typst = markdown_to_typst(md, false, false, "en", None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
         assert!(typst.contains("caption: [Forwarding performance summary.]"));
         assert!(typst.contains("<tbl-perf>"));
     }
@@ -1770,14 +2022,14 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_today_replacement() {
         let md = "Today's date is \\today in presentation.";
-        let typst = markdown_to_typst(md, false, false, "en", None);
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None);
         assert!(typst.contains(r#"#datetime.today().display("[day] [month repr:long] [year]")"#));
     }
 
     #[test]
     fn test_pause_extraction() {
         let md = "Point 1\n\\pause\nPoint 2\n<!-- pause -->\nPoint 3";
-        let typst = markdown_to_typst(md, true, false, "en", None);
+        let typst = markdown_to_typst(md, true, false, "en", None, None, None);
         assert!(typst.contains("#botox_pause()"));
     }
 }

@@ -253,8 +253,10 @@ $$\int_{{-\infty}}^{{+\infty}} e^{{-x^2}} \, dx = \sqrt{{\pi}}$$
 
 ## References
 
-Hyperlinks are automatically transformed into an IEEE-standard Bibliography:
+Hyperlinks can be formatted into a bibliography using `\ref`:
 Check out the [Botox Documentation](https://github.com) for more examples.
+
+\ref References
 "#,
             display_name = target_path.display()
         )
@@ -491,14 +493,25 @@ fn compile_once(
             _ => false,
         }
     } else {
-        doc_config.bibliography.unwrap_or(true)
+        doc_config.bibliography.unwrap_or(false)
     };
 
+    let toc_title = fm.get("toc-title")
+        .or_else(|| fm.get("toc_title"))
+        .and_then(|v| v.as_str())
+        .or_else(|| doc_config.toc_title.as_deref());
+
+    let toc_depth = fm.get("toc-depth")
+        .or_else(|| fm.get("toc_depth"))
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize)
+        .or(doc_config.toc_depth);
+
     let typst_markup = if is_slides {
-        let body_typst = markdown::markdown_to_typst(body_md, true, should_enable_bib, lang, biblio_title);
+        let body_typst = markdown::markdown_to_typst(body_md, true, should_enable_bib, lang, biblio_title, toc_title, toc_depth);
         slides::wrap_slides(&body_typst, &fm, &slides_config, cli_author, cli_theme)
     } else {
-        let body_typst = markdown::markdown_to_typst(body_md, false, should_enable_bib, lang, biblio_title);
+        let body_typst = markdown::markdown_to_typst(body_md, false, should_enable_bib, lang, biblio_title, toc_title, toc_depth);
         document::wrap_document(
             &body_typst,
             &fm,
@@ -846,9 +859,10 @@ mod tests {
         assert!(tpl.contains("affiliation: \"Computing Institute\""));
         assert!(tpl.contains("papersize: a4"));
         assert!(tpl.contains("number-sections: true"));
-        assert!(tpl.contains("table-of-contents: true"));
+        assert!(tpl.contains("table-of-contents: false"));
         assert!(tpl.contains("toc-depth: 3"));
-        assert!(tpl.contains("bibliography: true"));
+        assert!(tpl.contains("bibliography: false"));
+        assert!(tpl.contains(r"\ref References"));
         assert!(tpl.contains("botox report.md -o output.pdf"));
     }
 

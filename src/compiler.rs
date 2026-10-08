@@ -1051,7 +1051,7 @@ Second column body text.
     fn test_compact_document_with_pagebreak_compilation() {
         let md = "---\ntitle: Two Column Test\ntheme: compact\n---\n\n# Section 1\nFirst column text\n\n\\newpage\n\n# Section 2\nSecond column text\n";
         let (fm, body_md) = crate::extract_frontmatter(md);
-        let body_typst = crate::markdown::markdown_to_typst(&body_md, false, false, "en", None);
+        let body_typst = crate::markdown::markdown_to_typst(&body_md, false, false, "en", None, None, None);
         let config = crate::config::DocumentConfig::defaults();
         let typst_markup = crate::document::wrap_document(&body_typst, &fm, &config, None, None, None, None);
         let tmp_pdf = std::env::temp_dir().join("test_botox_2col_pagebreak.pdf");

@@ -641,7 +641,7 @@ pub fn wrap_document(
     } else if let Some(fm_toc) = fm.get("toc").or_else(|| fm.get("table-of-contents")).and_then(|v| v.as_bool()) {
         fm_toc
     } else {
-        config.toc.unwrap_or(true)
+        config.toc.unwrap_or(false)
     };
 
     let toc_depth = fm.get("toc-depth")
@@ -656,7 +656,7 @@ pub fn wrap_document(
         .and_then(|v| v.as_str())
         .or_else(|| config.toc_title.as_deref());
 
-    if should_include_toc {
+    if should_include_toc && !body_typst.contains("#outline") {
         if let Some(title) = toc_title {
             out.push_str(&format!("#outline(title: \"{title}\", depth: {toc_depth})\n#v(1.5em)\n"));
         } else {

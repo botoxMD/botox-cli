@@ -14,9 +14,8 @@ document:
     x: "2.5cm"
     y: "2.5cm"
   section_numbering: true              # Numbered sections: 1, 1.1
-  toc: true                            # Auto-generate Table of Contents
-  toc_depth: 3                         # Outline heading depth
-  bibliography: true                   # Transform links into IEEE Bibliography
+  # Use \toc [title] to spawn Table of Contents anywhere in document
+  # Use \ref [title] to spawn References section
   lang: "en"
   linkcolor: "#0284c7"                 # Clean modern blue link color
 

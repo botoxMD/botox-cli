@@ -41,11 +41,11 @@ impl DocumentConfig {
             papersize: Some("a4".to_string()),
             columns: None,
             section_numbering: None,
-            toc: Some(true),
+            toc: Some(false),
             toc_depth: Some(3),
             toc_title: None,
             margin: None,
-            bibliography: Some(true),
+            bibliography: Some(false),
             lang: Some("en".to_string()),
             linkcolor: None,
         }
