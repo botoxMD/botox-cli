@@ -17,11 +17,10 @@ impl FileResolver for BotoxFileResolver {
         let abs_candidate = Path::new(vpath.get_with_slash());
 
         // Fast path for absolute paths (e.g. cached diagrams or absolute asset links)
-        if abs_candidate.is_absolute() {
-            if let Ok(bytes) = std::fs::read(abs_candidate) {
+        if abs_candidate.is_absolute()
+            && let Ok(bytes) = std::fs::read(abs_candidate) {
                 return Ok(std::borrow::Cow::Owned(typst::foundations::Bytes::new(bytes)));
             }
-        }
 
         let rel_cand = self.resource_dir.join(rel_path);
         if let Ok(bytes) = std::fs::read(&rel_cand) {
@@ -39,7 +38,24 @@ impl FileResolver for BotoxFileResolver {
         &self,
         id: typst::syntax::FileId,
     ) -> typst::diag::FileResult<std::borrow::Cow<'_, typst::syntax::Source>> {
-        let rel_path = Path::new(id.vpath().get_without_slash());
+        let vpath = id.vpath();
+        let rel_path = Path::new(vpath.get_without_slash());
+        let abs_candidate = Path::new(vpath.get_with_slash());
+
+        if abs_candidate.is_absolute()
+            && let Ok(content) = std::fs::read_to_string(abs_candidate) {
+                return Ok(std::borrow::Cow::Owned(typst::syntax::Source::new(id, content)));
+            }
+
+        let rel_cand = self.resource_dir.join(rel_path);
+        if let Ok(content) = std::fs::read_to_string(&rel_cand) {
+            return Ok(std::borrow::Cow::Owned(typst::syntax::Source::new(id, content)));
+        }
+
+        if let Ok(content) = std::fs::read_to_string(rel_path) {
+            return Ok(std::borrow::Cow::Owned(typst::syntax::Source::new(id, content)));
+        }
+
         Err(typst::diag::FileError::NotFound(self.resource_dir.join(rel_path)))
     }
 }
@@ -74,7 +90,7 @@ static DEFAULT_EMBEDDED_FONTS: std::sync::LazyLock<Vec<typst::text::Font>> = std
                 })
             })
             .collect();
-        handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        handles.into_iter().flat_map(|h| h.join().ok()).flatten().collect()
     })
 });
 
@@ -90,7 +106,7 @@ static LIBERTINE_FONTS: std::sync::LazyLock<Vec<typst::text::Font>> = std::sync:
                 })
             })
             .collect();
-        handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        handles.into_iter().flat_map(|h| h.join().ok()).flatten().collect()
     })
 });
 
@@ -146,18 +162,18 @@ fn load_needed_fonts(typst_markup: &str) -> Vec<typst::text::Font> {
                     }
                 }
             }
-        } else if rest.starts_with('"') || rest.starts_with('\'') {
-            let quote_char = rest.chars().next().unwrap();
-            let after_quote = &rest[1..];
-            if let Some(end_q) = after_quote.find(quote_char) {
-                let trimmed = after_quote[..end_q].trim();
-                if !is_embedded_font(trimmed)
-                    && !custom_fonts.iter().any(|f| f.eq_ignore_ascii_case(trimmed))
-                {
-                    custom_fonts.push(trimmed.to_string());
+        } else if (rest.starts_with('"') || rest.starts_with('\''))
+            && let Some(quote_char) = rest.chars().next() {
+                let after_quote = &rest[1..];
+                if let Some(end_q) = after_quote.find(quote_char) {
+                    let trimmed = after_quote[..end_q].trim();
+                    if !is_embedded_font(trimmed)
+                        && !custom_fonts.iter().any(|f| f.eq_ignore_ascii_case(trimmed))
+                    {
+                        custom_fonts.push(trimmed.to_string());
+                    }
                 }
             }
-        }
     }
 
     if !custom_fonts.is_empty() {
@@ -170,16 +186,14 @@ fn load_needed_fonts(typst_markup: &str) -> Vec<typst::text::Font> {
                 .iter()
                 .any(|cf| face.post_script_name.eq_ignore_ascii_case(cf));
 
-            if matches_custom {
-                if let fontdb::Source::File(ref path) = face.source {
-                    if let Ok(data) = std::fs::read(path) {
+            if matches_custom
+                && let fontdb::Source::File(ref path) = face.source
+                    && let Ok(data) = std::fs::read(path) {
                         let bytes = typst::foundations::Bytes::new(data);
                         if let Some(font) = typst::text::Font::new(bytes, face.index) {
                             fonts.push(font);
                         }
                     }
-                }
-            }
         }
     }
 
@@ -250,12 +264,11 @@ pub fn compile_typst(
         return Ok(());
     }
 
-    if let Some(parent) = output_path.parent() {
-        if !parent.as_os_str().is_empty() {
+    if let Some(parent) = output_path.parent()
+        && !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create output directory: {e}"))?;
         }
-    }
 
     let ext = output_path
         .extension()
@@ -286,11 +299,10 @@ pub fn compile_typst(
                         return true;
                     }
                 }
-                typst_library::layout::FrameItem::Group(group) => {
-                    if frame_has_pause_step(&group.frame) {
+                typst_library::layout::FrameItem::Group(group)
+                    if frame_has_pause_step(&group.frame) => {
                         return true;
                     }
-                }
                 _ => {}
             }
         }
@@ -334,14 +346,13 @@ pub fn compile_typst(
     fn inject_text_layer(mut svg: String, frame: &typst_library::layout::Frame) -> String {
         let mut text_elements = String::new();
         extract_text_layer(frame, typst_library::layout::Transform::identity(), &mut text_elements);
-        if !text_elements.is_empty() {
-            if let Some(idx) = svg.rfind("</svg>") {
+        if !text_elements.is_empty()
+            && let Some(idx) = svg.rfind("</svg>") {
                 svg.insert_str(
                     idx,
                     &format!(r#"<g class="botox-text-layer" style="user-select: text; -webkit-user-select: text; pointer-events: auto;">{text_elements}</g>"#),
                 );
             }
-        }
         svg
     }
 
@@ -417,12 +428,11 @@ pub fn compile_typst(
                     pause_indices.push(page_idx);
                 }
                 let mut svg = inject_text_layer(typst_svg::svg(p, &svg_opts), &p.frame);
-                if is_pause {
-                    if let Some(pos) = svg.find("<svg") {
+                if is_pause
+                    && let Some(pos) = svg.find("<svg") {
                         let insert_pos = pos + 4;
                         svg.insert_str(insert_pos, r#" data-pause-step="true" class="pause-step""#);
                     }
-                }
                 pages.push(svg);
             }
 
@@ -1087,15 +1097,14 @@ Second column body text.
         for line in svg.split("<text").skip(1) {
             if let Some(x_pos) = line.find("x=\"") {
                 let rest = &line[x_pos + 3..];
-                if let Some(quote_end) = rest.find('"') {
-                    if let Ok(x) = rest[..quote_end].parse::<f64>() {
+                if let Some(quote_end) = rest.find('"')
+                    && let Ok(x) = rest[..quote_end].parse::<f64>() {
                         if (x - 51.02).abs() < 5.0 {
                             found_col1 = true;
-                        } else if x > 280.0 && x < 350.0 {
+                        } else if (280.0..350.0).contains(&x) {
                             found_col2 = true;
                         }
                     }
-                }
             }
         }
         assert!(found_col1, "Should find text in column 1 (x ~ 51)");
@@ -1107,7 +1116,7 @@ Second column body text.
     fn test_compact_document_with_pagebreak_compilation() {
         let md = "---\ntitle: Two Column Test\ntheme: compact\n---\n\n# Section 1\nFirst column text\n\n\\newpage\n\n# Section 2\nSecond column text\n";
         let (fm, body_md) = crate::extract_frontmatter(md);
-        let body_typst = crate::markdown::markdown_to_typst(&body_md, false, false, "en", None, None, None, None, None);
+        let body_typst = crate::markdown::markdown_to_typst(body_md, false, false, "en", None, None, None, None, None);
         let config = crate::config::DocumentConfig::defaults();
         let typst_markup = crate::document::wrap_document(&body_typst, &fm, &config, None, None, None, None);
         let tmp_pdf = std::env::temp_dir().join("test_botox_2col_pagebreak.pdf");

@@ -43,6 +43,8 @@ pub struct DocumentConfig {
     pub exclude_references: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_string_or_vec", alias = "include-references", alias = "include_references", alias = "include-links")]
     pub include_references: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "krocki-url", alias = "krocki_url", alias = "kroki-url")]
+    pub kroki_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
@@ -100,6 +102,7 @@ impl DocumentConfig {
             references: None,
             exclude_references: None,
             include_references: None,
+            kroki_url: None,
         }
     }
 
@@ -124,6 +127,7 @@ impl DocumentConfig {
         if other.references.is_some() { self.references = other.references.clone(); }
         if other.exclude_references.is_some() { self.exclude_references = other.exclude_references.clone(); }
         if other.include_references.is_some() { self.include_references = other.include_references.clone(); }
+        if other.kroki_url.is_some() { self.kroki_url = other.kroki_url.clone(); }
     }
 }
 
@@ -242,30 +246,26 @@ impl BotoxConfig {
             global_candidates.push(PathBuf::from(appdata).join("botox").join("config.yaml"));
         }
         for path in global_candidates {
-            if path.is_file() {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if let Ok(cfg) = serde_yaml::from_str::<BotoxConfig>(&content) {
+            if path.is_file()
+                && let Ok(content) = std::fs::read_to_string(&path)
+                    && let Ok(cfg) = serde_yaml::from_str::<BotoxConfig>(&content) {
                         resolved.merge_with(&cfg);
                         loaded_sources.push(path);
                         break;
                     }
-                }
-            }
         }
 
         // 2. Current working directory config (./botox.yaml, ./skygem.yaml)
         let cwd_candidates = [PathBuf::from("botox.yaml"), PathBuf::from("skygem.yaml")];
         for path in &cwd_candidates {
-            if path.is_file() {
-                if let Ok(content) = std::fs::read_to_string(path) {
-                    if let Ok(cfg) = serde_yaml::from_str::<BotoxConfig>(&content) {
+            if path.is_file()
+                && let Ok(content) = std::fs::read_to_string(path)
+                    && let Ok(cfg) = serde_yaml::from_str::<BotoxConfig>(&content) {
                         resolved.merge_with(&cfg);
                         let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
                         loaded_sources.push(canon);
                         break;
                     }
-                }
-            }
         }
 
         // 3. Document directory config (<doc_dir>/botox.yaml, <doc_dir>/skygem.yaml)
@@ -274,30 +274,25 @@ impl BotoxConfig {
             for path in &doc_candidates {
                 if path.is_file() {
                     let canon_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-                    if !loaded_sources.contains(&canon_path) {
-                        if let Ok(content) = std::fs::read_to_string(path) {
-                            if let Ok(cfg) = serde_yaml::from_str::<BotoxConfig>(&content) {
+                    if !loaded_sources.contains(&canon_path)
+                        && let Ok(content) = std::fs::read_to_string(path)
+                            && let Ok(cfg) = serde_yaml::from_str::<BotoxConfig>(&content) {
                                 resolved.merge_with(&cfg);
                                 loaded_sources.push(canon_path);
                                 break;
                             }
-                        }
-                    }
                 }
             }
         }
 
         // 4. Custom config specified via --config <path>
-        if let Some(cp) = custom_path {
-            if cp.is_file() {
-                if let Ok(content) = std::fs::read_to_string(cp) {
-                    if let Ok(cfg) = serde_yaml::from_str::<BotoxConfig>(&content) {
+        if let Some(cp) = custom_path
+            && cp.is_file()
+                && let Ok(content) = std::fs::read_to_string(cp)
+                    && let Ok(cfg) = serde_yaml::from_str::<BotoxConfig>(&content) {
                         resolved.merge_with(&cfg);
                         loaded_sources.push(cp.to_path_buf());
                     }
-                }
-            }
-        }
 
         (resolved, loaded_sources)
     }
@@ -313,11 +308,10 @@ pub fn dirs_home() -> Option<PathBuf> {
 }
 
 pub fn global_config_path() -> PathBuf {
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        if !appdata.trim().is_empty() {
+    if let Ok(appdata) = std::env::var("APPDATA")
+        && !appdata.trim().is_empty() {
             return PathBuf::from(appdata).join("botox").join("config.yaml");
         }
-    }
     if let Some(home) = dirs_home() {
         return home.join(".config").join("botox").join("config.yaml");
     }

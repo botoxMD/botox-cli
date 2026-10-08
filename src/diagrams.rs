@@ -11,8 +11,11 @@ pub fn get_cache_dir() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
         return PathBuf::from(xdg).join("botox").join("diagrams");
     }
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".cache").join("botox").join("diagrams");
+    if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+        return PathBuf::from(local_appdata).join("botox").join("diagrams");
+    }
+    if let Some(home) = crate::config::dirs_home() {
+        return home.join(".cache").join("botox").join("diagrams");
     }
     std::env::temp_dir().join("botox_diagrams")
 }
@@ -123,13 +126,11 @@ pub fn render_diagram(
     let cache_file = cache_dir.join(format!("{hash}.svg"));
 
     // Check existing cache
-    if cache_file.is_file() {
-        if let Ok(meta) = fs::metadata(&cache_file) {
-            if meta.len() > 0 {
+    if cache_file.is_file()
+        && let Ok(meta) = fs::metadata(&cache_file)
+            && meta.len() > 0 {
                 return Ok(cache_file);
             }
-        }
-    }
 
     // Resolve Kroki base URL
     let base_url = kroki_endpoint
@@ -184,8 +185,22 @@ pub fn render_diagram(
         }
     };
 
-    fs::write(&cache_file, svg_bytes)
-        .map_err(|e| format!("Failed to write diagram to cache: {e}"))?;
+    let is_svg = svg_bytes.windows(4).any(|w| w == b"<svg")
+        || svg_bytes.windows(5).any(|w| w == b"<?xml");
+    if !is_svg {
+        let snippet = String::from_utf8_lossy(&svg_bytes[..svg_bytes.len().min(120)]);
+        return Err(format!("Diagram rendering returned non-SVG content: {snippet}"));
+    }
+
+    let tmp_file = cache_dir.join(format!("{hash}.{}.tmp", std::process::id()));
+    if let Err(e) = fs::write(&tmp_file, &svg_bytes) {
+        return Err(format!("Failed to write diagram to cache: {e}"));
+    }
+    if let Err(e) = fs::rename(&tmp_file, &cache_file) {
+        let _ = fs::remove_file(&tmp_file);
+        fs::write(&cache_file, &svg_bytes)
+            .map_err(|e2| format!("Failed to write diagram cache: {e2} (rename failed: {e})"))?;
+    }
 
     Ok(cache_file)
 }

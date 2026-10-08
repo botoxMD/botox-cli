@@ -210,11 +210,10 @@ Options:
         PathBuf::from("botox.yaml")
     };
 
-    if let Some(parent) = target_path.parent() {
-        if !parent.as_os_str().is_empty() {
+    if let Some(parent) = target_path.parent()
+        && !parent.as_os_str().is_empty() {
             let _ = std::fs::create_dir_all(parent);
         }
-    }
 
     let yaml_content = config::generate_config_yaml(
         &chosen_author,
@@ -370,11 +369,10 @@ Options:
 
     let content = generate_init_template(is_slides, &resolved_cfg, cli_theme.as_deref(), &target_path);
 
-    if let Some(parent) = target_path.parent() {
-        if !parent.as_os_str().is_empty() {
+    if let Some(parent) = target_path.parent()
+        && !parent.as_os_str().is_empty() {
             let _ = std::fs::create_dir_all(parent);
         }
-    }
 
     match std::fs::write(&target_path, content) {
         Ok(()) => {
@@ -550,13 +548,12 @@ fn detect_is_slides(
         for (k, v) in map {
             if let Some(key_str) = k.as_str() {
                 let key_lower = key_str.to_lowercase();
-                if key_lower == "marp" || key_lower == "slides" || key_lower == "slide" || key_lower == "presentation" {
-                    if v.as_bool() == Some(true) || v.as_str().map(|s| s.eq_ignore_ascii_case("true")).unwrap_or(false) {
+                if (key_lower == "marp" || key_lower == "slides" || key_lower == "slide" || key_lower == "presentation")
+                    && (v.as_bool() == Some(true) || v.as_str().map(|s| s.eq_ignore_ascii_case("true")).unwrap_or(false)) {
                         return true;
                     }
-                }
-                if key_lower == "type" || key_lower == "format" || key_lower == "document-type" {
-                    if let Some(s) = v.as_str() {
+                if (key_lower == "type" || key_lower == "format" || key_lower == "document-type")
+                    && let Some(s) = v.as_str() {
                         let s_lower = s.to_lowercase();
                         if s_lower == "slides" || s_lower == "slide" || s_lower == "presentation" || s_lower == "deck" {
                             return true;
@@ -565,7 +562,6 @@ fn detect_is_slides(
                             return false;
                         }
                     }
-                }
                 if key_lower == "_class" {
                     return true;
                 }
@@ -575,8 +571,8 @@ fn detect_is_slides(
 
     // 2. Direct text scan fallback across frontmatter in case YAML parsing failed
     let trimmed = raw_content.trim_start();
-    if trimmed.starts_with("---") {
-        if let Some(end_idx) = trimmed[3..].find("---") {
+    if trimmed.starts_with("---")
+        && let Some(end_idx) = trimmed[3..].find("---") {
             let header = &trimmed[3..3 + end_idx];
             for line in header.lines() {
                 let l = line.trim();
@@ -595,7 +591,6 @@ fn detect_is_slides(
                 }
             }
         }
-    }
 
     // 3. Filename convention fallback (e.g. slides.md, deck.md, presentation.md)
     let file_name = input_path
@@ -661,34 +656,31 @@ fn take_watch_snapshot(
         list.push((input_path.to_path_buf(), mtime, meta.len()));
     }
 
-    if let Some(cfg) = custom_config {
-        if let Ok(meta) = std::fs::metadata(cfg) {
+    if let Some(cfg) = custom_config
+        && let Ok(meta) = std::fs::metadata(cfg) {
             let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
             list.push((cfg.to_path_buf(), mtime, meta.len()));
         }
-    }
 
     let dir = doc_dir.or_else(|| input_path.parent());
-    if let Some(d) = dir {
-        if let Ok(read_dir) = std::fs::read_dir(d) {
+    if let Some(d) = dir
+        && let Ok(read_dir) = std::fs::read_dir(d) {
             for entry in read_dir.flatten() {
                 let path = entry.path();
-                if path != input_path && is_relevant_watch_file(&path, output_path) {
-                    if let Ok(meta) = entry.metadata() {
-                        if meta.is_file() {
+                if path != input_path && is_relevant_watch_file(&path, output_path)
+                    && let Ok(meta) = entry.metadata()
+                        && meta.is_file() {
                             let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
                             list.push((path, mtime, meta.len()));
                         }
-                    }
-                }
             }
         }
-    }
 
     list.sort_by(|a, b| a.0.cmp(&b.0));
     list
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_once(
     input_path: &std::path::Path,
     output_path: &std::path::Path,
@@ -725,7 +717,7 @@ fn compile_once(
 
     let lang = fm.get("lang")
         .and_then(|v| v.as_str())
-        .or_else(|| doc_config.lang.as_deref())
+        .or(doc_config.lang.as_deref())
         .unwrap_or("en");
     let biblio_title = fm.get("biblio-title")
         .or_else(|| fm.get("bibliography-title"))
@@ -750,7 +742,7 @@ fn compile_once(
     let toc_title = fm.get("toc-title")
         .or_else(|| fm.get("toc_title"))
         .and_then(|v| v.as_str())
-        .or_else(|| doc_config.toc_title.as_deref());
+        .or(doc_config.toc_title.as_deref());
 
     let toc_depth = fm.get("toc-depth")
         .or_else(|| fm.get("toc_depth"))
@@ -770,16 +762,14 @@ fn compile_once(
 
     let mut ref_exclude = Vec::new();
     ref_exclude.extend_from_slice(cli_exclude_ref);
-    if let Some(ref cfg_ref) = config_data.references {
-        if let Some(ref exc) = cfg_ref.exclude {
+    if let Some(ref cfg_ref) = config_data.references
+        && let Some(ref exc) = cfg_ref.exclude {
             ref_exclude.extend(exc.clone());
         }
-    }
-    if let Some(ref cfg_ref) = doc_config.references {
-        if let Some(ref exc) = cfg_ref.exclude {
+    if let Some(ref cfg_ref) = doc_config.references
+        && let Some(ref exc) = cfg_ref.exclude {
             ref_exclude.extend(exc.clone());
         }
-    }
     if let Some(ref exc) = doc_config.exclude_references {
         ref_exclude.extend(exc.clone());
     }
@@ -796,16 +786,14 @@ fn compile_once(
 
     let mut ref_include = Vec::new();
     ref_include.extend_from_slice(cli_include_ref);
-    if let Some(ref cfg_ref) = config_data.references {
-        if let Some(ref inc) = cfg_ref.include {
+    if let Some(ref cfg_ref) = config_data.references
+        && let Some(ref inc) = cfg_ref.include {
             ref_include.extend(inc.clone());
         }
-    }
-    if let Some(ref cfg_ref) = doc_config.references {
-        if let Some(ref inc) = cfg_ref.include {
+    if let Some(ref cfg_ref) = doc_config.references
+        && let Some(ref inc) = cfg_ref.include {
             ref_include.extend(inc.clone());
         }
-    }
     if let Some(ref inc) = doc_config.include_references {
         ref_include.extend(inc.clone());
     }
@@ -823,31 +811,29 @@ fn compile_once(
     let exclude_opt = if ref_exclude.is_empty() { None } else { Some(ref_exclude) };
     let include_opt = if ref_include.is_empty() { None } else { Some(ref_include) };
 
+    let kroki_url = fm.get("krocki-url")
+        .or_else(|| fm.get("kroki-url"))
+        .or_else(|| fm.get("kroki_url"))
+        .or_else(|| fm.get("krocki_url"))
+        .and_then(|v| v.as_str())
+        .or(doc_config.kroki_url.as_deref());
+
+    let md_opts = markdown::MarkdownOptions {
+        is_slides,
+        bibliography: should_enable_bib,
+        lang,
+        biblio_title,
+        toc_title,
+        toc_depth,
+        ref_exclude: exclude_opt.as_deref(),
+        ref_include: include_opt.as_deref(),
+        kroki_url,
+    };
+    let body_typst = markdown::markdown_to_typst_with_options(body_md, &md_opts);
+
     let typst_markup = if is_slides {
-        let body_typst = markdown::markdown_to_typst(
-            body_md,
-            true,
-            should_enable_bib,
-            lang,
-            biblio_title,
-            toc_title,
-            toc_depth,
-            exclude_opt.as_deref(),
-            include_opt.as_deref(),
-        );
         slides::wrap_slides(&body_typst, &fm, &slides_config, cli_author, cli_theme)
     } else {
-        let body_typst = markdown::markdown_to_typst(
-            body_md,
-            false,
-            should_enable_bib,
-            lang,
-            biblio_title,
-            toc_title,
-            toc_depth,
-            exclude_opt.as_deref(),
-            include_opt.as_deref(),
-        );
         document::wrap_document(
             &body_typst,
             &fm,

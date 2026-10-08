@@ -30,7 +30,7 @@ pub fn wrap_slides(
 
     let theme = cli_theme
         .or_else(|| fm.get("theme").and_then(|v| v.as_str()))
-        .or_else(|| config.theme.as_deref())
+        .or(config.theme.as_deref())
         .unwrap_or("default");
 
     let (default_bg, default_text) = match theme {
@@ -46,17 +46,17 @@ pub fn wrap_slides(
         .or_else(|| fm.get("background_color"))
         .or_else(|| fm.get("background-color"))
         .and_then(|v| v.as_str())
-        .or_else(|| config.background_color.as_deref())
+        .or(config.background_color.as_deref())
         .unwrap_or(default_bg);
 
     let text_color = fm.get("color")
         .and_then(|v| v.as_str())
-        .or_else(|| config.color.as_deref())
+        .or(config.color.as_deref())
         .unwrap_or(default_text);
 
     let font = fm.get("font")
         .and_then(|v| v.as_str())
-        .or_else(|| config.font.as_deref())
+        .or(config.font.as_deref())
         .unwrap_or("New Computer Modern");
 
     let paginate = fm.get("paginate")

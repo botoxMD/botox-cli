@@ -86,10 +86,7 @@ impl DocumentTheme {
     }
 
     pub fn default_numbering(&self) -> bool {
-        match self {
-            Self::Minimal => false,
-            _ => true,
-        }
+        !matches!(self, Self::Minimal)
     }
 
     pub fn default_leading(&self) -> &'static str {
@@ -118,7 +115,7 @@ pub fn wrap_document(
     let theme_explicit = cli_theme.is_some() || fm.get("theme").is_some();
     let theme_raw = cli_theme
         .or_else(|| fm.get("theme").and_then(|v| v.as_str()))
-        .or_else(|| config.theme.as_deref())
+        .or(config.theme.as_deref())
         .unwrap_or("academic");
     let doc_theme = DocumentTheme::parse(theme_raw);
 
@@ -134,7 +131,7 @@ pub fn wrap_document(
     // 1. Paper and Margins
     let papersize = fm.get("papersize")
         .and_then(|v| v.as_str())
-        .or_else(|| config.papersize.as_deref())
+        .or(config.papersize.as_deref())
         .unwrap_or("a4");
 
     let (def_mx, def_my) = doc_theme.default_margins();
@@ -170,7 +167,7 @@ pub fn wrap_document(
     // 2. Typography
     let lang = fm.get("lang")
         .and_then(|v| v.as_str())
-        .or_else(|| config.lang.as_deref())
+        .or(config.lang.as_deref())
         .unwrap_or("en");
 
     let font_raw = cli_font
@@ -188,7 +185,7 @@ pub fn wrap_document(
 
     let monofont_raw = fm.get("monofont")
         .and_then(|v| v.as_str())
-        .or_else(|| config.monofont.as_deref())
+        .or(config.monofont.as_deref())
         .unwrap_or("DejaVu Sans Mono");
 
     let monofont_family = if monofont_raw.eq_ignore_ascii_case("Courier New") || monofont_raw.eq_ignore_ascii_case("Courier") {
@@ -205,11 +202,7 @@ pub fn wrap_document(
                 Some(s.to_string())
             } else if let Some(n) = v.as_i64() {
                 Some(format!("{n}pt"))
-            } else if let Some(n) = v.as_f64() {
-                Some(format!("{n}pt"))
-            } else {
-                None
-            }
+            } else { v.as_f64().map(|n| format!("{n}pt")) }
         })
         .or_else(|| {
             if theme_explicit {
@@ -233,7 +226,7 @@ pub fn wrap_document(
     // Math font & equations
     let mathfont = fm.get("mathfont")
         .and_then(|v| v.as_str())
-        .or_else(|| config.mathfont.as_deref())
+        .or(config.mathfont.as_deref())
         .unwrap_or("New Computer Modern Math");
     out.push_str(&format!(
         "#show math.equation: set text(font: \"{mathfont}\")\n"
@@ -375,7 +368,7 @@ pub fn wrap_document(
     // Link color
     let linkcolor = fm.get("linkcolor")
         .and_then(|v| v.as_str())
-        .or_else(|| config.linkcolor.as_deref())
+        .or(config.linkcolor.as_deref())
         .unwrap_or_else(|| doc_theme.default_linkcolor());
 
     let color_val = if linkcolor.starts_with('#') {
@@ -402,11 +395,7 @@ pub fn wrap_document(
         .and_then(|v| {
             if let Some(b) = v.as_bool() {
                 if b { Some("1.5em".to_string()) } else { None }
-            } else if let Some(s) = v.as_str() {
-                Some(s.to_string())
-            } else {
-                None
-            }
+            } else { v.as_str().map(|s| s.to_string()) }
         });
     let indent_clause = if let Some(ind) = parindent {
         format!(", first-line-indent: {ind}")
@@ -590,7 +579,7 @@ pub fn wrap_document(
             fm.get("affiliation").and_then(|v| v.as_str())
         }
     } else {
-        fm.get("affiliation").and_then(|v| v.as_str()).or_else(|| config.affiliation.as_deref())
+        fm.get("affiliation").and_then(|v| v.as_str()).or(config.affiliation.as_deref())
     };
 
     let abstract_text = fm.get("abstract").and_then(|v| v.as_str());
@@ -625,11 +614,7 @@ pub fn wrap_document(
                     Some(s.to_string())
                 } else if let Some(n) = v.as_i64() {
                     Some(format!("{n}pt"))
-                } else if let Some(n) = v.as_f64() {
-                    Some(format!("{n}pt"))
-                } else {
-                    None
-                }
+                } else { v.as_f64().map(|n| format!("{n}pt")) }
             })
             .unwrap_or_else(|| "14pt".to_string());
         out.push_str(&format!("#show: columns.with({columns}, gutter: {gutter})\n\n"));
@@ -654,7 +639,7 @@ pub fn wrap_document(
     let toc_title = fm.get("toc-title")
         .or_else(|| fm.get("toc_title"))
         .and_then(|v| v.as_str())
-        .or_else(|| config.toc_title.as_deref());
+        .or(config.toc_title.as_deref());
 
     if should_include_toc && !body_typst.contains("#outline") {
         if let Some(title) = toc_title {
@@ -710,13 +695,14 @@ pub fn sanitize_column_pagebreaks(content: &str, columns: usize) -> String {
 
 fn render_date_value(d: &str) -> String {
     let trimmed = d.trim();
-    if trimmed == r"\today" || trimmed == "\\today" || trimmed.eq_ignore_ascii_case("today") {
+    if trimmed == r"\today" || trimmed.eq_ignore_ascii_case("today") {
         "#datetime.today().display(\"[day] [month repr:long] [year]\")".to_string()
     } else {
         trimmed.to_string()
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_title_and_abstract(
     doc_theme: DocumentTheme,
     title: Option<&str>,
@@ -749,11 +735,10 @@ fn render_title_and_abstract(
                         let joined = authors.join(", ");
                         b.push_str(&format!("  #text(size: 1.05em, weight: \"bold\", fill: rgb(\"#334155\"))[{joined}]\n"));
                     }
-                    if let Some(aff) = affiliation {
-                        if !aff.is_empty() {
+                    if let Some(aff) = affiliation
+                        && !aff.is_empty() {
                             b.push_str(&format!("  #v(0.2em)\n  #text(size: 0.95em, fill: rgb(\"#64748b\"))[{aff}]\n"));
                         }
-                    }
                     if let Some(d) = date_str {
                         let date_typst = render_date_value(d);
                         b.push_str(&format!("  #v(0.2em)\n  #text(size: 0.9em, fill: rgb(\"#64748b\"))[{date_typst}]\n"));
@@ -824,11 +809,10 @@ fn render_title_and_abstract(
                     let joined = authors.join(", ");
                     b.push_str(&format!("  #text(size: 1.05em, fill: rgb(\"#292524\"))[{joined}]\n"));
                 }
-                if let Some(aff) = affiliation {
-                    if !aff.is_empty() {
+                if let Some(aff) = affiliation
+                    && !aff.is_empty() {
                         b.push_str(&format!("  #v(0.2em)\n  #text(size: 0.95em, style: \"italic\", fill: rgb(\"#78716c\"))[{aff}]\n"));
                     }
-                }
                 if let Some(d) = date_str {
                     let date_typst = render_date_value(d);
                     b.push_str(&format!("  #v(0.3em)\n  #text(size: 0.9em, fill: rgb(\"#78716c\"))[{date_typst}]\n"));
@@ -863,11 +847,10 @@ fn render_title_and_abstract(
                     let joined = authors.join(", ");
                     b.push_str(&format!("  #text(size: 1.0em, fill: rgb(\"#3f3f46\"))[{joined}]\n"));
                 }
-                if let Some(aff) = affiliation {
-                    if !aff.is_empty() {
+                if let Some(aff) = affiliation
+                    && !aff.is_empty() {
                         b.push_str(&format!("  #v(0.15em)\n  #text(size: 0.9em, fill: rgb(\"#71717a\"))[{aff}]\n"));
                     }
-                }
                 if let Some(d) = date_str {
                     let date_typst = render_date_value(d);
                     b.push_str(&format!("  #v(0.2em)\n  #text(size: 0.85em, fill: rgb(\"#71717a\"))[{date_typst}]\n"));
@@ -903,11 +886,10 @@ fn render_title_and_abstract(
                     let joined = authors.join(", ");
                     b.push_str(&format!("  #text(size: 1.1em)[{joined}]\n"));
                 }
-                if let Some(aff) = affiliation {
-                    if !aff.is_empty() {
+                if let Some(aff) = affiliation
+                    && !aff.is_empty() {
                         b.push_str(&format!("  #v(0.2em)\n  #text(size: 0.95em, style: \"italic\")[{aff}]\n"));
                     }
-                }
                 if let Some(d) = date_str {
                     let date_typst = render_date_value(d);
                     b.push_str(&format!("  #v(0.4em)\n  #text(size: 0.9em, fill: rgb(\"#475569\"))[{date_typst}]\n"));
@@ -995,8 +977,8 @@ fn parse_margins(fm: &Value, config: &DocumentConfig, default_x: &str, default_y
         }
     }
 
-    if !theme_explicit {
-        if let Some(ref m) = config.margin {
+    if !theme_explicit
+        && let Some(ref m) = config.margin {
             return match m {
                 MarginConfig::Uniform(s) => (s.clone(), s.clone()),
                 MarginConfig::Axes { x, y } => (
@@ -1005,7 +987,6 @@ fn parse_margins(fm: &Value, config: &DocumentConfig, default_x: &str, default_y
                 ),
             };
         }
-    }
 
     (default_x.to_string(), default_y.to_string())
 }
@@ -1029,7 +1010,7 @@ pub fn format_typst_date(d: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    if trimmed == r"\today" || trimmed == "\\today" || trimmed.eq_ignore_ascii_case("today") {
+    if trimmed == r"\today" || trimmed.eq_ignore_ascii_case("today") {
         return Some("datetime.today()".to_string());
     }
     if trimmed.eq_ignore_ascii_case("auto") {
@@ -1042,24 +1023,20 @@ pub fn format_typst_date(d: &str) -> Option<String> {
     let date_part = trimmed.split(['T', ' ']).next().unwrap_or(trimmed);
     let parts: Vec<&str> = date_part.split(['-', '/']).collect();
     if parts.len() == 3 {
-        if let (Ok(y), Ok(m), Ok(day)) = (parts[0].parse::<i32>(), parts[1].parse::<u8>(), parts[2].parse::<u8>()) {
-            if (1..=12).contains(&m) && (1..=31).contains(&day) {
+        if let (Ok(y), Ok(m), Ok(day)) = (parts[0].parse::<i32>(), parts[1].parse::<u8>(), parts[2].parse::<u8>())
+            && (1..=12).contains(&m) && (1..=31).contains(&day) {
                 return Some(format!("datetime(year: {y}, month: {m}, day: {day})"));
             }
-        }
     } else if parts.len() == 2 {
-        if let (Ok(y), Ok(m)) = (parts[0].parse::<i32>(), parts[1].parse::<u8>()) {
-            if (1..=12).contains(&m) {
+        if let (Ok(y), Ok(m)) = (parts[0].parse::<i32>(), parts[1].parse::<u8>())
+            && (1..=12).contains(&m) {
                 return Some(format!("datetime(year: {y}, month: {m}, day: 1)"));
             }
-        }
-    } else if parts.len() == 1 {
-        if let Ok(y) = parts[0].parse::<i32>() {
-            if (1000..=9999).contains(&y) {
+    } else if parts.len() == 1
+        && let Ok(y) = parts[0].parse::<i32>()
+            && (1000..=9999).contains(&y) {
                 return Some(format!("datetime(year: {y}, month: 1, day: 1)"));
             }
-        }
-    }
     Some("auto".to_string())
 }
 
@@ -1067,11 +1044,7 @@ pub fn extract_title(fm: &Value) -> Option<String> {
     fm.get("title").and_then(|v| {
         if let Some(s) = v.as_str() {
             Some(s.to_string())
-        } else if let Some(n) = v.as_i64() {
-            Some(n.to_string())
-        } else {
-            None
-        }
+        } else { v.as_i64().map(|n| n.to_string()) }
     })
 }
 
@@ -1085,11 +1058,7 @@ pub fn extract_authors(fm: &Value, config_author: Option<&str>, cli_author: Opti
             arr.iter().filter_map(|item| {
                 if let Some(s) = item.as_str() {
                     Some(s.to_string())
-                } else if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
-                    Some(name.to_string())
-                } else {
-                    None
-                }
+                } else { item.get("name").and_then(|v| v.as_str()).map(|name| name.to_string()) }
             }).collect()
         } else {
             Vec::new()
@@ -1105,11 +1074,7 @@ pub fn extract_date(fm: &Value) -> Option<String> {
     fm.get("date").and_then(|v| {
         if let Some(s) = v.as_str() {
             Some(s.to_string())
-        } else if let Some(n) = v.as_i64() {
-            Some(n.to_string())
-        } else {
-            None
-        }
+        } else { v.as_i64().map(|n| n.to_string()) }
     })
 }
 
@@ -1137,11 +1102,10 @@ pub fn build_document_metadata(
         }
     }
 
-    if let Some(d) = date {
-        if let Some(formatted_date) = format_typst_date(d) {
+    if let Some(d) = date
+        && let Some(formatted_date) = format_typst_date(d) {
             fields.push(format!("date: {formatted_date}"));
         }
-    }
 
     if fields.is_empty() {
         None

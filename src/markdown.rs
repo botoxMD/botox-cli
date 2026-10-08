@@ -98,7 +98,7 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
     let (mut star_pi, mut star_ti) = (None, 0);
 
     while ti < t_chars.len() {
-        if pi < p_chars.len() && (p_chars[pi] == '?' || p_chars[pi].to_ascii_lowercase() == t_chars[ti].to_ascii_lowercase()) {
+        if pi < p_chars.len() && (p_chars[pi] == '?' || p_chars[pi].eq_ignore_ascii_case(&t_chars[ti])) {
             pi += 1;
             ti += 1;
         } else if pi < p_chars.len() && p_chars[pi] == '*' {
@@ -139,11 +139,10 @@ pub fn url_matches_pattern(url: &str, pattern: &str) -> bool {
             return true;
         }
         // Also try matching against host
-        if let Some(host) = extract_host(url) {
-            if glob_match(pat, host) {
+        if let Some(host) = extract_host(url)
+            && glob_match(pat, host) {
                 return true;
             }
-        }
         return false;
     }
 
@@ -198,12 +197,10 @@ fn parse_toc_line(line: &str) -> Option<Option<String>> {
             return Some(None);
         }
         for prefix in &["toc", "tableofcontents"] {
-            if inner.starts_with(prefix) {
-                let rest = &inner[prefix.len()..];
-                if rest.starts_with(' ') || rest.starts_with(':') {
+            if let Some(rest) = inner.strip_prefix(prefix)
+                && (rest.starts_with(' ') || rest.starts_with(':')) {
                     return Some(clean_command_title(rest));
                 }
-            }
         }
     }
 
@@ -233,12 +230,10 @@ fn parse_ref_line(line: &str) -> Option<Option<String>> {
             return Some(None);
         }
         for prefix in &["ref", "references", "bibliography"] {
-            if inner.starts_with(prefix) {
-                let rest = &inner[prefix.len()..];
-                if rest.starts_with(' ') || rest.starts_with(':') {
+            if let Some(rest) = inner.strip_prefix(prefix)
+                && (rest.starts_with(' ') || rest.starts_with(':')) {
                     return Some(clean_command_title(rest));
                 }
-            }
         }
     }
 
@@ -298,17 +293,14 @@ fn preprocess_pandoc(markdown: &str) -> String {
         }
 
         if in_github_callout {
-            if trimmed.starts_with('>') {
-                let inner = trimmed[1..].trim_start();
+            if let Some(after_gt) = trimmed.strip_prefix('>') {
+                let inner = after_gt.trim_start();
                 if let Some((next_kind, next_title)) = parse_github_callout_header(inner) {
                     result.push_str("\n<!--botox:callout:end-->\n\n");
                     result.push_str(&format!("<!--botox:callout:start:{next_kind}:{next_title}-->\n"));
                     continue;
                 }
-                let mut content = &trimmed[1..];
-                if content.starts_with(' ') {
-                    content = &content[1..];
-                }
+                let content = after_gt.strip_prefix(' ').unwrap_or(after_gt);
                 result.push_str(content);
                 result.push('\n');
                 continue;
@@ -319,8 +311,8 @@ fn preprocess_pandoc(markdown: &str) -> String {
             }
         }
 
-        if trimmed.starts_with('>') {
-            let inner = trimmed[1..].trim_start();
+        if let Some(after_gt) = trimmed.strip_prefix('>') {
+            let inner = after_gt.trim_start();
             if let Some((kind, title)) = parse_github_callout_header(inner) {
                 in_github_callout = true;
                 result.push_str(&format!("\n<!--botox:callout:start:{kind}:{title}-->\n"));
@@ -468,15 +460,14 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
         if let Some(end1) = find_matching_brace(&s, pos + 5) {
             let num = s[pos + 6..end1].to_string();
             let rest = &s[end1 + 1..];
-            if rest.starts_with('{') {
-                if let Some(end2) = find_matching_brace(&s, end1 + 1) {
+            if rest.starts_with('{')
+                && let Some(end2) = find_matching_brace(&s, end1 + 1) {
                     let den = s[end1 + 2..end2].to_string();
                     let num_conv = convert_latex_math_to_typst(&num);
                     let den_conv = convert_latex_math_to_typst(&den);
                     s.replace_range(pos..end2 + 1, &format!("({num_conv}) / ({den_conv})"));
                     continue;
                 }
-            }
         }
         break;
     }
@@ -486,14 +477,13 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
         if let Some(c1) = s[pos + 6..].find(']') {
             let n = s[pos + 6..pos + 6 + c1].to_string();
             let rest = &s[pos + 6 + c1 + 1..];
-            if rest.starts_with('{') {
-                if let Some(end) = find_matching_brace(&s, pos + 6 + c1 + 1) {
+            if rest.starts_with('{')
+                && let Some(end) = find_matching_brace(&s, pos + 6 + c1 + 1) {
                     let arg = s[pos + 6 + c1 + 2..end].to_string();
                     let arg_conv = convert_latex_math_to_typst(&arg);
                     s.replace_range(pos..end + 1, &format!("root({n}, {arg_conv})"));
                     continue;
                 }
-            }
         }
         break;
     }
@@ -522,7 +512,7 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
             if let Some(end) = find_matching_brace(&s, pos + cmd.len() - 1) {
                 let inner = s[pos + cmd.len()..end].to_string();
                 let inner_conv = convert_latex_math_to_typst(&inner);
-                let space_before = if pos > 0 && s[..pos].chars().last().map_or(false, |c| c.is_alphanumeric()) {
+                let space_before = if pos > 0 && s[..pos].chars().last().is_some_and(|c| c.is_alphanumeric()) {
                     " "
                 } else {
                     ""
@@ -747,17 +737,15 @@ fn normalize_dimension(val: &str) -> Option<String> {
         return Some("100%".to_string());
     }
 
-    if let Some(rest) = s.strip_suffix(r"\linewidth").or_else(|| s.strip_suffix(r"\textwidth")) {
-        if let Ok(factor) = rest.trim().parse::<f64>() {
+    if let Some(rest) = s.strip_suffix(r"\linewidth").or_else(|| s.strip_suffix(r"\textwidth"))
+        && let Ok(factor) = rest.trim().parse::<f64>() {
             return Some(format!("{}%", (factor * 100.0).round() as i64));
         }
-    }
 
-    if let Some(px_str) = s.strip_suffix("px") {
-        if let Ok(px) = px_str.trim().parse::<f64>() {
+    if let Some(px_str) = s.strip_suffix("px")
+        && let Ok(px) = px_str.trim().parse::<f64>() {
             return Some(format!("{}pt", (px * 0.75).round() as i64));
         }
-    }
 
     if s.ends_with('%')
         || s.ends_with("cm")
@@ -789,7 +777,7 @@ fn parse_image_attributes(s: &str) -> (Option<String>, Option<String>, Option<St
     for token in clean.split_whitespace() {
         let token = token.trim();
         if token.starts_with('#') || token.starts_with(r"\#") {
-            let raw_id = if token.starts_with(r"\#") { &token[2..] } else { &token[1..] };
+            let raw_id = token.strip_prefix(r"\#").or_else(|| token.strip_prefix('#')).unwrap_or(token);
             let clean_id = raw_id.replace(':', "-");
             if !clean_id.is_empty() {
                 id = Some(clean_id);
@@ -873,26 +861,24 @@ pub fn parse_diagram_fence(fence: &str) -> Option<DiagramSpec> {
     let mut caption = None;
     if let Some(cap_start) = attr_str.find("caption=") {
         let rest = attr_str[cap_start + 8..].trim_start();
-        if rest.starts_with('"') {
-            if let Some(cap_end) = rest[1..].find('"') {
-                caption = Some(rest[1..=cap_end].to_string());
+        if let Some(stripped) = rest.strip_prefix('"') {
+            if let Some(cap_end) = stripped.find('"') {
+                caption = Some(stripped[..cap_end].to_string());
             }
-        } else if rest.starts_with('\'') {
-            if let Some(cap_end) = rest[1..].find('\'') {
-                caption = Some(rest[1..=cap_end].to_string());
+        } else if let Some(stripped) = rest.strip_prefix('\'')
+            && let Some(cap_end) = stripped.find('\'') {
+                caption = Some(stripped[..cap_end].to_string());
             }
-        }
     } else if let Some(title_start) = attr_str.find("title=") {
         let rest = attr_str[title_start + 6..].trim_start();
-        if rest.starts_with('"') {
-            if let Some(title_end) = rest[1..].find('"') {
-                caption = Some(rest[1..=title_end].to_string());
+        if let Some(stripped) = rest.strip_prefix('"') {
+            if let Some(title_end) = stripped.find('"') {
+                caption = Some(stripped[..title_end].to_string());
             }
-        } else if rest.starts_with('\'') {
-            if let Some(title_end) = rest[1..].find('\'') {
-                caption = Some(rest[1..=title_end].to_string());
+        } else if let Some(stripped) = rest.strip_prefix('\'')
+            && let Some(title_end) = stripped.find('\'') {
+                caption = Some(stripped[..title_end].to_string());
             }
-        }
     }
 
     let (width, height, id) = parse_image_attributes(attr_str);
@@ -908,8 +894,8 @@ pub fn parse_diagram_fence(fence: &str) -> Option<DiagramSpec> {
 
 fn parse_heading_attributes(s: &str) -> (String, bool, Option<String>) {
     let trimmed = s.trim();
-    if let Some(brace_start) = trimmed.rfind('{') {
-        if trimmed.ends_with('}') && brace_start > 0 {
+    if let Some(brace_start) = trimmed.rfind('{')
+        && trimmed.ends_with('}') && brace_start > 0 {
             let inside = trimmed[brace_start + 1..trimmed.len() - 1].trim();
             let mut is_unnumbered = false;
             let mut id = None;
@@ -918,7 +904,7 @@ fn parse_heading_attributes(s: &str) -> (String, bool, Option<String>) {
                 if token == "-" || token == ".unnumbered" || token == "unnumbered" {
                     is_unnumbered = true;
                 } else if token.starts_with('#') || token.starts_with(r"\#") {
-                    let raw_id = if token.starts_with(r"\#") { &token[2..] } else { &token[1..] };
+                    let raw_id = token.strip_prefix(r"\#").or_else(|| token.strip_prefix('#')).unwrap_or(token);
                     let clean_id = raw_id.replace(':', "-");
                     if !clean_id.is_empty() {
                         id = Some(clean_id);
@@ -935,7 +921,6 @@ fn parse_heading_attributes(s: &str) -> (String, bool, Option<String>) {
             let clean_title = trimmed[..brace_start].trim().to_string();
             return (clean_title, is_unnumbered, id);
         }
-    }
 
     (trimmed.to_string(), false, None)
 }
@@ -1200,6 +1185,20 @@ pub fn escape_typst_text(s: &str) -> String {
     final_out
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct MarkdownOptions<'a> {
+    pub is_slides: bool,
+    pub bibliography: bool,
+    pub lang: &'a str,
+    pub biblio_title: Option<&'a str>,
+    pub toc_title: Option<&'a str>,
+    pub toc_depth: Option<usize>,
+    pub ref_exclude: Option<&'a [String]>,
+    pub ref_include: Option<&'a [String]>,
+    pub kroki_url: Option<&'a str>,
+}
+
+#[allow(clippy::too_many_arguments, dead_code)]
 pub fn markdown_to_typst(
     markdown: &str,
     is_slides: bool,
@@ -1211,6 +1210,35 @@ pub fn markdown_to_typst(
     ref_exclude: Option<&[String]>,
     ref_include: Option<&[String]>,
 ) -> String {
+    markdown_to_typst_with_options(
+        markdown,
+        &MarkdownOptions {
+            is_slides,
+            bibliography,
+            lang,
+            biblio_title,
+            toc_title,
+            toc_depth,
+            ref_exclude,
+            ref_include,
+            kroki_url: None,
+        },
+    )
+}
+
+pub fn markdown_to_typst_with_options(
+    markdown: &str,
+    opts: &MarkdownOptions<'_>,
+) -> String {
+    let is_slides = opts.is_slides;
+    let bibliography = opts.bibliography;
+    let lang = opts.lang;
+    let biblio_title = opts.biblio_title;
+    let toc_title = opts.toc_title;
+    let toc_depth = opts.toc_depth;
+    let ref_exclude = opts.ref_exclude;
+    let ref_include = opts.ref_include;
+
     let preprocessed = preprocess_pandoc(markdown);
     let markdown = &preprocessed;
     let has_ref_command = preprocessed.contains("<!--botox:ref");
@@ -1347,9 +1375,9 @@ pub fn markdown_to_typst(
                         }
                         i = j + 1;
 
-                        if let pulldown_cmark::CodeBlockKind::Fenced(ref fence) = kind {
-                            if let Some(spec) = parse_diagram_fence(fence) {
-                                match crate::diagrams::render_diagram(&spec.diagram_type, &code, None) {
+                        if let pulldown_cmark::CodeBlockKind::Fenced(ref fence) = kind
+                            && let Some(spec) = parse_diagram_fence(fence) {
+                                match crate::diagrams::render_diagram(&spec.diagram_type, &code, opts.kroki_url) {
                                     Ok(cached_path) => {
                                         let path_str = cached_path.to_string_lossy().replace('\\', "/");
                                         let mut img_args = vec![format!("\"{path_str}\"")];
@@ -1403,7 +1431,6 @@ pub fn markdown_to_typst(
                                 }
                                 continue;
                             }
-                        }
 
                         // Regular code block (fenced or indented)
                         let lang = match &kind {
@@ -1633,14 +1660,13 @@ pub fn markdown_to_typst(
                         let mut image_attrs = (None, None, None);
                         if let Some(Event::Text(next_text)) = events.get_mut(i + 1) {
                             let trimmed = next_text.trim_start();
-                            if trimmed.starts_with('{') {
-                                if let Some(brace_end) = trimmed.find('}') {
+                            if trimmed.starts_with('{')
+                                && let Some(brace_end) = trimmed.find('}') {
                                     let attr_part = &trimmed[1..brace_end];
                                     image_attrs = parse_image_attributes(attr_part);
                                     let remainder = trimmed[brace_end + 1..].to_string();
                                     *next_text = remainder.into();
                                 }
-                            }
                         }
 
                         if let Some((url, alt)) = current_image.take() {
@@ -1935,27 +1961,25 @@ pub fn markdown_to_typst(
                 let mut eq_label = None;
                 if let Some(Event::Text(next_text)) = events.get_mut(i + 1) {
                     let trimmed = next_text.trim_start();
-                    if trimmed.starts_with('{') {
-                        if let Some(brace_end) = trimmed.find('}') {
+                    if trimmed.starts_with('{')
+                        && let Some(brace_end) = trimmed.find('}') {
                             let attr = trimmed[1..brace_end].trim();
-                            if attr.starts_with('#') {
-                                eq_label = Some(attr[1..].replace(':', "-"));
+                            if let Some(stripped) = attr.strip_prefix('#') {
+                                eq_label = Some(stripped.replace(':', "-"));
                                 let remainder = trimmed[brace_end + 1..].to_string();
                                 *next_text = remainder.into();
                             }
                         }
-                    }
                 }
                 let mut math_str = math.to_string();
-                if let Some(pos) = math_str.find(r"\label{") {
-                    if let Some(end) = math_str[pos..].find('}') {
+                if let Some(pos) = math_str.find(r"\label{")
+                    && let Some(end) = math_str[pos..].find('}') {
                         let raw_label = &math_str[pos + 7..pos + end];
                         if eq_label.is_none() {
                             eq_label = Some(raw_label.replace(':', "-"));
                         }
                         math_str.replace_range(pos..pos + end + 1, "");
                     }
-                }
                 let converted = convert_latex_math_to_typst(&math_str);
                 let mut s = format!("\n$ {} $", converted.trim());
                 if let Some(ref label) = eq_label {
