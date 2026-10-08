@@ -1,0 +1,145 @@
+use std::fs;
+use std::path::PathBuf;
+use std::time::Duration;
+use sha2::{Digest, Sha256};
+
+/// Determine the local cache directory for diagrams.
+pub fn get_cache_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("BOTOX_CACHE_DIR") {
+        return PathBuf::from(dir);
+    }
+    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+        return PathBuf::from(xdg).join("botox").join("diagrams");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join(".cache").join("botox").join("diagrams");
+    }
+    std::env::temp_dir().join("botox_diagrams")
+}
+
+/// Compute a unique deterministic cache hash for a diagram.
+pub fn compute_diagram_hash(diagram_type: &str, code: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(diagram_type.trim().to_lowercase().as_bytes());
+    hasher.update(b":");
+    hasher.update(code.trim().as_bytes());
+    let result = hasher.finalize();
+    result.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Render a diagram using Kroki with local caching.
+/// If the diagram was already rendered and cached, it is returned immediately (0ms).
+/// If not cached, it attempts an HTTP POST request to Kroki.
+/// On failure, returns an error message so the caller can render a fallback.
+pub fn render_diagram(
+    diagram_type: &str,
+    code: &str,
+    kroki_endpoint: Option<&str>,
+) -> Result<PathBuf, String> {
+    let clean_type = diagram_type.trim().to_lowercase();
+    let norm_type = match clean_type.as_str() {
+        "puml" => "plantuml",
+        other => other,
+    };
+
+    let cache_dir = get_cache_dir();
+    if let Err(e) = fs::create_dir_all(&cache_dir) {
+        return Err(format!("Failed to create diagram cache dir: {e}"));
+    }
+
+    let hash = compute_diagram_hash(norm_type, code);
+    let cache_file = cache_dir.join(format!("{hash}.svg"));
+
+    // Check existing cache
+    if cache_file.is_file() {
+        if let Ok(meta) = fs::metadata(&cache_file) {
+            if meta.len() > 0 {
+                return Ok(cache_file);
+            }
+        }
+    }
+
+    // Resolve Kroki base URL
+    let base_url = kroki_endpoint
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("KROKI_ENDPOINT").ok())
+        .or_else(|| std::env::var("KROKI_URL").ok())
+        .unwrap_or_else(|| "https://kroki.io".to_string());
+
+    let target_url = format!("{}/{}/svg", base_url.trim_end_matches('/'), norm_type);
+
+    let client = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(5)))
+        .build()
+        .new_agent();
+
+    let mut resp = client
+        .post(&target_url)
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .header("User-Agent", "botox/0.1")
+        .send(code)
+        .map_err(|e| format!("Kroki connection failed: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("Kroki returned HTTP {status}"));
+    }
+
+    let svg_bytes = resp
+        .body_mut()
+        .read_to_vec()
+        .map_err(|e| format!("Failed to read response from Kroki: {e}"))?;
+
+    if svg_bytes.is_empty() {
+        return Err("Kroki returned an empty SVG response".to_string());
+    }
+
+    fs::write(&cache_file, svg_bytes)
+        .map_err(|e| format!("Failed to write diagram to cache: {e}"))?;
+
+    Ok(cache_file)
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_diagram_hash_deterministic() {
+        let h1 = compute_diagram_hash("mermaid", "graph TD; A-->B;");
+        let h2 = compute_diagram_hash("mermaid", "graph TD; A-->B;");
+        let h3 = compute_diagram_hash("mermaid", "graph TD; A-->C;");
+        assert_eq!(h1, h2);
+        assert_ne!(h1, h3);
+    }
+
+    #[test]
+    fn test_render_diagram_cached_hit() {
+        let cache_dir = get_cache_dir();
+        let _ = fs::create_dir_all(&cache_dir);
+        let test_code = "test_diagram_cached_hit_mock";
+        let hash = compute_diagram_hash("mermaid", test_code);
+        let cache_file = cache_dir.join(format!("{hash}.svg"));
+        
+        // Populate cache manually
+        let dummy_svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\"><text>Mock Diagram</text></svg>";
+        fs::write(&cache_file, dummy_svg).expect("Write mock cache");
+
+        // Request render with an invalid endpoint to prove network is NOT hit when cached
+        let res = render_diagram("mermaid", test_code, Some("http://invalid.local.domain.does.not.exist"));
+        assert!(res.is_ok());
+        let path = res.unwrap();
+        assert_eq!(path, cache_file);
+
+        let _ = fs::remove_file(cache_file);
+    }
+
+    #[test]
+    fn test_render_diagram_unreachable_endpoint_fallback() {
+        let test_code = "unique_uncached_diagram_test_code_12345";
+        let res = render_diagram("mermaid", test_code, Some("http://127.0.0.1:1"));
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert!(err.contains("Kroki connection failed") || err.contains("connection refused") || err.contains("failed"));
+    }
+}

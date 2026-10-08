@@ -3,6 +3,7 @@ mod markdown;
 mod document;
 mod slides;
 mod compiler;
+pub mod diagrams;
 
 use std::path::PathBuf;
 use serde_yaml::Value;

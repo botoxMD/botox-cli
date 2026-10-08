@@ -10,6 +10,8 @@ date: \today
 abstract: "Botox is a pure Rust, single-binary command-line suite that compiles standard Markdown documents into publication-grade LaTeX-style PDF documentation or presentation slide decks. Featuring an embedded in-process typesetting engine, authentic New Computer Modern typography, advanced TeX mathematics, native IEEE-standard bibliographies, and Pandoc extensions, Botox requires zero external runtime dependencies."
 ---
 
+\toc
+
 # Overview and Architecture
 
 Botox provides a single, self-contained native executable (`botox`) that transforms standard Markdown files into either publication-grade LaTeX-style PDF documents or clean 16:9 presentation slide decks.
@@ -164,6 +166,32 @@ Raster and vector image assets (PNG, JPEG, SVG, WebP, GIF) are rendered natively
 Attributes inside `{...}` support:
 - Dimensions: `%` (e.g. `width=50%`), absolute units (`10cm`, `4in`, `200pt`, `100mm`), pixels (`300px`), and TeX factors (`0.8\linewidth`, `\textwidth`).
 - Identifiers: `#fig:id` or `id=fig:id` for cross-referencing with `@fig:id`.
+
+## Diagrams (Mermaid & PlantUML)
+
+Botox natively compiles Mermaid and PlantUML diagrams into vector graphics using **Kroki** with zero local dependencies (no Node.js, Chromium, Java, or CLI tools needed):
+
+````markdown
+```mermaid {caption="High-Level Architecture" width=75% #fig:arch}
+graph TD
+  Client --> API[Botox CLI]
+  API --> Engine[Embedded Typst Engine]
+  Engine --> PDF[LaTeX PDF Document]
+```
+
+```plantuml {caption="Authentication Handshake" #fig:auth}
+@startuml
+Client -> Server : Request Token
+Server -> DB : Validate Credentials
+DB --> Server : Valid
+Server --> Client : Token Issued
+@enduml
+```
+````
+
+- **Local SVG Caching**: Generated SVGs are stored locally in `~/.cache/botox/diagrams/`. Subsequent compilations load from disk instantly (0ms) with zero network requests.
+- **Offline / Outage Fallback**: If Kroki is unreachable or returns an error, Botox gracefully renders the raw syntax-highlighted code block inside a warning callout box.
+- **Custom Endpoints**: Point to self-hosted Kroki instances via the `KROKI_ENDPOINT` environment variable.
 
 ## Cross-Referencing
 

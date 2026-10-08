@@ -816,6 +816,96 @@ fn parse_image_attributes(s: &str) -> (Option<String>, Option<String>, Option<St
     (width, height, id)
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiagramSpec {
+    pub diagram_type: String,
+    pub caption: Option<String>,
+    pub width: Option<String>,
+    pub height: Option<String>,
+    pub id: Option<String>,
+}
+
+pub fn parse_diagram_fence(fence: &str) -> Option<DiagramSpec> {
+    let trimmed = fence.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut lang_candidate = String::new();
+    let mut attr_str = "";
+
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        let inside = trimmed[1..trimmed.len() - 1].trim();
+        for token in inside.split_whitespace() {
+            if token.starts_with('.') {
+                lang_candidate = token.trim_start_matches('.').to_string();
+                break;
+            }
+        }
+        attr_str = inside;
+    } else if let Some(brace_pos) = trimmed.find('{') {
+        lang_candidate = trimmed[..brace_pos].trim().trim_start_matches('.').to_string();
+        let rest = &trimmed[brace_pos + 1..];
+        if let Some(end_brace) = rest.find('}') {
+            attr_str = &rest[..end_brace];
+        } else {
+            attr_str = rest;
+        }
+    } else {
+        let mut parts = trimmed.splitn(2, |c: char| c.is_whitespace());
+        lang_candidate = parts.next().unwrap_or("").trim_start_matches('.').to_string();
+        if let Some(rest) = parts.next() {
+            attr_str = rest;
+        }
+    }
+
+    let norm_lang = lang_candidate
+        .strip_prefix("diagram-")
+        .unwrap_or(&lang_candidate)
+        .to_lowercase();
+
+    let diagram_type = match norm_lang.as_str() {
+        "mermaid" => "mermaid".to_string(),
+        "plantuml" | "puml" => "plantuml".to_string(),
+        _ => return None,
+    };
+
+    let mut caption = None;
+    if let Some(cap_start) = attr_str.find("caption=") {
+        let rest = attr_str[cap_start + 8..].trim_start();
+        if rest.starts_with('"') {
+            if let Some(cap_end) = rest[1..].find('"') {
+                caption = Some(rest[1..=cap_end].to_string());
+            }
+        } else if rest.starts_with('\'') {
+            if let Some(cap_end) = rest[1..].find('\'') {
+                caption = Some(rest[1..=cap_end].to_string());
+            }
+        }
+    } else if let Some(title_start) = attr_str.find("title=") {
+        let rest = attr_str[title_start + 6..].trim_start();
+        if rest.starts_with('"') {
+            if let Some(title_end) = rest[1..].find('"') {
+                caption = Some(rest[1..=title_end].to_string());
+            }
+        } else if rest.starts_with('\'') {
+            if let Some(title_end) = rest[1..].find('\'') {
+                caption = Some(rest[1..=title_end].to_string());
+            }
+        }
+    }
+
+    let (width, height, id) = parse_image_attributes(attr_str);
+
+    Some(DiagramSpec {
+        diagram_type,
+        caption,
+        width,
+        height,
+        id,
+    })
+}
+
 fn parse_heading_attributes(s: &str) -> (String, bool, Option<String>) {
     let trimmed = s.trim();
     if let Some(brace_start) = trimmed.rfind('{') {
@@ -1240,6 +1330,71 @@ pub fn markdown_to_typst(
                         typst.push_str("#quote[");
                     }
                     Tag::CodeBlock(kind) => {
+                        if let pulldown_cmark::CodeBlockKind::Fenced(ref fence) = kind {
+                            if let Some(spec) = parse_diagram_fence(fence) {
+                                let mut code = String::new();
+                                let mut j = i + 1;
+                                while j < num_events {
+                                    match &events[j] {
+                                        Event::Text(t) => {
+                                            code.push_str(t);
+                                            j += 1;
+                                        }
+                                        Event::End(TagEnd::CodeBlock) => {
+                                            break;
+                                        }
+                                        _ => {
+                                            j += 1;
+                                        }
+                                    }
+                                }
+                                i = j + 1;
+
+                                match crate::diagrams::render_diagram(&spec.diagram_type, &code, None) {
+                                    Ok(cached_path) => {
+                                        let path_str = cached_path.to_string_lossy().replace('\\', "/");
+                                        let mut img_args = vec![format!("\"{path_str}\"")];
+                                        if let Some(ref w) = spec.width {
+                                            img_args.push(format!("width: {w}"));
+                                        }
+                                        if let Some(ref h) = spec.height {
+                                            img_args.push(format!("height: {h}"));
+                                        }
+                                        let img_call = format!("image({})", img_args.join(", "));
+
+                                        if spec.caption.is_some() || spec.id.is_some() {
+                                            let mut fig = format!("\n#figure({img_call}");
+                                            if let Some(ref cap) = spec.caption {
+                                                let escaped_cap = escape_typst_text(cap);
+                                                fig.push_str(&format!(", caption: [{escaped_cap}]"));
+                                            }
+                                            fig.push(')');
+                                            if let Some(ref label) = spec.id {
+                                                fig.push_str(&format!(" <{label}>"));
+                                            }
+                                            fig.push_str("\n\n");
+                                            typst.push_str(&fig);
+                                        } else {
+                                            typst.push_str(&format!("\n#align(center)[#{img_call}]\n\n"));
+                                        }
+                                    }
+                                    Err(_) => {
+                                        let title = "Diagram rendering failed: Kroki unreachable";
+                                        let raw_lang = &spec.diagram_type;
+                                        let clean_code = if code.ends_with('\n') {
+                                            code
+                                        } else {
+                                            format!("{code}\n")
+                                        };
+                                        typst.push_str(&format!(
+                                            "\n#botox_callout(\"warning\", \"{title}\")[\n```{raw_lang}\n{clean_code}```\n]\n\n"
+                                        ));
+                                    }
+                                }
+                                continue;
+                            }
+                        }
+
                         in_code_block = true;
                         typst.push_str("```");
                         if let pulldown_cmark::CodeBlockKind::Fenced(lang) = kind {
@@ -2187,5 +2342,57 @@ Check [link](https://example.com/api?q="quoted") here.
         let md = "Point 1\n\\pause\nPoint 2\n<!-- pause -->\nPoint 3";
         let typst = markdown_to_typst(md, true, false, "en", None, None, None, None, None);
         assert!(typst.contains("#botox_pause()"));
+    }
+
+    #[test]
+    fn test_parse_diagram_fence() {
+        let spec1 = parse_diagram_fence("mermaid").expect("mermaid");
+        assert_eq!(spec1.diagram_type, "mermaid");
+        assert_eq!(spec1.caption, None);
+
+        let spec2 = parse_diagram_fence("plantuml {caption=\"System Model\" width=80% #fig:arch}").expect("plantuml");
+        assert_eq!(spec2.diagram_type, "plantuml");
+        assert_eq!(spec2.caption.as_deref(), Some("System Model"));
+        assert_eq!(spec2.width.as_deref(), Some("80%"));
+        assert_eq!(spec2.id.as_deref(), Some("fig-arch"));
+
+        let spec3 = parse_diagram_fence("puml {title='Auth Sequence'}").expect("puml");
+        assert_eq!(spec3.diagram_type, "plantuml");
+        assert_eq!(spec3.caption.as_deref(), Some("Auth Sequence"));
+
+        let spec4 = parse_diagram_fence("{.mermaid width=10cm}").expect(".mermaid");
+        assert_eq!(spec4.diagram_type, "mermaid");
+        assert_eq!(spec4.width.as_deref(), Some("10cm"));
+
+        assert!(parse_diagram_fence("rust").is_none());
+        assert!(parse_diagram_fence("python").is_none());
+    }
+
+    #[test]
+    fn test_diagram_markdown_cached_and_fallback() {
+        // Test 1: Cached diagram produces #figure(image(...))
+        let diag_code = "graph LR\n  Client --> Server";
+        let hash = crate::diagrams::compute_diagram_hash("mermaid", diag_code);
+        let cache_dir = crate::diagrams::get_cache_dir();
+        let _ = std::fs::create_dir_all(&cache_dir);
+        let cache_file = cache_dir.join(format!("{hash}.svg"));
+        std::fs::write(&cache_file, b"<svg><text>Mock Mermaid</text></svg>").unwrap();
+
+        let md_cached = format!("```mermaid {{caption=\"Client-Server Architecture\" #fig:arch}}\n{diag_code}\n```");
+        let typst_cached = markdown_to_typst(&md_cached, false, false, "en", None, None, None, None, None);
+        assert!(typst_cached.contains("#figure(image("));
+        assert!(typst_cached.contains("caption: [Client-Server Architecture]"));
+        assert!(typst_cached.contains("<fig-arch>"));
+
+        let _ = std::fs::remove_file(cache_file);
+
+        // Test 2: Fallback when Kroki is unreachable produces warning callout with raw code
+        unsafe { std::env::set_var("KROKI_ENDPOINT", "http://127.0.0.1:1"); }
+        let md_fallback = "```plantuml\nAlice -> Bob : Ping\n```";
+        let typst_fallback = markdown_to_typst(md_fallback, false, false, "en", None, None, None, None, None);
+        unsafe { std::env::remove_var("KROKI_ENDPOINT"); }
+
+        assert!(typst_fallback.contains("#botox_callout(\"warning\", \"Diagram rendering failed: Kroki unreachable\")"));
+        assert!(typst_fallback.contains("```plantuml\nAlice -> Bob : Ping\n```"));
     }
 }

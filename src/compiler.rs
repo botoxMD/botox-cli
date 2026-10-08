@@ -19,6 +19,7 @@ impl FileResolver for BotoxFileResolver {
         let candidates = [
             self.resource_dir.join(rel_path),
             abs_candidate.to_path_buf(),
+            PathBuf::from(rel_path),
             std::env::current_dir()
                 .unwrap_or_else(|_| PathBuf::from("."))
                 .join(rel_path),
@@ -1072,5 +1073,17 @@ Second column body text.
         assert!(parsed.pages[0].contains("data-pause-step=\"true\""));
         assert!(!parsed.pages[1].contains("data-pause-step=\"true\""));
         let _ = std::fs::remove_file(tmp_json);
+    }
+
+    #[test]
+    fn test_callout_with_codeblock_compilation() {
+        let callout_markup = "#botox_callout(\"warning\", \"Diagram rendering failed: Kroki unreachable\")[\n```mermaid\ngraph TD;\n  A-->B;\n```\n]";
+        let fm = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let config = crate::config::DocumentConfig::defaults();
+        let typst_markup = crate::document::wrap_document(callout_markup, &fm, &config, None, None, None, None);
+        let tmp_pdf = std::env::temp_dir().join("test_callout_codeblock.pdf");
+        let res = compile_typst(&typst_markup, &tmp_pdf, None);
+        assert!(res.is_ok(), "Typst compile error: {:?}", res.err());
+        let _ = std::fs::remove_file(tmp_pdf);
     }
 }

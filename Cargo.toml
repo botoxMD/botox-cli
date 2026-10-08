@@ -18,6 +18,8 @@ typst-layout = "0.15.1"
 typst-library = "0.15.1"
 ctrlc = "3.5.2"
 libc = "0.2"
+ureq = "3.4.2"
+sha2 = "0.11.0"
 
 [profile.release]
 opt-level = 3
