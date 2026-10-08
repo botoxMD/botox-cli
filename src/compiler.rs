@@ -16,21 +16,20 @@ impl FileResolver for BotoxFileResolver {
         let rel_path = Path::new(vpath.get_without_slash());
         let abs_candidate = Path::new(vpath.get_with_slash());
 
-        let candidates = [
-            self.resource_dir.join(rel_path),
-            abs_candidate.to_path_buf(),
-            PathBuf::from(rel_path),
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(rel_path),
-        ];
-
-        for path in &candidates {
-            if path.is_file() {
-                if let Ok(bytes) = std::fs::read(path) {
-                    return Ok(std::borrow::Cow::Owned(typst::foundations::Bytes::new(bytes)));
-                }
+        // Fast path for absolute paths (e.g. cached diagrams or absolute asset links)
+        if abs_candidate.is_absolute() {
+            if let Ok(bytes) = std::fs::read(abs_candidate) {
+                return Ok(std::borrow::Cow::Owned(typst::foundations::Bytes::new(bytes)));
             }
+        }
+
+        let rel_cand = self.resource_dir.join(rel_path);
+        if let Ok(bytes) = std::fs::read(&rel_cand) {
+            return Ok(std::borrow::Cow::Owned(typst::foundations::Bytes::new(bytes)));
+        }
+
+        if let Ok(bytes) = std::fs::read(rel_path) {
+            return Ok(std::borrow::Cow::Owned(typst::foundations::Bytes::new(bytes)));
         }
 
         Err(typst::diag::FileError::NotFound(self.resource_dir.join(rel_path)))
@@ -63,15 +62,36 @@ pub struct BotoxPagesOutput {
     pub pause_indices: Vec<usize>,
 }
 
-static EMBEDDED_FONTS: std::sync::LazyLock<Vec<typst::text::Font>> = std::sync::LazyLock::new(|| {
-    let mut fonts = Vec::new();
-    for font_bytes in typst_assets::fonts() {
-        let bytes = typst::foundations::Bytes::new(font_bytes);
-        for font in typst::text::Font::iter(bytes) {
-            fonts.push(font);
-        }
-    }
-    fonts
+static DEFAULT_EMBEDDED_FONTS: std::sync::LazyLock<Vec<typst::text::Font>> = std::sync::LazyLock::new(|| {
+    let font_bytes_list: Vec<&'static [u8]> = typst_assets::fonts().skip(6).collect();
+    std::thread::scope(|s| {
+        let handles: Vec<_> = font_bytes_list
+            .into_iter()
+            .map(|fb| {
+                s.spawn(move || {
+                    let bytes = typst::foundations::Bytes::new(fb);
+                    typst::text::Font::iter(bytes).collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    })
+});
+
+static LIBERTINE_FONTS: std::sync::LazyLock<Vec<typst::text::Font>> = std::sync::LazyLock::new(|| {
+    let font_bytes_list: Vec<&'static [u8]> = typst_assets::fonts().take(6).collect();
+    std::thread::scope(|s| {
+        let handles: Vec<_> = font_bytes_list
+            .into_iter()
+            .map(|fb| {
+                s.spawn(move || {
+                    let bytes = typst::foundations::Bytes::new(fb);
+                    typst::text::Font::iter(bytes).collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    })
 });
 
 fn is_embedded_font(name: &str) -> bool {
@@ -84,7 +104,13 @@ fn is_embedded_font(name: &str) -> bool {
 }
 
 fn load_needed_fonts(typst_markup: &str) -> Vec<typst::text::Font> {
-    let mut fonts = EMBEDDED_FONTS.clone();
+    let mut fonts = DEFAULT_EMBEDDED_FONTS.clone();
+
+    // Check if Libertine/Biolinum is requested
+    let lower_markup = typst_markup.to_ascii_lowercase();
+    if lower_markup.contains("libertin") || lower_markup.contains("biolinum") {
+        fonts.extend(LIBERTINE_FONTS.iter().cloned());
+    }
 
     // Check if custom fonts are referenced in typst_markup:
     // e.g. `font: "..."` or `font: ("...", "...")`
@@ -92,33 +118,46 @@ fn load_needed_fonts(typst_markup: &str) -> Vec<typst::text::Font> {
     let mut idx = 0;
     while let Some(pos) = typst_markup[idx..].find("font:") {
         let start = idx + pos + 5;
-        let rest = &typst_markup[start..];
-        let end = rest.find(['\n', ';']).unwrap_or(rest.len().min(120));
-        let slice = &rest[..end];
-
-        let mut in_quote = false;
-        let mut quote_char = '"';
-        let mut cur = String::new();
-        for ch in slice.chars() {
-            if in_quote {
-                if ch == quote_char {
-                    in_quote = false;
-                    let trimmed = cur.trim();
-                    if !is_embedded_font(trimmed)
-                        && !custom_fonts.iter().any(|f| f.eq_ignore_ascii_case(trimmed))
-                    {
-                        custom_fonts.push(trimmed.to_string());
+        let rest = typst_markup[start..].trim_start();
+        idx = start + 5;
+        if rest.starts_with('(') {
+            if let Some(end_paren) = rest.find(')') {
+                let content = &rest[1..end_paren];
+                let mut in_quote = false;
+                let mut quote_char = '"';
+                let mut cur = String::new();
+                for ch in content.chars() {
+                    if in_quote {
+                        if ch == quote_char {
+                            in_quote = false;
+                            let trimmed = cur.trim();
+                            if !is_embedded_font(trimmed)
+                                && !custom_fonts.iter().any(|f| f.eq_ignore_ascii_case(trimmed))
+                            {
+                                custom_fonts.push(trimmed.to_string());
+                            }
+                            cur.clear();
+                        } else {
+                            cur.push(ch);
+                        }
+                    } else if ch == '"' || ch == '\'' {
+                        in_quote = true;
+                        quote_char = ch;
                     }
-                    cur.clear();
-                } else {
-                    cur.push(ch);
                 }
-            } else if ch == '"' || ch == '\'' {
-                in_quote = true;
-                quote_char = ch;
+            }
+        } else if rest.starts_with('"') || rest.starts_with('\'') {
+            let quote_char = rest.chars().next().unwrap();
+            let after_quote = &rest[1..];
+            if let Some(end_q) = after_quote.find(quote_char) {
+                let trimmed = after_quote[..end_q].trim();
+                if !is_embedded_font(trimmed)
+                    && !custom_fonts.iter().any(|f| f.eq_ignore_ascii_case(trimmed))
+                {
+                    custom_fonts.push(trimmed.to_string());
+                }
             }
         }
-        idx = start + end;
     }
 
     if !custom_fonts.is_empty() {
@@ -174,8 +213,11 @@ pub fn compile_typst(
     output_path: &Path,
     resource_dir: Option<&Path>,
 ) -> Result<(), String> {
+    let t0 = std::time::Instant::now();
     let fonts = load_needed_fonts(typst_markup);
+    let t_fonts = t0.elapsed();
 
+    let t1 = std::time::Instant::now();
     let res_dir = resource_dir
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
@@ -185,8 +227,12 @@ pub fn compile_typst(
         .fonts(fonts)
         .add_file_resolver(BotoxFileResolver { resource_dir: res_dir })
         .build();
+    let t_builder = t1.elapsed();
 
+    let t2 = std::time::Instant::now();
     let compilation_result = engine.compile();
+    let t_compile = t2.elapsed();
+
     let doc: typst_layout::PagedDocument = compilation_result.output.map_err(|e| {
         let _ = std::fs::write("/tmp/debug_fail.typ", typst_markup);
         format_compilation_error(&e)
@@ -430,10 +476,19 @@ pub fn compile_typst(
                 .map_err(|e| format!("Failed to write output HTML file '{}': {e}", output_path.display()))?;
         }
         _ => {
+            let t_pdf_start = std::time::Instant::now();
             let pdf_bytes = typst_pdf::pdf(&doc, &typst_pdf::PdfOptions::default())
                 .map_err(|e| format!("PDF export error: {e:?}"))?;
+            let t_pdf = t_pdf_start.elapsed();
+
+            let t_write_start = std::time::Instant::now();
             std::fs::write(output_path, pdf_bytes)
                 .map_err(|e| format!("Failed to write output file '{}': {e}", output_path.display()))?;
+            let t_write = t_write_start.elapsed();
+
+            if std::env::var("BOTOX_PROFILE").is_ok() {
+                eprintln!("[PROFILE] load_fonts: {t_fonts:.2?}, builder: {t_builder:.2?}, typst_compile: {t_compile:.2?}, pdf_export: {t_pdf:.2?}, write_fs: {t_write:.2?}");
+            }
         }
     }
 
@@ -1085,5 +1140,24 @@ Second column body text.
         let res = compile_typst(&typst_markup, &tmp_pdf, None);
         assert!(res.is_ok(), "Typst compile error: {:?}", res.err());
         let _ = std::fs::remove_file(tmp_pdf);
+    }
+
+    #[test]
+    fn test_load_needed_fonts_defaults_and_custom() {
+        let default_markup = r#"
+            #set text(font: ("New Computer Modern",), size: 11pt, lang: "en")
+            #show math.equation: set text(font: "New Computer Modern Math")
+            #show raw: set text(font: ("DejaVu Sans Mono",))
+        "#;
+        let fonts = load_needed_fonts(default_markup);
+        // Default fonts should contain only embedded New Computer Modern, Math, and DejaVu variants
+        assert!(!fonts.is_empty());
+        assert!(fonts.len() <= 12, "Should only load default embedded fonts, got {}", fonts.len());
+
+        let libertine_markup = r#"
+            #set text(font: ("Libertinus Serif",), size: 11pt)
+        "#;
+        let lib_fonts = load_needed_fonts(libertine_markup);
+        assert!(lib_fonts.len() > fonts.len(), "Libertine markup should load additional Libertinus fonts");
     }
 }
