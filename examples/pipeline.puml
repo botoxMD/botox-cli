@@ -1,0 +1,14 @@
+@startuml
+skinparam monochrome true
+actor User
+participant "Botox CLI" as CLI
+participant "Kroki Service" as Kroki
+participant "Embedded Typst" as Typst
+
+User -> CLI : botox document.md
+CLI -> Kroki : Render diagrams (if not cached)
+Kroki --> CLI : SVG vector graphics
+CLI -> Typst : Compile Markdown + SVGs
+Typst --> CLI : PDF Document bytes
+CLI --> User : Saved document.pdf
+@enduml

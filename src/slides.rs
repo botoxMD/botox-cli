@@ -150,6 +150,7 @@ pub fn wrap_slides(
 
     out.push_str("#let botox_slide_counter = counter(\"slide\")\n");
     out.push_str("#botox_slide_counter.step()\n\n");
+    out.push_str("#let botox_pause() = {}\n\n");
     out.push_str("// BOTOX_BODY_START\n");
 
     let raw_slides: Vec<&str> = slides_typst.split("#pagebreak()").collect();
@@ -168,7 +169,7 @@ pub fn wrap_slides(
             out.push_str("\n#pagebreak()\n#botox_slide_counter.step()\n\n");
         }
 
-        if i == 0 && is_title_slide(trimmed) {
+        if i == 0 && is_title_slide(trimmed) && !trimmed.contains("#botox_pause()") {
             out.push_str(&format!(
                 "#place(center + horizon)[\n  #align(center)[\n    #show heading.where(level: 1): it => block(below: 0.6em)[#text(size: 2.1em, weight: \"bold\", fill: rgb(\"{heading_color}\"))[#it.body]]\n    #show heading.where(level: 3): it => block(below: 0.4em)[#text(size: 1.15em, style: \"italic\", fill: rgb(\"{muted_color}\"))[#it.body]]\n    {trimmed}\n  ]\n]\n"
             ));

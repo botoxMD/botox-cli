@@ -1,119 +1,92 @@
 ---
-marp: true
-title: "Next-Generation Systems with Botox"
-author: "Systems Architecture Group"
-theme: uncover
-paginate: true
+type: slides
+title: Botox Slides Reference
+theme: dark
+aspect-ratio: "16-9"
 ---
 
-# Next-Generation Systems
-### High-Performance Scientific Presentations & Typesetting
-**Presenter:** Systems Engineering Research Lab  
-**Date:** \today
+# Botox Overview
 
----
+* Pure Rust compiler for Markdown to PDF and HTML slides
+* Zero external toolchain dependencies (no TeX Live, no Pandoc, no Node.js)
+* Fast local caching for diagrams and fonts
 
-# Typography & Text Formatting
+<!-- pause -->
 
-Botox provides full Markdown and LaTeX styling for presentations:
-
-- **Emphasis**: Use **bold**, *italics*, or ***bold-italics*** for key terms.
-- **Formulas & Chemistry**: Water H~2~O, energy $E = m c^2$, and powers 2^10^.
-- **Revisions**: Flag deprecated items with ~~strikethrough~~.
-- **Commands**: Run inline code with `botox slides.md -o slides.pdf`.
-- **Workflow**:
-  1. Initialize workspace with `botox init --slides`
-  2. Live preview with synchronized bidirectional cursor tracking
+* Built-in presentation viewer with keyboard navigation and fullscreen support
 
 ---
 
-# Callout Boxes & Admonitions
+# Mathematics on Slides
 
-Visual callouts highlight critical insights and best practices:
+Inline math: $E = m c^2$ and $\nabla \cdot \mathbf{B} = 0$
 
-> [!NOTE]
-> Botox compiles Markdown to vector Typst slides in milliseconds with zero external toolchain dependencies.
+Display equations with integrals and limits:
 
-> [!TIP]
-> Switch themes instantly between `default`, `academic`, `nord`, and `dark` via the frontmatter `theme` property.
+$$
+\int_{-\infty}^{\infty} e^{-x^2} \, dx = \sqrt{\pi}
+$$
 
----
+<!-- pause -->
 
-# Mathematical Formulations
+Matrix calculations:
 
-Native equations render with Computer Modern vector precision:
-
-Scaled Dot-Product Attention maps queries $Q$ and keys $K$ to values $V$:
-
-$$ \text{Attn}(Q, K, V) = \text{softmax}\left(\frac{Q K^T}{\sqrt{d_k}}\right) V $$
-
-- Dimension scaling $\frac{1}{\sqrt{d_k}}$ avoids vanishing gradients in large models
-- Fully vector-rendered with zero pixelation at any display scale
-
----
-
-# Matrix Models & Linear Algebra
-
-High-dimensional state representations and parameter covariance:
-
-$$ \mathbf{\Sigma} = \begin{bmatrix} \sigma_x^2 & \rho_{x y} & 0 \\ \rho_{y x} & \sigma_y^2 & 0 \\ 0 & 0 & \sigma_z^2 \end{bmatrix}, \quad \nabla_{\mathbf{\theta}} \mathcal{L}(\mathbf{\theta}) \in \mathbb{R}^d $$
-
-- Seamless LaTeX matrix syntax with `\begin{bmatrix} ... \end{bmatrix}`
-- Complete support for Greek symbols, subscripts, superscripts, and norms
+$$
+\begin{bmatrix}
+\cos(\theta) & -\sin(\theta) \\
+\sin(\theta) & \cos(\theta)
+\end{bmatrix}
+\begin{pmatrix}
+x \\
+y
+\end{pmatrix}
+$$
 
 ---
 
-# Code Blocks & Syntax Highlighting
+# Architecture Diagram
 
-Vector monospace rendering with automated contrast and framing:
+```mermaid
+graph LR
+    A[Markdown File] --> B[Botox Compiler]
+    B --> C[PDF Document]
+    B --> D[HTML Slides Deck]
+```
 
-```rust
-use botox::compiler::compile_typst;
+<!-- pause -->
 
-// High-speed slide compilation directly to vector PDF
-pub fn build_deck(src: &str, out: &std::path::Path) -> Result<(), String> {
-    compile_typst(src, out, None)
-}
+```umlet file="architecture.uxf"
 ```
 
 ---
 
-# Quantitative Performance
+# Referenced Source Code
 
-Compilation speed and resource efficiency comparisons:
+External source files load directly with syntax highlighting:
 
-| Pipeline Engine | Compilation | Memory | Output Format | Math Quality |
-| :--- | :---: | :---: | :---: | :---: |
-| **Botox (Native)** | **18 ms** | **~24 MB** | **PDF & SVG** | **Exact Vector** |
-| Pandoc + LaTeX | 1,850 ms | ~320 MB | PDF only | Native TeX |
-| Marp CLI + Chrome | 2,400 ms | ~450 MB | HTML / PDF | Rasterized |
-| Quarto + Typst | 420 ms | ~110 MB | PDF / HTML | Native Typst |
+```rust file="sample.rs"
+```
 
 ---
 
-# Interactive Citations & References
+# Tables and Callouts
 
-Hyperlinks automatically transform into IEEE-formatted citations:
+| Feature | PDF Document | HTML Slides |
+| :--- | :---: | :---: |
+| Math | Full LaTeX | KaTeX / SVG |
+| Diagrams | SVG Vector | SVG Vector |
+| Incremental Pauses | No | Yes (`\pause`) |
 
-- Scalable transformer models introduced by [Vaswani et al.](https://arxiv.org/abs/1706.03762).
-- Deep residual learning architectures evaluated in [He et al.](https://arxiv.org/abs/1512.03385).
-- Sparse mixture-of-experts routing detailed in [Fedus et al.](https://arxiv.org/abs/2101.03961).
-- Native layout compiler design inspired by [Typst Project](https://typst.app).
+<!-- pause -->
 
-All citation links remain clickable in exported PDF and SVG presentations.
+> [!TIP]
+> Press `F` during slide presentation to toggle fullscreen mode.
+> Use Left/Right arrow keys or Spacebar to navigate steps.
 
 ---
 
-# Summary & Deployment
+# Summary
 
-### Key Takeaways
-
-- **Unified Format**: Share syntax between academic papers and slide decks.
-\pause
-- **Sub-Second Feedback**: Instant live reload during writing and editing.
-\pause
-- **Publish Anywhere**: One-command export to PDF, SVG, and standalone HTML.
-\pause
-
-> [!IMPORTANT]
-> Try other built-in slide themes by changing `theme: nord` or `theme: dark` in the frontmatter!
+* Single binary toolchain
+* Covers documents, presentations, math, diagrams, tables, and callouts
+* File referencing allows clean modular Markdown projects

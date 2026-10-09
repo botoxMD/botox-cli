@@ -1,60 +1,173 @@
 ---
-title: "Distributed Fault-Tolerant Consensus Protocol"
-author:
-  - name: "Minus"
-    affiliation: "Systems Research Lab"
-date: "October 2026"
-abstract: "This paper presents a high-throughput, low-latency Byzantine fault-tolerant consensus protocol designed for partially synchronous networks. We establish formal safety invariants and demonstrate empirical performance gains under high contention."
+title: Botox Functionality Reference
+toc: true
+toc-depth: 3
+number-sections: true
 papersize: a4
-fontsize: 11pt
-mainfont: "New Computer Modern"
-mathfont: "New Computer Modern Math"
-columns: 1
+theme: academic
+bibliography: true
+exclude-references:
+  - "github.com"
 ---
 
-# Introduction
+# Introduction {#sec:intro}
 
-In asynchronous distributed systems, reaching deterministic agreement in the presence of arbitrary node failures is a fundamental problem. Classical protocols require $3f + 1$ replicas to tolerate $f$ Byzantine participants.
+Botox is a pure Rust compiler that turns Markdown documents into PDF files or HTML presentation slides. It embeds a native typesetting engine, so it does not require LaTeX, Node.js, Python, or Chromium to be installed on your machine.
 
-Our protocol optimizes the view-change phase by decoupling transaction ordering from state commitment:
+This document describes all features implemented in Botox and tests their compilation.
 
-$$\mathcal{L}(T) = \sum_{i=1}^n \left( \alpha_i \cdot \Delta t_i + \beta_i \right)$$
+# Mathematics {#sec:math}
 
-where $\alpha_i$ represents network jitter and $\beta_i$ denotes local execution latency.
+Botox renders math using New Computer Modern fonts. You can write inline formulas like $E = m c^2$ or $\vec{F} = m \vec{a}$, as well as display equations.
 
-# Protocol Specification
+## Standard Display Equations
 
-## State Transition Model
+Display equations are enclosed in double dollar signs and can include Pandoc labels:
 
-Let $\mathcal{S}$ denote the state space and $\mathcal{M}$ the message universe. Every node maintains:
+$$
+\int_{-\infty}^{+\infty} e^{-x^2} \, dx = \sqrt{\pi}
+$$ {#eq:gaussian}
 
-1. A monotonically increasing sequence counter $\tau \in \mathbb{N}$.
-2. A cryptographic hash chain $H_k = \mathrm{SHA256}(H_{k-1} \parallel m_k)$.
-3. A quorum certificate $\mathcal{QC}$ signed by at least $2f + 1$ validators.
+Equation @eq:gaussian is referenced using Pandoc cross-reference syntax. You can also write infinite series, fractions, and square roots:
 
-$$\mathcal{QC} \iff \sum_{v \in \mathcal{V}} \mathbb{I}(\mathrm{valid}(v, m)) \ge 2f + 1$$
+$$
+\sum_{k=0}^{\infty} \frac{x^k}{k!} = e^x, \qquad \lim_{n \to \infty} \left(1 + \frac{1}{n}\right)^n = e
+$$ {#eq:limits}
 
-## Algorithmic Procedure
+## Matrices and Cases
 
-```python
-def process_proposal(proposal, signatures):
-    if len(signatures) < 2 * F + 1:
-        raise QuorumError("Insufficient valid signatures")
-    commit_block(proposal.hash)
-    broadcast_acknowledgement(proposal.view)
+Parenthesized matrices (`pmatrix`), bracketed matrices (`bmatrix`), and piecewise functions (`cases`) work out of the box:
+
+$$
+\begin{pmatrix}
+1 & 0 & 0 \\
+0 & 1 & 0 \\
+0 & 0 & 1
+\end{pmatrix}
+\qquad
+\begin{bmatrix}
+a & b \\
+c & d
+\end{bmatrix}
+$$ {#eq:matrices}
+
+Piecewise definitions use standard LaTeX `cases`:
+
+$$
+f(x) = \begin{cases}
+x^2 & \text{if } x \ge 0 \\
+-x & \text{if } x < 0
+\end{cases}
+$$ {#eq:cases}
+
+# Diagrams and Visuals {#sec:diagrams}
+
+Diagrams are compiled to vector SVG graphics via Kroki and cached locally in `~/.cache/botox/diagrams/` for fast repeated builds.
+
+## Inline Mermaid and PlantUML
+
+```mermaid {caption="Compiler Pipeline" width=70% #fig:mermaid-pipeline}
+graph LR
+  MD[Markdown Input] --> Botox[Botox Compiler]
+  Botox --> PDF[PDF Document]
+  Botox --> HTML[HTML Slides]
 ```
 
-# Empirical Evaluation
+Figure @fig:mermaid-pipeline shows the pipeline. PlantUML is also supported:
 
-The following benchmark demonstrates the round-trip latency and throughput under increasing cluster sizes:
+```plantuml {caption="Authentication Sequence" width=60% #fig:auth}
+@startuml
+Client -> Server : Authenticate
+Server -> DB : Check Credentials
+DB --> Server : OK
+Server --> Client : Token
+@enduml
+```
 
-| Cluster Size | Throughput (ops/sec) | P99 Latency (ms) | Fault Tolerance ($f$) |
-|:---|:---|:---|:---|
-| 4 nodes | 28,400 | 4.2 | 1 |
-| 7 nodes | 24,100 | 6.8 | 2 |
-| 16 nodes | 18,900 | 11.5 | 5 |
-| 32 nodes | 14,200 | 18.2 | 10 |
+## UMLet Diagrams
 
-# Conclusion
+Botox supports UMLet (`.uxf` format) diagrams both inline and via file references:
 
-The decoupling of view change and proposal execution significantly improves tail latency while maintaining rigorous LaTeX-grade mathematical specification.
+```umlet {caption="Inline UMLet Class Box" width=50% #fig:umlet-inline}
+<diagram program="umlet">
+  <zoom_level>10</zoom_level>
+  <element>
+    <id>UMLClass</id>
+    <coordinates><x>10</x><y>10</y><w>120</w><h>50</h></coordinates>
+    <panel_attributes>Document
+--
++ pages: int</panel_attributes>
+  </element>
+</diagram>
+```
+
+## Diagram File Referencing
+
+You can reference external diagram files directly without copying their contents:
+
+1. Through fence file attributes:
+```umlet file="architecture.uxf" {caption="Referenced UMLet Architecture" #fig:umlet-file}
+```
+
+2. Through PlantUML include statements:
+```puml {caption="Included PlantUML Sequence" #fig:puml-inc}
+!include pipeline.puml
+```
+
+3. Through standard Markdown image syntax:
+![UMLet Architecture via Image Syntax](architecture.uxf){#fig:umlet-img width=60%}
+
+Figure @fig:umlet-file and Figure @fig:umlet-img reference external diagram files.
+
+# External Code File Referencing {#sec:code}
+
+Code blocks can include external source files directly using the `file` attribute:
+
+```rust file="sample.rs"
+```
+
+# Structured Tables {#sec:tables}
+
+Tables support alignment, captions, and cross-references:
+
+Table: Botox compilation target summary. {#tbl:targets}
+
+| Target | File Extension | Engine | Offline Caching |
+| :--- | :---: | :---: | ---: |
+| Document | `.pdf` | Typst | Yes |
+| Slides | `.html` | Custom HTML5 | Yes |
+| Diagrams | `.svg` | Kroki / mermaid.ink | Yes |
+
+As shown in Table @tbl:targets, both document and presentation outputs are fully self-contained.
+
+# Callouts {#sec:callouts}
+
+Botox supports both GitHub-style callouts and Pandoc-style advisory divs.
+
+> [!NOTE]
+> This is a GitHub-style note callout for background information.
+
+> [!TIP]
+> Use `-w` or `--watch` to recompile automatically when files change.
+
+> [!WARNING]
+> Keep your diagrams valid so Kroki can generate vector output.
+
+::: important
+**Pandoc Style Div**: This is an important announcement rendered with a colored frame.
+:::
+
+# Page Breaks and Date Macro {#sec:structure}
+
+You can insert manual page breaks using `\newpage`, `\pagebreak`, or `<!-- pagebreak -->`.
+
+Document generated on \today.
+
+# References {#sec:refs}
+
+External web links in the document are converted into IEEE numerical citations in the bibliography when bibliography mode is enabled:
+* Read the [Typst Documentation](https://typst.app/docs/) for typesetting details.
+* Read the [Rust Language Guide](https://www.rust-lang.org) for systems programming notes.
+* Links to github like [Botox Repository](https://github.com/botoxMD/botox-cli) are excluded from the bibliography via frontmatter rules.
+
+\ref "Works Cited"
