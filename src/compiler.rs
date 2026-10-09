@@ -332,10 +332,12 @@ fn format_compilation_error(
                     }
                 }
 
-                let is_latex = if let (Some(md), Some((l, _))) = (markdown_source, found_md_loc) {
+                let is_latex = if d.message.contains("label") || d.message.contains("bib-") {
+                    false
+                } else if let (Some(md), Some((l, _))) = (markdown_source, found_md_loc) {
                     if let Some(target_line) = md.lines().nth(l) {
                         let trimmed_target = target_line.trim_start();
-                        if trimmed_target.starts_with(":::") {
+                        if trimmed_target.starts_with(":::") || trimmed_target.starts_with("```") || trimmed_target.starts_with(r"\ref") {
                             false
                         } else {
                             let mut in_math_block = false;

@@ -1,3 +1,7 @@
+pub mod yaml;
+
+pub use yaml::generate_config_yaml;
+
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -248,11 +252,11 @@ impl BotoxConfig {
         for path in global_candidates {
             if path.is_file()
                 && let Ok(content) = std::fs::read_to_string(&path)
-                    && let Ok(cfg) = serde_yaml::from_str::<BotoxConfig>(&content) {
-                        resolved.merge_with(&cfg);
-                        loaded_sources.push(path);
-                        break;
-                    }
+                && let Ok(cfg) = serde_yaml::from_str::<BotoxConfig>(&content) {
+                    resolved.merge_with(&cfg);
+                    loaded_sources.push(path);
+                    break;
+                }
         }
 
         // 2. Current working directory config (./botox.yaml, ./skygem.yaml)
@@ -260,12 +264,12 @@ impl BotoxConfig {
         for path in &cwd_candidates {
             if path.is_file()
                 && let Ok(content) = std::fs::read_to_string(path)
-                    && let Ok(cfg) = serde_yaml::from_str::<BotoxConfig>(&content) {
-                        resolved.merge_with(&cfg);
-                        let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-                        loaded_sources.push(canon);
-                        break;
-                    }
+                && let Ok(cfg) = serde_yaml::from_str::<BotoxConfig>(&content) {
+                    resolved.merge_with(&cfg);
+                    let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+                    loaded_sources.push(canon);
+                    break;
+                }
         }
 
         // 3. Document directory config (<doc_dir>/botox.yaml, <doc_dir>/skygem.yaml)
@@ -276,11 +280,11 @@ impl BotoxConfig {
                     let canon_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
                     if !loaded_sources.contains(&canon_path)
                         && let Ok(content) = std::fs::read_to_string(path)
-                            && let Ok(cfg) = serde_yaml::from_str::<BotoxConfig>(&content) {
-                                resolved.merge_with(&cfg);
-                                loaded_sources.push(canon_path);
-                                break;
-                            }
+                        && let Ok(cfg) = serde_yaml::from_str::<BotoxConfig>(&content) {
+                            resolved.merge_with(&cfg);
+                            loaded_sources.push(canon_path);
+                            break;
+                        }
                 }
             }
         }
@@ -288,11 +292,11 @@ impl BotoxConfig {
         // 4. Custom config specified via --config <path>
         if let Some(cp) = custom_path
             && cp.is_file()
-                && let Ok(content) = std::fs::read_to_string(cp)
-                    && let Ok(cfg) = serde_yaml::from_str::<BotoxConfig>(&content) {
-                        resolved.merge_with(&cfg);
-                        loaded_sources.push(cp.to_path_buf());
-                    }
+            && let Ok(content) = std::fs::read_to_string(cp)
+            && let Ok(cfg) = serde_yaml::from_str::<BotoxConfig>(&content) {
+                resolved.merge_with(&cfg);
+                loaded_sources.push(cp.to_path_buf());
+            }
 
         (resolved, loaded_sources)
     }
@@ -316,50 +320,6 @@ pub fn global_config_path() -> PathBuf {
         return home.join(".config").join("botox").join("config.yaml");
     }
     PathBuf::from("config.yaml")
-}
-
-pub fn generate_config_yaml(
-    author: &str,
-    affiliation: Option<&str>,
-    doc_theme: &str,
-    slide_theme: &str,
-    papersize: &str,
-    toc: bool,
-    bib: bool,
-) -> String {
-    let aff_line = match affiliation {
-        Some(a) if !a.trim().is_empty() => format!("  affiliation: \"{}\"\n", a.trim()),
-        _ => String::new(),
-    };
-
-    format!(
-r#"# Botox Global Configuration
-# Default style, author, and formatting for PDF documents and slides.
-
-document:
-  author: "{author}"
-{aff_line}  theme: "{doc_theme}"                    # academic, modern, elegant, technical, compact, minimal
-  fontsize: "11pt"
-  mainfont: "New Computer Modern"       # True LaTeX font
-  mathfont: "New Computer Modern Math"  # True LaTeX math font
-  monofont: "DejaVu Sans Mono"          # Monospace font
-  papersize: "{papersize}"              # a4 or us-letter
-  columns: 1                            # 1 or 2 (multi-column)
-  margin:
-    x: "2.5cm"
-    y: "2.5cm"
-  section_numbering: true               # Numbered sections: 1, 1.1
-  toc: {toc}                           # Enable Table of Contents by default
-  bibliography: {bib}                   # Transform web links into an automatic IEEE bibliography
-  lang: "en"
-
-slides:
-  theme: "{slide_theme}"                # default, academic, nord, dark
-  author: "{author}"
-  paginate: true
-  font: "New Computer Modern"
-"#
-    )
 }
 
 #[cfg(test)]

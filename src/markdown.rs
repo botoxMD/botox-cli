@@ -2323,18 +2323,25 @@ pub fn markdown_to_typst_with_options(
         block
     };
 
+    let mut rendered_first = false;
     while let Some(start_pos) = typst.find("BOTOX_REF_PLACEHOLDER_START:") {
         if let Some(end_pos) = typst[start_pos..].find(":BOTOX_REF_PLACEHOLDER_END") {
             let full_end = start_pos + end_pos + ":BOTOX_REF_PLACEHOLDER_END".len();
-            let title_raw = &typst[start_pos + "BOTOX_REF_PLACEHOLDER_START:".len()..start_pos + end_pos];
-            let custom_heading = if !title_raw.trim().is_empty() {
-                Some(title_raw.trim())
+            if !rendered_first {
+                let title_raw = &typst[start_pos + "BOTOX_REF_PLACEHOLDER_START:".len()..start_pos + end_pos];
+                let custom_heading = if !title_raw.trim().is_empty() {
+                    Some(title_raw.trim())
+                } else {
+                    None
+                };
+                let at_start_of_slide = typst[..start_pos].trim_end().ends_with("#pagebreak()");
+                let ref_rendered = format_references_block(custom_heading, &references, at_start_of_slide);
+                typst.replace_range(start_pos..full_end, &ref_rendered);
+                rendered_first = true;
             } else {
-                None
-            };
-            let at_start_of_slide = typst[..start_pos].trim_end().ends_with("#pagebreak()");
-            let ref_rendered = format_references_block(custom_heading, &references, at_start_of_slide);
-            typst.replace_range(start_pos..full_end, &ref_rendered);
+                // Strip duplicate \ref placeholders so duplicate <bib-n> labels are not emitted
+                typst.replace_range(start_pos..full_end, "");
+            }
         } else {
             break;
         }

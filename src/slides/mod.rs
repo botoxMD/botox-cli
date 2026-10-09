@@ -1,5 +1,10 @@
+pub mod pauses;
+pub mod themes;
+
 use crate::config::SlidesConfig;
+pub use pauses::process_slide_pauses;
 use serde_yaml::Value;
+pub use themes::get_slide_theme_style;
 
 pub fn wrap_slides(
     slides_typst: &str,
@@ -33,26 +38,19 @@ pub fn wrap_slides(
         .or(config.theme.as_deref())
         .unwrap_or("default");
 
-    let (default_bg, default_text) = match theme {
-        "dark" => ("#0f172a", "#f8fafc"),
-        "nord" => ("#2e3440", "#eceff4"),
-        "academic" => ("#ffffff", "#1a1a1a"),
-        "gaia" => ("#fbfbf8", "#333333"),
-        "uncover" => ("#fafafa", "#0f172a"),
-        _ => ("#f8fafc", "#0f172a"),
-    };
+    let theme_style = get_slide_theme_style(theme);
 
     let bg_color = fm.get("backgroundColor")
         .or_else(|| fm.get("background_color"))
         .or_else(|| fm.get("background-color"))
         .and_then(|v| v.as_str())
         .or(config.background_color.as_deref())
-        .unwrap_or(default_bg);
+        .unwrap_or(theme_style.bg_color);
 
     let text_color = fm.get("color")
         .and_then(|v| v.as_str())
         .or(config.color.as_deref())
-        .unwrap_or(default_text);
+        .unwrap_or(theme_style.text_color);
 
     let font = fm.get("font")
         .and_then(|v| v.as_str())
@@ -64,18 +62,8 @@ pub fn wrap_slides(
         .or(config.paginate)
         .unwrap_or(true);
 
-    let heading_color = match theme {
-        "dark" | "nord" => "#f8fafc",
-        "gaia" => "#903020",
-        "uncover" => "#0284c7",
-        _ => "#0f172a",
-    };
-    let muted_color = match theme {
-        "dark" | "nord" => "#94a3b8",
-        "gaia" => "#85756c",
-        "uncover" => "#64748b",
-        _ => "#475569",
-    };
+    let heading_color = theme_style.heading_color;
+    let muted_color = theme_style.muted_color;
 
     let footer_code = if paginate {
         "  footer: context {\n    let p = counter(\"slide\").get().first()\n    if p > 1 {\n      align(right, text(size: 12pt, fill: rgb(\"#64748b\"))[#p])\n    }\n  },\n"
@@ -174,32 +162,7 @@ pub fn wrap_slides(
                 "#place(center + horizon)[\n  #align(center)[\n    #show heading.where(level: 1): it => block(below: 0.6em)[#text(size: 2.1em, weight: \"bold\", fill: rgb(\"{heading_color}\"))[#it.body]]\n    #show heading.where(level: 3): it => block(below: 0.4em)[#text(size: 1.15em, style: \"italic\", fill: rgb(\"{muted_color}\"))[#it.body]]\n    {trimmed}\n  ]\n]\n"
             ));
         } else if trimmed.contains("#botox_pause()") {
-            let raw_chunks: Vec<&str> = trimmed.split("#botox_pause()").collect();
-            let mut valid_chunks: Vec<&str> = raw_chunks
-                .into_iter()
-                .map(|c| c.trim())
-                .filter(|c| !c.is_empty())
-                .collect();
-            if valid_chunks.is_empty() {
-                valid_chunks.push(trimmed);
-            }
-            let total_steps = valid_chunks.len();
-            let mut accumulated = String::new();
-            for (step_idx, chunk) in valid_chunks.iter().enumerate() {
-                if step_idx > 0 {
-                    out.push_str("\n#pagebreak()\n\n");
-                }
-                if !accumulated.is_empty() {
-                    accumulated.push_str("\n\n");
-                }
-                accumulated.push_str(chunk);
-                out.push_str(&accumulated);
-
-                if step_idx + 1 < total_steps {
-                    out.push_str("\n#place(top + left)[#text(size: 0.001pt, fill: rgb(0, 0, 0, 0))[botox-pause-step]]\n");
-                }
-            }
-            out.push('\n');
+            process_slide_pauses(trimmed, &mut out);
         } else {
             out.push_str(trimmed);
             out.push('\n');
