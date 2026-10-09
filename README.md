@@ -140,10 +140,11 @@ Academic citations and callouts render with subtle left border rules and margins
 
 > "Simplicity is prerequisite for reliability."
 > --- Edsger W. Dijkstra, *Selected Writings on Computing*
-
+\newpage
 ## Callout Divs
 
 Pandoc-style fenced divs (`:::`) render as color-coded advisory blocks with distinct visual borders:
+
 
 ::: note
 **Pandoc `link_attributes`**: The `{width=50%}` syntax originates from Pandoc's `link_attributes` extension. Botox natively parses and renders image attributes without requiring any external preprocessors.
@@ -199,7 +200,7 @@ Server --> Client : Token Issued
 
 Botox implements Pandoc cross-referencing for figures, tables, sections, and equations:
 
-- `@fig:arch` references Figure 1
+- `@fig:arch` references Figure 1 (see @fig:arch)
 - `@tbl:perf` references Table 1 (see @tbl:perf)
 - `@sec:math` references Section 4 (see @sec:math)
 - `@eq:energy` references Equation 1 (see @eq:energy)

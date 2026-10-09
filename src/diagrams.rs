@@ -129,6 +129,11 @@ pub fn render_diagram(
     if cache_file.is_file()
         && let Ok(meta) = fs::metadata(&cache_file)
             && meta.len() > 0 {
+                if let Ok(content) = fs::read_to_string(&cache_file)
+                    && content.contains("<foreignObject") {
+                        let sanitized = sanitize_svg_for_typesetting(&content);
+                        let _ = fs::write(&cache_file, sanitized.as_bytes());
+                }
                 return Ok(cache_file);
             }
 
@@ -192,17 +197,195 @@ pub fn render_diagram(
         return Err(format!("Diagram rendering returned non-SVG content: {snippet}"));
     }
 
+    let sanitized_svg = sanitize_svg_for_typesetting(&String::from_utf8_lossy(&svg_bytes));
+    let final_bytes = sanitized_svg.into_bytes();
+
     let tmp_file = cache_dir.join(format!("{hash}.{}.tmp", std::process::id()));
-    if let Err(e) = fs::write(&tmp_file, &svg_bytes) {
+    if let Err(e) = fs::write(&tmp_file, &final_bytes) {
         return Err(format!("Failed to write diagram to cache: {e}"));
     }
     if let Err(e) = fs::rename(&tmp_file, &cache_file) {
         let _ = fs::remove_file(&tmp_file);
-        fs::write(&cache_file, &svg_bytes)
+        fs::write(&cache_file, &final_bytes)
             .map_err(|e2| format!("Failed to write diagram cache: {e2} (rename failed: {e})"))?;
     }
 
     Ok(cache_file)
+}
+
+/// Sanitize SVG markup so that rasterizers and PDF generators like Typst (which rely on resvg)
+/// can properly render text labels.
+///
+/// Mermaid and some other diagram engines embed labels inside `<foreignObject>` containing HTML.
+/// Because resvg strictly adheres to static SVG and lacks an HTML layout engine, `<foreignObject>`
+/// elements are ignored, leaving boxes and nodes without visible text.
+///
+/// This function translates `<foreignObject>` elements into standard SVG `<text>` (and `<tspan>`) elements.
+pub fn sanitize_svg_for_typesetting(svg: &str) -> String {
+    if !svg.contains("<foreignObject") {
+        return svg.to_string();
+    }
+
+    let mut result = String::with_capacity(svg.len());
+    let mut remaining = svg;
+
+    while let Some(start_idx) = remaining.find("<foreignObject") {
+        result.push_str(&remaining[..start_idx]);
+        let after_start = &remaining[start_idx..];
+
+        // Find end of <foreignObject ...> opening tag
+        let tag_close = match after_start.find('>') {
+            Some(idx) => idx,
+            None => {
+                result.push_str(after_start);
+                return result;
+            }
+        };
+
+        let fo_tag = &after_start[..tag_close + 1];
+        let content_start = tag_close + 1;
+
+        // Find closing </foreignObject>
+        let end_idx = match after_start[content_start..].find("</foreignObject>") {
+            Some(idx) => content_start + idx,
+            None => {
+                result.push_str(after_start);
+                return result;
+            }
+        };
+
+        let inner_content = &after_start[content_start..end_idx];
+        remaining = &after_start[end_idx + "</foreignObject>".len()..];
+
+        // Parse attributes from <foreignObject ...>
+        let parse_attr = |attr_name: &str| -> Option<f64> {
+            let pat_double = format!("{attr_name}=\"");
+            if let Some(pos) = fo_tag.find(&pat_double) {
+                let val_start = pos + pat_double.len();
+                if let Some(val_end) = fo_tag[val_start..].find('"') {
+                    return fo_tag[val_start..val_start + val_end].parse::<f64>().ok();
+                }
+            }
+            let pat_single = format!("{attr_name}='");
+            if let Some(pos) = fo_tag.find(&pat_single) {
+                let val_start = pos + pat_single.len();
+                if let Some(val_end) = fo_tag[val_start..].find('\'') {
+                    return fo_tag[val_start..val_start + val_end].parse::<f64>().ok();
+                }
+            }
+            None
+        };
+
+        let x_attr = parse_attr("x").unwrap_or(0.0);
+        let y_attr = parse_attr("y").unwrap_or(0.0);
+        let width = parse_attr("width").unwrap_or(0.0);
+        let height = parse_attr("height").unwrap_or(0.0);
+
+        // Determine text alignment
+        let (anchor, x_pos) = if inner_content.contains("text-align: left") || inner_content.contains("text-align:left") {
+            ("start", x_attr + 4.0)
+        } else if inner_content.contains("text-align: right") || inner_content.contains("text-align:right") {
+            ("end", x_attr + width - 4.0)
+        } else {
+            ("middle", x_attr + width / 2.0)
+        };
+
+        // Extract color if present
+        let fill_color = if let Some(color_pos) = inner_content.find("color:") {
+            let after_col = inner_content[color_pos + 6..].trim_start();
+            let end_col = after_col.find([';', '"', '\'']).unwrap_or(after_col.len());
+            let col = after_col[..end_col].trim();
+            if col.starts_with('#') || col.starts_with("rgb") {
+                col
+            } else {
+                "#333333"
+            }
+        } else {
+            "#333333"
+        };
+
+        // Extract lines of text from HTML
+        let clean_html = inner_content
+            .replace("<br>", "\n")
+            .replace("<br/>", "\n")
+            .replace("<br />", "\n")
+            .replace("</p>", "\n")
+            .replace("</div>", "\n");
+
+        // Strip HTML tags
+        let mut in_tag = false;
+        let mut text_buf = String::new();
+        for ch in clean_html.chars() {
+            if ch == '<' {
+                in_tag = true;
+            } else if ch == '>' {
+                in_tag = false;
+            } else if !in_tag {
+                text_buf.push(ch);
+            }
+        }
+
+        // Decode HTML entities
+        let decoded = text_buf
+            .replace("&nbsp;", " ")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&apos;", "'");
+
+        let lines: Vec<&str> = decoded
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        if lines.is_empty() {
+            continue;
+        }
+
+        let escape_xml = |s: &str| -> String {
+            s.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;")
+        };
+
+        let font_family = "DejaVu Sans, Liberation Sans, -apple-system, Segoe UI, sans-serif";
+        let font_size = 14;
+        let line_height = 18.0;
+
+        if lines.len() == 1 {
+            let y_pos = y_attr + height / 2.0;
+            let line_esc = escape_xml(lines[0]);
+            result.push_str(&format!(
+                r#"<text x="{x_pos:.1}" y="{y_pos:.1}" text-anchor="{anchor}" dominant-baseline="central" fill="{fill_color}" font-family="{font_family}" font-size="{font_size}">{line_esc}</text>"#
+            ));
+        } else {
+            let total_height = (lines.len() as f64 - 1.0) * line_height;
+            let start_y = (y_attr + height / 2.0) - (total_height / 2.0);
+            let mut tspans = String::new();
+            for (idx, line) in lines.iter().enumerate() {
+                let line_esc = escape_xml(line);
+                if idx == 0 {
+                    tspans.push_str(&format!(
+                        r#"<tspan x="{x_pos:.1}" y="{start_y:.1}">{line_esc}</tspan>"#
+                    ));
+                } else {
+                    tspans.push_str(&format!(
+                        r#"<tspan x="{x_pos:.1}" dy="{line_height:.1}">{line_esc}</tspan>"#
+                    ));
+                }
+            }
+            result.push_str(&format!(
+                r#"<text text-anchor="{anchor}" dominant-baseline="central" fill="{fill_color}" font-family="{font_family}" font-size="{font_size}">{tspans}</text>"#
+            ));
+        }
+    }
+
+    result.push_str(remaining);
+    result
 }
 
 #[cfg(test)]
@@ -277,4 +460,35 @@ pub mod tests {
             assert!(svg_str.contains("</svg>"));
         }
     }
+
+    #[test]
+    fn test_sanitize_svg_single_line_foreignobject() {
+        let raw_svg = r#"<svg><g class="label" transform="translate(-60, -12)"><foreignObject width="120" height="24"><div xmlns="http://www.w3.org/1999/xhtml"><span class="nodeLabel"><p>Hello World</p></span></div></foreignObject></g></svg>"#;
+        let sanitized = sanitize_svg_for_typesetting(raw_svg);
+        assert!(!sanitized.contains("<foreignObject"));
+        assert!(sanitized.contains("<text"));
+        assert!(sanitized.contains("Hello World"));
+        assert!(sanitized.contains("x=\"60.0\""));
+        assert!(sanitized.contains("y=\"12.0\""));
+    }
+
+    #[test]
+    fn test_sanitize_svg_multiline_foreignobject() {
+        let raw_svg = r#"<svg><foreignObject width="100" height="50"><div><p>First Line<br/>Second Line</p></div></foreignObject></svg>"#;
+        let sanitized = sanitize_svg_for_typesetting(raw_svg);
+        assert!(!sanitized.contains("<foreignObject"));
+        assert!(sanitized.contains("<text"));
+        assert!(sanitized.contains("<tspan"));
+        assert!(sanitized.contains("First Line"));
+        assert!(sanitized.contains("Second Line"));
+    }
+
+    #[test]
+    fn test_sanitize_svg_entity_decoding() {
+        let raw_svg = r#"<svg><foreignObject width="80" height="20"><div><span>A &amp; B &gt; C</span></div></foreignObject></svg>"#;
+        let sanitized = sanitize_svg_for_typesetting(raw_svg);
+        assert!(!sanitized.contains("<foreignObject"));
+        assert!(sanitized.contains("A &amp; B &gt; C"));
+    }
 }
+
