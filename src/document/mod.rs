@@ -672,6 +672,17 @@ pub fn wrap_document(
     out.push_str("  radius: 2pt,\n");
     out.push_str(")[#set text(size: 0.9em); #it]\n\n");
 
+    // Blockquote styling
+    let (quote_fill, quote_border, quote_text) = match doc_theme {
+        DocumentTheme::Technical => ("rgb(\"#f8fafc\")", "rgb(\"#0d9488\")", "rgb(\"#334155\")"),
+        DocumentTheme::Elegant => ("rgb(\"#fafaf9\")", "rgb(\"#a8a29e\")", "rgb(\"#44403c\")"),
+        DocumentTheme::Minimal => ("rgb(\"#fafafa\")", "rgb(\"#71717a\")", "rgb(\"#3f3f46\")"),
+        _ => ("rgb(\"#f8fafc\")", "rgb(\"#94a3b8\")", "rgb(\"#334155\")"),
+    };
+    out.push_str(&format!(
+        "#show quote.where(block: true): it => block(\n  fill: {quote_fill},\n  stroke: (left: 3pt + {quote_border}),\n  inset: (left: 14pt, y: 8pt, right: 10pt),\n  radius: (right: 3pt),\n  width: 100%,\n  above: 1.2em,\n  below: 1.2em,\n)[\n  #set text(style: \"italic\", fill: {quote_text})\n  #it.body\n]\n\n"
+    ));
+
     // Table styling per theme
     match doc_theme {
         DocumentTheme::Modern => {

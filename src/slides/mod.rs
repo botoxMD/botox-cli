@@ -136,6 +136,11 @@ pub fn wrap_slides(
     out.push_str("  ]\n");
     out.push_str("}\n\n");
 
+    // Blockquote styling for slides
+    out.push_str(&format!(
+        "#show quote.where(block: true): it => block(\n  fill: rgb(\"{muted_color}\").transparentize(90%),\n  stroke: (left: 4pt + rgb(\"{muted_color}\")),\n  inset: (left: 16pt, y: 10pt, right: 12pt),\n  radius: (right: 4pt),\n  width: 100%,\n  above: 1em,\n  below: 1em,\n)[\n  #set text(style: \"italic\", fill: rgb(\"{text_color}\"))\n  #it.body\n]\n\n"
+    ));
+
     out.push_str("#let botox_slide_counter = counter(\"slide\")\n");
     out.push_str("#botox_slide_counter.step()\n\n");
     out.push_str("#let botox_pause() = {}\n\n");

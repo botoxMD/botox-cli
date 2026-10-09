@@ -1492,7 +1492,7 @@ pub fn markdown_to_typst_with_options(
                         current_heading = Some((lvl, String::new()));
                     }
                     Tag::BlockQuote(_) => {
-                        typst.push_str("#quote[");
+                        typst.push_str("#quote(block: true)[");
                     }
                     Tag::CodeBlock(kind) => {
                         let mut code = String::new();

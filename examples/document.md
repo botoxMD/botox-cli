@@ -157,6 +157,13 @@ Botox supports both GitHub-style callouts and Pandoc-style advisory divs.
 **Pandoc Style Div**: This is an important announcement rendered with a colored frame.
 :::
 
+## Standard Blockquotes
+
+Standard Markdown blockquotes render with left border rules and italics:
+
+> "Simplicity is prerequisite for reliability." --- Edsger W. Dijkstra, *Selected Writings on Computing*
+
+
 # Page Breaks and Date Macro {#sec:structure}
 
 You can insert manual page breaks using `\newpage`, `\pagebreak`, or `<!-- pagebreak -->`.
