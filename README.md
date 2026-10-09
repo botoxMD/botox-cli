@@ -173,9 +173,9 @@ Attributes inside `{...}` support:
 - Dimensions: `%` (e.g. `width=50%`), absolute units (`10cm`, `4in`, `200pt`, `100mm`), pixels (`300px`), and TeX factors (`0.8\linewidth`, `\textwidth`).
 - Identifiers: `#fig:id` or `id=fig:id` for cross-referencing with `@fig:id`.
 
-## Diagrams (Mermaid & PlantUML)
+## Diagrams (Mermaid, PlantUML, UMLet, & File Referencing)
 
-Botox natively compiles Mermaid and PlantUML diagrams into vector graphics using **Kroki** (with companion **mermaid.ink** fallback) with zero local dependencies (no Node.js, Chromium, Java, or CLI tools needed):
+Botox natively compiles diagram specifications into vector graphics using **Kroki** (with companion **mermaid.ink** fallback) with zero local dependencies (no Node.js, Chromium, Java, or CLI tools needed):
 
 ```mermaid {caption="High-Level Architecture" width=30% #fig:arch}
 graph TD
@@ -191,6 +191,28 @@ Server -> DB : Validate Credentials
 DB --> Server : Valid
 Server --> Client : Token Issued
 @enduml
+```
+
+### UMLet & External File Referencing
+
+Reference diagram files directly in code blocks, includes, or standard Markdown image tags:
+
+```markdown
+<!-- Reference external UMLet diagram -->
+```umlet file="model.uxf" {caption="System Architecture" #fig:umlet-model}
+```
+
+<!-- PlantUML include -->
+```puml
+!include auth_flow.puml
+```
+
+<!-- Direct Markdown image syntax for diagram files (.uxf, .puml, .mmd, .dot) -->
+![Entity Model](domain.uxf){#fig:domain}
+
+<!-- Source code file referencing -->
+```rust file="src/main.rs"
+```
 ```
 
 - **Local SVG Caching**: Generated SVGs are stored locally in `~/.cache/botox/diagrams/`. Subsequent compilations load from disk instantly (0ms) with zero network requests.
@@ -344,3 +366,4 @@ slides:
 
 This appendix section demonstrates an unnumbered heading created with Pandoc's `{-}` attribute syntax. It appears in the document structure without incrementing the section counter.
 
+$$ \frac{1}{1} $$

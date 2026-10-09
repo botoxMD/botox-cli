@@ -819,6 +819,7 @@ fn compile_once(
         ref_exclude: exclude_opt.as_deref(),
         ref_include: include_opt.as_deref(),
         kroki_url,
+        resource_dir: doc_dir,
     };
     let body_typst = markdown::markdown_to_typst_with_options(body_md, &md_opts);
 

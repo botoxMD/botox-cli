@@ -53,9 +53,15 @@ pub fn canonicalize_diagram_source(diagram_type: &str, code: &str) -> String {
 
 /// Compute a unique deterministic cache hash for a diagram.
 pub fn compute_diagram_hash(diagram_type: &str, code: &str) -> String {
-    let canonical = canonicalize_diagram_source(diagram_type, code);
+    let clean_type = diagram_type.trim().to_lowercase();
+    let norm_type = match clean_type.as_str() {
+        "puml" => "plantuml",
+        "uxf" => "umlet",
+        other => other,
+    };
+    let canonical = canonicalize_diagram_source(norm_type, code);
     let mut hasher = Sha256::new();
-    hasher.update(diagram_type.trim().to_lowercase().as_bytes());
+    hasher.update(norm_type.as_bytes());
     hasher.update(b":");
     hasher.update(canonical.as_bytes());
     let result = hasher.finalize();
@@ -109,6 +115,7 @@ pub fn render_diagram(
     let clean_type = diagram_type.trim().to_lowercase();
     let norm_type = match clean_type.as_str() {
         "puml" => "plantuml",
+        "uxf" => "umlet",
         other => other,
     };
 

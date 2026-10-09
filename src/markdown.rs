@@ -811,6 +811,68 @@ pub struct DiagramSpec {
     pub width: Option<String>,
     pub height: Option<String>,
     pub id: Option<String>,
+    pub file: Option<String>,
+}
+
+pub fn resolve_file_content(path_str: &str, resource_dir: Option<&std::path::Path>) -> Option<String> {
+    let trimmed = path_str.trim().trim_matches(|c| c == '"' || c == '\'');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let p = std::path::Path::new(trimmed);
+    if p.is_file() {
+        return std::fs::read_to_string(p).ok();
+    }
+    if let Some(res_dir) = resource_dir {
+        let joined = res_dir.join(p);
+        if joined.is_file() {
+            return std::fs::read_to_string(joined).ok();
+        }
+    }
+    None
+}
+
+pub fn parse_code_fence_file(fence: &str) -> (String, Option<String>) {
+    let trimmed = fence.trim();
+    let inside = if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+    let mut parts = inside.split_whitespace();
+    let first = parts.next().unwrap_or("").trim_start_matches('.');
+    let (lang, colon_file) = if let Some((l, f)) = first.split_once(':') {
+        (l.to_string(), Some(f.to_string()))
+    } else {
+        (first.to_string(), None)
+    };
+
+    let mut file = colon_file;
+    if file.is_none() {
+        for attr in ["file=", "src=", "path="] {
+            if let Some(pos) = inside.find(attr) {
+                let rest = inside[pos + attr.len()..].trim_start();
+                if let Some(stripped) = rest.strip_prefix('"') {
+                    if let Some(end) = stripped.find('"') {
+                        file = Some(stripped[..end].to_string());
+                        break;
+                    }
+                } else if let Some(stripped) = rest.strip_prefix('\'') {
+                    if let Some(end) = stripped.find('\'') {
+                        file = Some(stripped[..end].to_string());
+                        break;
+                    }
+                } else {
+                    let token = rest.split_whitespace().next().unwrap_or("").trim_end_matches('}');
+                    if !token.is_empty() {
+                        file = Some(token.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    (lang, file)
 }
 
 pub fn parse_diagram_fence(fence: &str) -> Option<DiagramSpec> {
@@ -821,7 +883,7 @@ pub fn parse_diagram_fence(fence: &str) -> Option<DiagramSpec> {
 
     let mut lang_candidate = String::new();
     let mut attr_str = "";
-
+    let mut pre_brace_attr = "";
     if trimmed.starts_with('{') && trimmed.ends_with('}') {
         let inside = trimmed[1..trimmed.len() - 1].trim();
         for token in inside.split_whitespace() {
@@ -832,7 +894,11 @@ pub fn parse_diagram_fence(fence: &str) -> Option<DiagramSpec> {
         }
         attr_str = inside;
     } else if let Some(brace_pos) = trimmed.find('{') {
-        lang_candidate = trimmed[..brace_pos].trim().trim_start_matches('.').to_string();
+        let before_brace = trimmed[..brace_pos].trim();
+        let mut parts = before_brace.splitn(2, |c: char| c.is_whitespace());
+        lang_candidate = parts.next().unwrap_or("").trim_start_matches('.').to_string();
+        pre_brace_attr = parts.next().unwrap_or("").trim();
+
         let rest = &trimmed[brace_pos + 1..];
         if let Some(end_brace) = rest.find('}') {
             attr_str = &rest[..end_brace];
@@ -847,14 +913,26 @@ pub fn parse_diagram_fence(fence: &str) -> Option<DiagramSpec> {
         }
     }
 
-    let norm_lang = lang_candidate
+    let (lang_only, colon_file) = if let Some((l, f)) = lang_candidate.split_once(':') {
+        (l.to_string(), Some(f.to_string()))
+    } else {
+        (lang_candidate, None)
+    };
+
+    let norm_lang = lang_only
         .strip_prefix("diagram-")
-        .unwrap_or(&lang_candidate)
+        .unwrap_or(&lang_only)
         .to_lowercase();
 
     let diagram_type = match norm_lang.as_str() {
-        "mermaid" => "mermaid".to_string(),
+        "mermaid" | "mmd" => "mermaid".to_string(),
         "plantuml" | "puml" => "plantuml".to_string(),
+        "umlet" | "uxf" => "umlet".to_string(),
+        "graphviz" | "dot" => "graphviz".to_string(),
+        "ditaa" => "ditaa".to_string(),
+        "wavedrom" => "wavedrom".to_string(),
+        "bytefield" => "bytefield".to_string(),
+        "bpmn" => "bpmn".to_string(),
         _ => return None,
     };
 
@@ -883,12 +961,70 @@ pub fn parse_diagram_fence(fence: &str) -> Option<DiagramSpec> {
 
     let (width, height, id) = parse_image_attributes(attr_str);
 
+    let mut file = colon_file;
+    if file.is_none() {
+        let combined_attrs = if pre_brace_attr.is_empty() {
+            attr_str.to_string()
+        } else {
+            format!("{pre_brace_attr} {attr_str}")
+        };
+
+        for attr in ["file=", "src=", "path="] {
+            if let Some(pos) = combined_attrs.find(attr) {
+                let rest = combined_attrs[pos + attr.len()..].trim_start();
+                if let Some(stripped) = rest.strip_prefix('"') {
+                    if let Some(end) = stripped.find('"') {
+                        file = Some(stripped[..end].to_string());
+                        break;
+                    }
+                } else if let Some(stripped) = rest.strip_prefix('\'') {
+                    if let Some(end) = stripped.find('\'') {
+                        file = Some(stripped[..end].to_string());
+                        break;
+                    }
+                } else {
+                    let token = rest.split_whitespace().next().unwrap_or("").trim_end_matches('}');
+                    if !token.is_empty() {
+                        file = Some(token.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+
+        if file.is_none() {
+            for search_str in [&pre_brace_attr, &attr_str] {
+                let trimmed_search = search_str.trim().trim_matches(|c| c == '"' || c == '\'' || c == '{' || c == '}');
+                for token in trimmed_search.split_whitespace() {
+                    let clean = token.trim_matches(|c| c == '"' || c == '\'' || c == '{' || c == '}');
+                    if clean.ends_with(".uxf")
+                        || clean.ends_with(".umlet")
+                        || clean.ends_with(".puml")
+                        || clean.ends_with(".plantuml")
+                        || clean.ends_with(".mmd")
+                        || clean.ends_with(".mermaid")
+                        || clean.ends_with(".dot")
+                        || clean.ends_with(".gv")
+                        || clean.ends_with(".ditaa")
+                    {
+                        file = Some(clean.to_string());
+                        break;
+                    }
+                }
+                if file.is_some() {
+                    break;
+                }
+            }
+        }
+    }
+
     Some(DiagramSpec {
         diagram_type,
         caption,
         width,
         height,
         id,
+        file,
     })
 }
 
@@ -1196,6 +1332,7 @@ pub struct MarkdownOptions<'a> {
     pub ref_exclude: Option<&'a [String]>,
     pub ref_include: Option<&'a [String]>,
     pub kroki_url: Option<&'a str>,
+    pub resource_dir: Option<&'a std::path::Path>,
 }
 
 #[allow(clippy::too_many_arguments, dead_code)]
@@ -1222,6 +1359,7 @@ pub fn markdown_to_typst(
             ref_exclude,
             ref_include,
             kroki_url: None,
+            resource_dir: None,
         },
     )
 }
@@ -1377,7 +1515,43 @@ pub fn markdown_to_typst_with_options(
 
                         if let pulldown_cmark::CodeBlockKind::Fenced(ref fence) = kind
                             && let Some(spec) = parse_diagram_fence(fence) {
-                                match crate::diagrams::render_diagram(&spec.diagram_type, &code, opts.kroki_url) {
+                                let mut diag_code = code.clone();
+                                let mut file_to_load = spec.file.clone();
+                                if file_to_load.is_none() {
+                                    let trimmed = code.trim();
+                                    if let Some(rest) = trimmed.strip_prefix("!include ") {
+                                        file_to_load = Some(rest.trim().to_string());
+                                    } else if let Some(rest) = trimmed.strip_prefix("include: ") {
+                                        file_to_load = Some(rest.trim().to_string());
+                                    } else if let Some(rest) = trimmed.strip_prefix("file: ") {
+                                        file_to_load = Some(rest.trim().to_string());
+                                    } else if !trimmed.contains('\n')
+                                        && (trimmed.ends_with(".uxf")
+                                            || trimmed.ends_with(".umlet")
+                                            || trimmed.ends_with(".puml")
+                                            || trimmed.ends_with(".plantuml")
+                                            || trimmed.ends_with(".mmd")
+                                            || trimmed.ends_with(".mermaid")
+                                            || trimmed.ends_with(".dot"))
+                                    {
+                                        file_to_load = Some(trimmed.to_string());
+                                    }
+                                }
+
+                                if let Some(ref file_path) = file_to_load {
+                                    if let Some(loaded) = resolve_file_content(file_path, opts.resource_dir) {
+                                        diag_code = loaded;
+                                    } else {
+                                        typst.push_str(&format!(
+                                            "\n#botox_callout(\"warning\", \"Diagram file not found: {}\")[\nCould not load referenced diagram file `{}`.\n]\n\n",
+                                            escape_typst_text(file_path),
+                                            escape_typst_text(file_path),
+                                        ));
+                                        continue;
+                                    }
+                                }
+
+                                match crate::diagrams::render_diagram(&spec.diagram_type, &diag_code, opts.kroki_url) {
                                     Ok(cached_path) => {
                                         let path_str = cached_path.to_string_lossy().replace('\\', "/");
                                         let mut img_args = vec![format!("\"{path_str}\"")];
@@ -1408,10 +1582,10 @@ pub fn markdown_to_typst_with_options(
                                     Err(_) => {
                                         let title = "Diagram rendering failed: Kroki unreachable";
                                         let raw_lang = &spec.diagram_type;
-                                        let clean_code = if code.ends_with('\n') {
-                                            code
+                                        let clean_code = if diag_code.ends_with('\n') {
+                                            diag_code
                                         } else {
-                                            format!("{code}\n")
+                                            format!("{diag_code}\n")
                                         };
                                         let mut max_ticks = 0;
                                         let mut cur_ticks = 0;
@@ -1433,13 +1607,29 @@ pub fn markdown_to_typst_with_options(
                             }
 
                         // Regular code block (fenced or indented)
+                        let mut final_code = code;
                         let lang = match &kind {
-                            pulldown_cmark::CodeBlockKind::Fenced(l) => l.as_ref(),
-                            pulldown_cmark::CodeBlockKind::Indented => "",
+                            pulldown_cmark::CodeBlockKind::Fenced(l) => {
+                                let (clean_lang, code_file) = parse_code_fence_file(l.as_ref());
+                                if let Some(ref cf) = code_file {
+                                    if let Some(loaded) = resolve_file_content(cf, opts.resource_dir) {
+                                        final_code = loaded;
+                                    } else {
+                                        typst.push_str(&format!(
+                                            "\n#botox_callout(\"warning\", \"Code file not found: {}\")[\nCould not load referenced code file `{}`.\n]\n\n",
+                                            escape_typst_text(cf),
+                                            escape_typst_text(cf),
+                                        ));
+                                        continue;
+                                    }
+                                }
+                                clean_lang
+                            }
+                            pulldown_cmark::CodeBlockKind::Indented => String::new(),
                         };
                         let mut max_ticks = 0;
                         let mut cur_ticks = 0;
-                        for ch in code.chars() {
+                        for ch in final_code.chars() {
                             if ch == '`' {
                                 cur_ticks += 1;
                                 if cur_ticks > max_ticks { max_ticks = cur_ticks; }
@@ -1448,10 +1638,10 @@ pub fn markdown_to_typst_with_options(
                             }
                         }
                         let fence_str = "`".repeat((max_ticks + 1).max(3));
-                        let clean_code = if code.ends_with('\n') {
-                            code
+                        let clean_code = if final_code.ends_with('\n') {
+                            final_code
                         } else {
-                            format!("{code}\n")
+                            format!("{final_code}\n")
                         };
                         typst.push_str(&format!("{fence_str}{lang}\n{clean_code}{fence_str}\n\n"));
                         continue;
@@ -1671,10 +1861,68 @@ pub fn markdown_to_typst_with_options(
 
                         if let Some((url, alt)) = current_image.take() {
                             let alt = alt.trim();
-                            let escaped_url = url.replace('\\', "/").replace('"', "\\\"");
                             let (width, height, id) = image_attrs;
 
-                            let mut img_args = vec![format!("\"{escaped_url}\"")];
+                            let norm_url = url.trim().to_lowercase();
+                            let is_diagram_file = norm_url.ends_with(".uxf")
+                                || norm_url.ends_with(".umlet")
+                                || norm_url.ends_with(".puml")
+                                || norm_url.ends_with(".plantuml")
+                                || norm_url.ends_with(".mmd")
+                                || norm_url.ends_with(".mermaid")
+                                || norm_url.ends_with(".dot")
+                                || norm_url.ends_with(".gv")
+                                || norm_url.ends_with(".ditaa")
+                                || norm_url.ends_with(".wavedrom")
+                                || norm_url.ends_with(".bytefield")
+                                || norm_url.ends_with(".bpmn");
+
+                            let final_img_path = if is_diagram_file {
+                                let diag_type = if norm_url.ends_with(".uxf") || norm_url.ends_with(".umlet") {
+                                    "umlet"
+                                } else if norm_url.ends_with(".puml") || norm_url.ends_with(".plantuml") {
+                                    "plantuml"
+                                } else if norm_url.ends_with(".mmd") || norm_url.ends_with(".mermaid") {
+                                    "mermaid"
+                                } else if norm_url.ends_with(".dot") || norm_url.ends_with(".gv") {
+                                    "graphviz"
+                                } else if norm_url.ends_with(".ditaa") {
+                                    "ditaa"
+                                } else if norm_url.ends_with(".wavedrom") {
+                                    "wavedrom"
+                                } else if norm_url.ends_with(".bytefield") {
+                                    "bytefield"
+                                } else if norm_url.ends_with(".bpmn") {
+                                    "bpmn"
+                                } else {
+                                    "mermaid"
+                                };
+
+                                if let Some(content) = resolve_file_content(&url, opts.resource_dir) {
+                                    match crate::diagrams::render_diagram(diag_type, &content, opts.kroki_url) {
+                                        Ok(cached_path) => cached_path.to_string_lossy().replace('\\', "/"),
+                                        Err(_) => {
+                                            typst.push_str(&format!(
+                                                "\n#botox_callout(\"warning\", \"Diagram rendering failed: {}\")[\nCould not render diagram file `{}` via Kroki.\n]\n\n",
+                                                escape_typst_text(&url),
+                                                escape_typst_text(&url),
+                                            ));
+                                            continue;
+                                        }
+                                    }
+                                } else {
+                                    typst.push_str(&format!(
+                                        "\n#botox_callout(\"warning\", \"Diagram file not found: {}\")[\nCould not find diagram file `{}`.\n]\n\n",
+                                        escape_typst_text(&url),
+                                        escape_typst_text(&url),
+                                    ));
+                                    continue;
+                                }
+                            } else {
+                                url.replace('\\', "/").replace('"', "\\\"")
+                            };
+
+                            let mut img_args = vec![format!("\"{final_img_path}\"")];
                             if let Some(ref w) = width {
                                 img_args.push(format!("width: {w}"));
                             }
@@ -1689,7 +1937,7 @@ pub fn markdown_to_typst_with_options(
                                 typst.push_str(&format!("#{img_call}"));
                             } else if is_slides {
                                 if alt == "bg" || alt.starts_with("bg ") {
-                                    typst.push_str(&format!("\n#place(top + left, dx: 0pt, dy: 0pt, image(\"{escaped_url}\", width: 100%, height: 100%, fit: \"cover\"))\n\n"));
+                                    typst.push_str(&format!("\n#place(top + left, dx: 0pt, dy: 0pt, image(\"{final_img_path}\", width: 100%, height: 100%, fit: \"cover\"))\n\n"));
                                 } else if !alt.is_empty() || id.is_some() {
                                     let mut fig = format!("\n#figure({img_call}");
                                     if !alt.is_empty() {
@@ -2407,8 +2655,73 @@ Check [link](https://example.com/api?q="quoted") here.
         assert_eq!(spec4.diagram_type, "mermaid");
         assert_eq!(spec4.width.as_deref(), Some("10cm"));
 
+        let spec_umlet = parse_diagram_fence("umlet file=diagram.uxf {caption=\"Architecture Model\" #fig:arch}").expect("umlet");
+        assert_eq!(spec_umlet.diagram_type, "umlet");
+        assert_eq!(spec_umlet.file.as_deref(), Some("diagram.uxf"));
+        assert_eq!(spec_umlet.caption.as_deref(), Some("Architecture Model"));
+        assert_eq!(spec_umlet.id.as_deref(), Some("fig-arch"));
+
+        let spec_uxf = parse_diagram_fence("uxf:model.uxf").expect("uxf colon");
+        assert_eq!(spec_uxf.diagram_type, "umlet");
+        assert_eq!(spec_uxf.file.as_deref(), Some("model.uxf"));
+
         assert!(parse_diagram_fence("rust").is_none());
         assert!(parse_diagram_fence("python").is_none());
+    }
+
+    #[test]
+    fn test_file_referencing_for_diagrams_and_code() {
+        let temp_dir = std::env::temp_dir().join(format!("botox_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let sample_uxf = r#"<diagram program="umlet"><zoom_level>10</zoom_level><element><id>UMLClass</id><coordinates><x>20</x><y>20</y><w>100</w><h>40</h></coordinates><panel_attributes>User</panel_attributes></element></diagram>"#;
+        let uxf_path = temp_dir.join("sample.uxf");
+        std::fs::write(&uxf_path, sample_uxf).unwrap();
+
+        let code_path = temp_dir.join("main.rs");
+        std::fs::write(&code_path, "fn main() {\n    println!(\"Hello Botox\");\n}\n").unwrap();
+
+        // Pre-cache hash for UMLet diagram to verify mock rendering
+        let hash = crate::diagrams::compute_diagram_hash("umlet", sample_uxf);
+        let cache_dir = crate::diagrams::get_cache_dir();
+        let _ = std::fs::create_dir_all(&cache_dir);
+        let cache_file = cache_dir.join(format!("{hash}.svg"));
+        std::fs::write(&cache_file, b"<svg><text>Mock UMLet</text></svg>").unwrap();
+
+        // 1. Diagram fence referencing file attribute
+        let md_fence = "```umlet file=sample.uxf {caption=\"UMLet Class Model\" #fig:umlet}\n```";
+        let opts = MarkdownOptions {
+            is_slides: false,
+            bibliography: false,
+            lang: "en",
+            biblio_title: None,
+            toc_title: None,
+            toc_depth: None,
+            ref_exclude: None,
+            ref_include: None,
+            kroki_url: None,
+            resource_dir: Some(&temp_dir),
+        };
+        let typ_fence = markdown_to_typst_with_options(md_fence, &opts);
+        assert!(typ_fence.contains("#figure(image("));
+        assert!(typ_fence.contains("caption: [UMLet Class Model]"));
+        assert!(typ_fence.contains("<fig-umlet>"));
+
+        // 2. Diagram image syntax referencing .uxf file
+        let md_img = "![Class Diagram](sample.uxf){#fig:umlet-img}";
+        let typ_img = markdown_to_typst_with_options(md_img, &opts);
+        assert!(typ_img.contains("#figure(image("));
+        assert!(typ_img.contains("caption: [Class Diagram]"));
+        assert!(typ_img.contains("<fig-umlet-img>"));
+
+        // 3. Regular code block referencing file
+        let md_code = "```rust file=main.rs\n```";
+        let typ_code = markdown_to_typst_with_options(md_code, &opts);
+        assert!(typ_code.contains("```rust\nfn main() {\n    println!(\"Hello Botox\");\n}\n```"));
+
+        // Clean up
+        let _ = std::fs::remove_file(cache_file);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]

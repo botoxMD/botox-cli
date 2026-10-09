@@ -183,11 +183,33 @@ sequenceDiagram
 
 Supported diagram engines:
 * `mermaid` (flowcharts, sequence, class, state, gantt, gitGraph)
+* `umlet` / `uxf` (UMLet XML diagrams)
 * `plantuml` / `puml`
 * `graphviz` / `dot`
 * `d2`
 * `bytefield`
 * `c4plantuml`
+* `ditaa`, `wavedrom`, `bpmn`
+
+### Diagram & Code File Referencing
+Include external diagram and source code files directly without duplicating content:
+````markdown
+<!-- Diagram file referencing in fence -->
+```umlet file="model.uxf" {caption="UMLet Class Diagram" #fig:classes}
+```
+
+<!-- PlantUML include syntax -->
+```puml
+!include path/to/arch.puml
+```
+
+<!-- Markdown image reference for diagrams -->
+![Architecture](model.uxf){#fig:arch}
+
+<!-- Source code file referencing -->
+```rust file="src/main.rs"
+```
+````
 
 Diagrams can also have captions and reference labels:
 ````markdown
