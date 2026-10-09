@@ -332,6 +332,32 @@ fn format_compilation_error(
                     }
                 }
 
+                let is_latex = if let (Some(md), Some((l, _))) = (markdown_source, found_md_loc) {
+                    let mut in_math_block = false;
+                    let mut on_math = false;
+                    for (idx, line) in md.lines().enumerate() {
+                        let trimmed = line.trim();
+                        if trimmed.starts_with("$$") || trimmed.ends_with("$$") {
+                            in_math_block = !in_math_block || trimmed == "$$";
+                        }
+                        if idx == l {
+                            on_math = in_math_block || line.contains('$') || line.contains('\\');
+                            break;
+                        }
+                    }
+                    on_math
+                } else {
+                    d.message.contains("math") || d.message.contains("equation")
+                };
+
+                let category = if is_latex {
+                    "LaTeX Error"
+                } else if d.message.contains("file not found") {
+                    "Resource Error"
+                } else {
+                    "Typst Error"
+                };
+
                 let fname = source_filename.unwrap_or("document.md");
                 let loc_str = if let Some((l, c)) = found_md_loc {
                     format!("{fname}:{}:{}: ", l + 1, c + 1)
@@ -355,7 +381,7 @@ fn format_compilation_error(
                     String::new()
                 };
 
-                msg = format!("{loc_str}{msg}{snippet_suffix}");
+                msg = format!("[{category}] {loc_str}{msg}{snippet_suffix}");
 
                 if !d.hints.is_empty() {
                     let hints: Vec<String> = d.hints.iter().map(|h| h.v.to_string()).collect();
