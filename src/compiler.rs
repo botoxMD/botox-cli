@@ -241,38 +241,85 @@ fn format_compilation_error(
 
                 let target_token = file_not_found_token.or(typst_snippet);
 
+                let preamble_line_count = typst_markup
+                    .lines()
+                    .take_while(|l| !l.starts_with("// BOTOX_BODY_START"))
+                    .count();
+
                 let mut found_md_loc: Option<(usize, usize)> = None;
                 if let Some(md) = markdown_source {
-                    if let Some(token) = target_token
+                    let md_source = typst::syntax::Source::detached(md);
+                    let md_line_count = md.lines().count();
+
+                    let fm_lines = {
+                        let trimmed = md.trim_start();
+                        if let Some(stripped) = trimmed.strip_prefix("---") {
+                            if let Some(end_idx) = stripped.find("---") {
+                                let header = &trimmed[..3 + end_idx + 3];
+                                header.lines().count()
+                            } else {
+                                0
+                            }
+                        } else {
+                            0
+                        }
+                    };
+
+                    let typst_line_opt = range.as_ref().and_then(|r| {
+                        source.lines().byte_to_line_column(r.start)
+                    });
+
+                    // 1. If we have a specific target token that is not just single punctuation
+                    if let Some(token) = target_token.filter(|t| t.len() >= 2 || t.chars().any(|c| c.is_alphanumeric()))
                         && let Some(idx) = md.find(token)
                     {
-                        let md_source = typst::syntax::Source::detached(md);
                         found_md_loc = md_source.lines().byte_to_line_column(idx);
                     }
 
-                    if found_md_loc.is_none()
-                        && let Some(ref r) = range
-                        && let Some((typst_line, _)) = source.lines().byte_to_line_column(r.start)
-                    {
-                        let typst_line_text =
-                            source.text().lines().nth(typst_line).unwrap_or("");
-                        let words: Vec<&str> = typst_line_text
-                            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
-                            .filter(|w| {
-                                w.len() >= 4
-                                    && !w.starts_with("botox_")
-                                    && !w.starts_with("heading")
-                                    && !w.starts_with("outline")
-                            })
-                            .collect();
+                    // 2. Body line offset mapping
+                    if found_md_loc.is_none() && let Some((typst_line, typst_col)) = typst_line_opt {
+                        if typst_line > preamble_line_count {
+                            let body_line_idx = typst_line.saturating_sub(preamble_line_count + 1);
+                            let target_md_line = (fm_lines + body_line_idx).min(md_line_count.saturating_sub(1));
 
-                        if !words.is_empty() {
-                            for (l_idx, line) in md.lines().enumerate() {
-                                if words.iter().any(|w| line.contains(w)) {
-                                    found_md_loc = Some((l_idx, 0));
-                                    break;
+                            let search_start = target_md_line.saturating_sub(5);
+                            let search_end = (target_md_line + 5).min(md_line_count.saturating_sub(1));
+                            let typst_line_text = source.text().lines().nth(typst_line).unwrap_or("");
+                            let typst_trimmed = typst_line_text.trim();
+
+                            let mut best_line = target_md_line;
+                            let mut found_match = false;
+
+                            for l_idx in search_start..=search_end {
+                                if let Some(line) = md.lines().nth(l_idx) {
+                                    let line_trim = line.trim();
+                                    if !line_trim.is_empty()
+                                        && (line_trim == typst_trimmed
+                                            || typst_trimmed.contains(line_trim)
+                                            || line_trim.contains(typst_trimmed))
+                                    {
+                                        best_line = l_idx;
+                                        found_match = true;
+                                        break;
+                                    }
                                 }
                             }
+
+                            if !found_match
+                                && let Some(tok) = target_token {
+                                    for l_idx in search_start..=search_end {
+                                        if let Some(line) = md.lines().nth(l_idx)
+                                            && line.contains(tok) {
+                                                best_line = l_idx;
+                                                break;
+                                            }
+                                    }
+                                }
+
+                            found_md_loc = Some((best_line, typst_col));
+                        } else {
+                            let fm_line = typst_line.min(fm_lines.saturating_sub(1));
+                            found_md_loc = Some((fm_line, typst_col));
                         }
                     }
                 }

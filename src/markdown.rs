@@ -1115,10 +1115,10 @@ pub fn escape_typst_text(s: &str) -> String {
             continue;
         }
 
-        // Check for comments (// or /*) or line-start description list marker (/ )
+        // Check for comments (// or /*) or line-start description list marker (/ , /\n, or standalone /)
         if c == '/' {
             if (i + 1 < n && (chars[i + 1] == '/' || chars[i + 1] == '*'))
-                || ((i == 0 || chars[i - 1] == '\n') && i + 1 < n && chars[i + 1] == ' ')
+                || ((i == 0 || chars[i - 1] == '\n') && (i + 1 == n || chars[i + 1] == ' ' || chars[i + 1] == '\n'))
             {
                 out.push_str(r"\/");
             } else {

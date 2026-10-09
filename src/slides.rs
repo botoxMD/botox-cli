@@ -150,6 +150,7 @@ pub fn wrap_slides(
 
     out.push_str("#let botox_slide_counter = counter(\"slide\")\n");
     out.push_str("#botox_slide_counter.step()\n\n");
+    out.push_str("// BOTOX_BODY_START\n");
 
     let raw_slides: Vec<&str> = slides_typst.split("#pagebreak()").collect();
     let mut first_emitted = false;
