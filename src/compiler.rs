@@ -333,19 +333,38 @@ fn format_compilation_error(
                 }
 
                 let is_latex = if let (Some(md), Some((l, _))) = (markdown_source, found_md_loc) {
-                    let mut in_math_block = false;
-                    let mut on_math = false;
-                    for (idx, line) in md.lines().enumerate() {
-                        let trimmed = line.trim();
-                        if trimmed.starts_with("$$") || trimmed.ends_with("$$") {
-                            in_math_block = !in_math_block || trimmed == "$$";
+                    if let Some(target_line) = md.lines().nth(l) {
+                        let trimmed_target = target_line.trim_start();
+                        if trimmed_target.starts_with(":::") {
+                            false
+                        } else {
+                            let mut in_math_block = false;
+                            for (idx, line) in md.lines().enumerate() {
+                                let trimmed = line.trim();
+                                if trimmed == "$$" {
+                                    in_math_block = !in_math_block;
+                                } else if trimmed.starts_with("$$") && !trimmed.ends_with("$$") {
+                                    in_math_block = true;
+                                } else if !trimmed.starts_with("$$") && trimmed.ends_with("$$") {
+                                    in_math_block = false;
+                                }
+                                if idx == l {
+                                    break;
+                                }
+                            }
+                            let has_inline_math = target_line.contains('$') && !target_line.contains(r"\$");
+                            let has_latex_cmd = target_line.contains(r"\frac")
+                                || target_line.contains(r"\sqrt")
+                                || target_line.contains(r"\sum")
+                                || target_line.contains(r"\int")
+                                || target_line.contains(r"\mathbf")
+                                || target_line.contains(r"\alpha")
+                                || target_line.contains(r"\beta");
+                            in_math_block || has_inline_math || has_latex_cmd
                         }
-                        if idx == l {
-                            on_math = in_math_block || line.contains('$') || line.contains('\\');
-                            break;
-                        }
+                    } else {
+                        false
                     }
-                    on_math
                 } else {
                     d.message.contains("math") || d.message.contains("equation")
                 };
