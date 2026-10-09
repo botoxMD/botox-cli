@@ -24,7 +24,7 @@ Commands:
   setup                   Interactive configuration wizard to configure user defaults
 
 Common Options:
-  -o, --output <file>     Output file path (.pdf, .html, .svg, .json, or '-' for stdout)
+  -o, --output <file>     Output file path (default: .html for slides, .pdf for documents, or '-' for stdout)
   -w, --watch             Watch input file and directory for changes and recompile automatically
   --config <file>         Custom configuration YAML path
 
@@ -42,7 +42,7 @@ Documentation Options:
   --include-ref <pattern> Only include matching URLs/domains in references
 
 Slide Options:
-  --slides                Force presentation slide deck mode
+  --slides                Force presentation slide deck mode (default output: .html)
   --theme <theme>         Slide theme: default, academic, dark, nord
 "#);
 }
@@ -1031,10 +1031,27 @@ fn main() {
         std::process::exit(1);
     }
 
-    let default_output = if is_stdin {
-        PathBuf::from("output.pdf")
+    let is_preliminary_slides = if explicit_slides {
+        true
+    } else if explicit_pdf {
+        false
+    } else if !is_stdin && input_path.is_file() {
+        if let Ok(prelim_content) = std::fs::read_to_string(&input_path) {
+            let (fm, _) = extract_frontmatter(&prelim_content);
+            detect_is_slides(&fm, &prelim_content, &input_path, false, false)
+        } else {
+            let name = input_path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
+            name.contains("slide") || name.contains("deck") || name.contains("presentation")
+        }
     } else {
-        input_path.with_extension("pdf")
+        false
+    };
+
+    let default_ext = if is_preliminary_slides { "html" } else { "pdf" };
+    let default_output = if is_stdin {
+        PathBuf::from(format!("output.{default_ext}"))
+    } else {
+        input_path.with_extension(default_ext)
     };
     let output_path = output_file.unwrap_or(default_output);
     let is_stdout = output_path.as_os_str() == "-";
@@ -1263,4 +1280,19 @@ mod tests {
         let _ = std::env::set_current_dir(orig_dir);
         let _ = std::fs::remove_dir_all(temp_dir);
     }
+
+    #[test]
+    fn test_default_output_extension_slides_vs_document() {
+        let slides_md = "---\nmarp: true\n---\n# Slide 1";
+        let (fm, _) = extract_frontmatter(slides_md);
+        assert!(detect_is_slides(&fm, slides_md, Path::new("test.md"), false, false));
+
+        let doc_md = "---\ntitle: Doc\n---\n# Intro";
+        let (fm_doc, _) = extract_frontmatter(doc_md);
+        assert!(!detect_is_slides(&fm_doc, doc_md, Path::new("test.md"), false, false));
+
+        // When explicit_pdf is set, even marp: true is treated as pdf
+        assert!(!detect_is_slides(&fm, slides_md, Path::new("test.md"), false, true));
+    }
 }
+
