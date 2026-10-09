@@ -686,6 +686,7 @@ fn compile_once(
     cli_exclude_ref: &[String],
     cli_include_ref: &[String],
     is_stdin: bool,
+    cli_source_file: Option<&str>,
 ) -> Result<(bool, std::time::Duration), String> {
     let raw_content = if is_stdin {
         use std::io::Read;
@@ -837,7 +838,9 @@ fn compile_once(
 
     let start = std::time::Instant::now();
     let resource_dir = doc_dir;
-    let src_filename = if is_stdin {
+    let src_filename = if let Some(sf) = cli_source_file {
+        std::path::Path::new(sf).file_name().and_then(|n| n.to_str()).unwrap_or(sf)
+    } else if is_stdin {
         "document.md"
     } else {
         input_path.file_name().and_then(|n| n.to_str()).unwrap_or("document.md")
@@ -925,6 +928,7 @@ fn main() {
     let mut cli_resource_dir: Option<PathBuf> = None;
     let mut cli_exclude_ref: Vec<String> = Vec::new();
     let mut cli_include_ref: Vec<String> = Vec::new();
+    let mut cli_source_file: Option<String> = None;
     let mut explicit_pdf = false;
     let mut explicit_slides = false;
     let mut watch_mode = false;
@@ -1026,6 +1030,12 @@ fn main() {
                     cli_font = Some(args[i].clone());
                 }
             }
+            "--source-file" | "--filename" => {
+                i += 1;
+                if i < args.len() {
+                    cli_source_file = Some(args[i].clone());
+                }
+            }
             "-N" | "--number-sections" => {
                 // Handled in document wrapper via flag or frontmatter
             }
@@ -1086,7 +1096,10 @@ fn main() {
 
     let doc_dir = cli_resource_dir.or_else(|| {
         if is_stdin {
-            std::env::current_dir().ok()
+            cli_source_file
+                .as_ref()
+                .and_then(|sf| std::path::Path::new(sf).parent().map(|p| p.to_path_buf()))
+                .or_else(|| std::env::current_dir().ok())
         } else {
             input_path.parent().map(|p| p.to_path_buf())
         }
@@ -1110,6 +1123,7 @@ fn main() {
             &cli_exclude_ref,
             &cli_include_ref,
             is_stdin,
+            cli_source_file.as_deref(),
         ) {
             Ok((is_slides, duration)) => {
                 if !is_stdout {
@@ -1141,6 +1155,7 @@ fn main() {
         &cli_exclude_ref,
         &cli_include_ref,
         false,
+        cli_source_file.as_deref(),
     ) {
         Ok((is_slides, duration)) => {
             let mode_str = format_mode_str(is_slides, &output_path);
@@ -1204,6 +1219,7 @@ fn main() {
                 &cli_exclude_ref,
                 &cli_include_ref,
                 false,
+                cli_source_file.as_deref(),
             ) {
                 Ok((is_slides, duration)) => {
                     let mode_str = format_mode_str(is_slides, &output_path);

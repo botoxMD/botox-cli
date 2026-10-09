@@ -269,15 +269,8 @@ fn format_compilation_error(
                         source.lines().byte_to_line_column(r.start)
                     });
 
-                    // 1. If we have a specific target token that is not just single punctuation
-                    if let Some(token) = target_token.filter(|t| t.len() >= 2 || t.chars().any(|c| c.is_alphanumeric()))
-                        && let Some(idx) = md.find(token)
-                    {
-                        found_md_loc = md_source.lines().byte_to_line_column(idx);
-                    }
-
-                    // 2. Body line offset mapping
-                    if found_md_loc.is_none() && let Some((typst_line, typst_col)) = typst_line_opt {
+                    // 1. Body line offset mapping with neighborhood search
+                    if let Some((typst_line, typst_col)) = typst_line_opt {
                         if typst_line > preamble_line_count {
                             let body_line_idx = typst_line.saturating_sub(preamble_line_count + 1);
                             let target_md_line = (fm_lines + body_line_idx).min(md_line_count.saturating_sub(1));
@@ -288,39 +281,54 @@ fn format_compilation_error(
                             let typst_trimmed = typst_line_text.trim();
 
                             let mut best_line = target_md_line;
+                            let mut best_col = typst_col;
                             let mut found_match = false;
 
-                            for l_idx in search_start..=search_end {
-                                if let Some(line) = md.lines().nth(l_idx) {
-                                    let line_trim = line.trim();
-                                    if !line_trim.is_empty()
-                                        && (line_trim == typst_trimmed
-                                            || typst_trimmed.contains(line_trim)
-                                            || line_trim.contains(typst_trimmed))
+                            // First preference: if target_token is found in neighbor lines
+                            if let Some(tok) = target_token {
+                                for l_idx in search_start..=search_end {
+                                    if let Some(line) = md.lines().nth(l_idx)
+                                        && let Some(c_idx) = line.find(tok)
                                     {
                                         best_line = l_idx;
+                                        best_col = c_idx;
                                         found_match = true;
                                         break;
                                     }
                                 }
                             }
 
-                            if !found_match
-                                && let Some(tok) = target_token {
-                                    for l_idx in search_start..=search_end {
-                                        if let Some(line) = md.lines().nth(l_idx)
-                                            && line.contains(tok) {
-                                                best_line = l_idx;
-                                                break;
-                                            }
+                            // Second preference: line text similarity
+                            if !found_match {
+                                for l_idx in search_start..=search_end {
+                                    if let Some(line) = md.lines().nth(l_idx) {
+                                        let line_trim = line.trim();
+                                        if !line_trim.is_empty()
+                                            && (line_trim == typst_trimmed
+                                                || typst_trimmed.contains(line_trim)
+                                                || line_trim.contains(typst_trimmed))
+                                        {
+                                            best_line = l_idx;
+                                            break;
+                                        }
                                     }
                                 }
+                            }
 
-                            found_md_loc = Some((best_line, typst_col));
+                            found_md_loc = Some((best_line, best_col));
                         } else {
                             let fm_line = typst_line.min(fm_lines.saturating_sub(1));
                             found_md_loc = Some((fm_line, typst_col));
                         }
+                    }
+
+                    // Fallback: only if no line mapping was found, try specific file/token search
+                    if found_md_loc.is_none()
+                        && let Some(token) = file_not_found_token.or(target_token)
+                        && (token.len() >= 3 || token.contains('.'))
+                        && let Some(idx) = md.find(token)
+                    {
+                        found_md_loc = md_source.lines().byte_to_line_column(idx);
                     }
                 }
 
