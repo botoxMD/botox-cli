@@ -4,6 +4,7 @@ mod document;
 mod slides;
 mod compiler;
 pub mod diagrams;
+mod skills;
 
 use std::path::PathBuf;
 use serde_yaml::Value;
@@ -14,6 +15,7 @@ fn show_help() {
        botox init <filename> [options]
        botox config
        botox setup [options]
+       botox --skills [options]
 
 Pure Rust single native binary: Transforms Markdown into LaTeX-quality PDF documents or presentation slides.
 Mode is detected automatically from frontmatter structure, or specified explicitly.
@@ -22,6 +24,7 @@ Commands:
   init <filename>         Initialize a new Markdown document or presentation slide deck
   config                  Display currently active configuration settings and loaded sources
   setup                   Interactive configuration wizard to configure user defaults
+  skills, --skills        Generate agent skill definition (SKILL.md) for AI coding agents
 
 Common Options:
   -o, --output <file>     Output file path (default: .html for slides, .pdf for documents, or '-' for stdout)
@@ -895,6 +898,11 @@ fn main() {
         return;
     }
 
+    if args[1] == "skills" || args[1] == "--skills" {
+        skills::handle_skills(&args[2..]);
+        return;
+    }
+
     let mut input_file: Option<PathBuf> = None;
     let mut output_file: Option<PathBuf> = None;
     let mut custom_config: Option<PathBuf> = None;
@@ -924,6 +932,15 @@ fn main() {
             }
             "--slides" => {
                 explicit_slides = true;
+            }
+            "--skills" | "skills" => {
+                let remaining: Vec<String> = args[1..]
+                    .iter()
+                    .filter(|&a| a != "--skills" && a != "skills")
+                    .cloned()
+                    .collect();
+                skills::handle_skills(&remaining);
+                return;
             }
             "-w" | "--watch" => {
                 watch_mode = true;
