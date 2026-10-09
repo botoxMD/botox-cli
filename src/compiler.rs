@@ -200,12 +200,108 @@ fn load_needed_fonts(typst_markup: &str) -> Vec<typst::text::Font> {
     fonts
 }
 
-fn format_compilation_error(e: &typst_as_lib::TypstAsLibError) -> String {
+fn format_compilation_error(
+    e: &typst_as_lib::TypstAsLibError,
+    typst_markup: &str,
+    markdown_source: Option<&str>,
+    source_filename: Option<&str>,
+) -> String {
     match e {
         typst_as_lib::TypstAsLibError::TypstSource(diags) => {
+            let source = typst::syntax::Source::detached(typst_markup);
             let mut msgs = Vec::new();
             for d in diags {
                 let mut msg = d.message.to_string();
+                let range = match d.span.get() {
+                    typst::syntax::DiagSpanKind::Number { num, sub_range, .. } => {
+                        source.range(num, sub_range)
+                    }
+                    typst::syntax::DiagSpanKind::Range { range, .. } => Some(range),
+                    typst::syntax::DiagSpanKind::Detached => None,
+                };
+
+                let typst_snippet = range
+                    .as_ref()
+                    .and_then(|r| typst_markup.get(r.clone()))
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty());
+
+                let file_not_found_token = if d.message.contains("file not found") {
+                    if let Some(pos) = d.message.find("searched at ") {
+                        let path_part = d.message[pos + 12..].trim_end_matches(')');
+                        std::path::Path::new(path_part)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let target_token = file_not_found_token.or(typst_snippet);
+
+                let mut found_md_loc: Option<(usize, usize)> = None;
+                if let Some(md) = markdown_source {
+                    if let Some(token) = target_token
+                        && let Some(idx) = md.find(token)
+                    {
+                        let md_source = typst::syntax::Source::detached(md);
+                        found_md_loc = md_source.lines().byte_to_line_column(idx);
+                    }
+
+                    if found_md_loc.is_none()
+                        && let Some(ref r) = range
+                        && let Some((typst_line, _)) = source.lines().byte_to_line_column(r.start)
+                    {
+                        let typst_line_text =
+                            source.text().lines().nth(typst_line).unwrap_or("");
+                        let words: Vec<&str> = typst_line_text
+                            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+                            .filter(|w| {
+                                w.len() >= 4
+                                    && !w.starts_with("botox_")
+                                    && !w.starts_with("heading")
+                                    && !w.starts_with("outline")
+                            })
+                            .collect();
+
+                        if !words.is_empty() {
+                            for (l_idx, line) in md.lines().enumerate() {
+                                if words.iter().any(|w| line.contains(w)) {
+                                    found_md_loc = Some((l_idx, 0));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let fname = source_filename.unwrap_or("document.md");
+                let loc_str = if let Some((l, c)) = found_md_loc {
+                    format!("{fname}:{}:{}: ", l + 1, c + 1)
+                } else if let Some(r) = range.as_ref() {
+                    if let Some((line, col)) = source.lines().byte_to_line_column(r.start) {
+                        format!("line {}:{}: ", line + 1, col + 1)
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+
+                let snippet_suffix = if let Some(token) = target_token {
+                    if !msg.contains(token) {
+                        format!(" (near '{token}')")
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+
+                msg = format!("{loc_str}{msg}{snippet_suffix}");
+
                 if !d.hints.is_empty() {
                     let hints: Vec<String> = d.hints.iter().map(|h| h.v.to_string()).collect();
                     msg.push_str(&format!(" (hint: {})", hints.join("; ")));
@@ -226,6 +322,16 @@ pub fn compile_typst(
     typst_markup: &str,
     output_path: &Path,
     resource_dir: Option<&Path>,
+) -> Result<(), String> {
+    compile_typst_with_source(typst_markup, output_path, resource_dir, None, None)
+}
+
+pub fn compile_typst_with_source(
+    typst_markup: &str,
+    output_path: &Path,
+    resource_dir: Option<&Path>,
+    markdown_source: Option<&str>,
+    source_filename: Option<&str>,
 ) -> Result<(), String> {
     let t0 = std::time::Instant::now();
     let fonts = load_needed_fonts(typst_markup);
@@ -249,7 +355,7 @@ pub fn compile_typst(
 
     let doc: typst_layout::PagedDocument = compilation_result.output.map_err(|e| {
         let _ = std::fs::write("/tmp/debug_fail.typ", typst_markup);
-        format_compilation_error(&e)
+        format_compilation_error(&e, typst_markup, markdown_source, source_filename)
     })?;
 
     if output_path.as_os_str() == "-" {
@@ -1005,7 +1111,7 @@ pub fn compile_typst_to_pdf_bytes(
 
     let compilation_result = engine.compile();
     let doc: typst_layout::PagedDocument = compilation_result.output.map_err(|e| {
-        format_compilation_error(&e)
+        format_compilation_error(&e, typst_markup, None, None)
     })?;
 
     typst_pdf::pdf(&doc, &typst_pdf::PdfOptions::default())
@@ -1168,5 +1274,16 @@ Second column body text.
         "#;
         let lib_fonts = load_needed_fonts(libertine_markup);
         assert!(lib_fonts.len() > fonts.len(), "Libertine markup should load additional Libertinus fonts");
+    }
+
+    #[test]
+    fn test_format_compilation_error_location() {
+        let invalid_markup = "= Valid Title\n\n#nonexistent_function_xyz(123)\n";
+        let tmp_pdf = std::env::temp_dir().join("test_err_loc.pdf");
+        let res = compile_typst(invalid_markup, &tmp_pdf, None);
+        assert!(res.is_err());
+        let err = res.err().unwrap();
+        assert!(err.contains("line 3:"), "Error message must contain line number: {err}");
+        let _ = std::fs::remove_file(tmp_pdf);
     }
 }

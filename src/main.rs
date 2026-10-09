@@ -837,7 +837,18 @@ fn compile_once(
 
     let start = std::time::Instant::now();
     let resource_dir = doc_dir;
-    compiler::compile_typst(&typst_markup, output_path, resource_dir)?;
+    let src_filename = if is_stdin {
+        "document.md"
+    } else {
+        input_path.file_name().and_then(|n| n.to_str()).unwrap_or("document.md")
+    };
+    compiler::compile_typst_with_source(
+        &typst_markup,
+        output_path,
+        resource_dir,
+        Some(&raw_content),
+        Some(src_filename),
+    )?;
     let duration = start.elapsed();
     Ok((is_slides, duration))
 }
