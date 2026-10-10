@@ -34,61 +34,77 @@ pub fn fetch_mermaid_ink(canonical_code: &str) -> Result<Vec<u8>, String> {
     Ok(svg_bytes)
 }
 
-/// Request rendering from a Kroki endpoint.
+pub const DEFAULT_KROKI_ENDPOINTS: &[&str] = &[
+    "https://140.238.215.250.sslip.io",
+    "https://kroki.io",
+    "https://demo.kroki.io",
+];
+
+/// Request rendering from Kroki with automatic fallback across multiple endpoints.
 pub fn fetch_kroki(
     norm_type: &str,
     canonical_code: &str,
     kroki_endpoint: Option<&str>,
 ) -> Result<Vec<u8>, String> {
-    let base_url = kroki_endpoint
-        .map(|s| s.to_string())
-        .or_else(|| std::env::var("KROKI_ENDPOINT").ok())
-        .or_else(|| std::env::var("KROKI_URL").ok())
-        .unwrap_or_else(|| "https://140.238.215.250.sslip.io".to_string());
+    let custom_env = std::env::var("KROKI_ENDPOINT").ok().or_else(|| std::env::var("KROKI_URL").ok());
+    let explicit_endpoint = kroki_endpoint.map(|s| s.to_string()).or(custom_env);
 
-    let target_url = format!("{}/{}/svg", base_url.trim_end_matches('/'), norm_type);
+    let endpoints: Vec<&str> = if let Some(ref ep) = explicit_endpoint {
+        vec![ep.as_str()]
+    } else {
+        DEFAULT_KROKI_ENDPOINTS.to_vec()
+    };
 
     let client = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_millis(3500)))
         .build()
         .new_agent();
 
-    let kroki_res = client
-        .post(&target_url)
-        .header("Content-Type", "text/plain; charset=utf-8")
-        .header("User-Agent", "botox/0.1")
-        .send(canonical_code);
+    let mut errors: Vec<String> = Vec::new();
 
-    match kroki_res {
-        Ok(mut resp) => {
-            let status = resp.status();
-            if !status.is_success() {
-                if norm_type == "mermaid" {
-                    // Try mermaid.ink fallback
-                    fetch_mermaid_ink(canonical_code)
-                        .map_err(|e| format!("Kroki returned HTTP {status}; fallback failed: {e}"))
+    for endpoint in endpoints {
+        let target_url = format!("{}/{}/svg", endpoint.trim_end_matches('/'), norm_type);
+        let kroki_res = client
+            .post(&target_url)
+            .header("Content-Type", "text/plain; charset=utf-8")
+            .header("User-Agent", "botox/0.1")
+            .send(canonical_code);
+
+        match kroki_res {
+            Ok(mut resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    match resp.body_mut().read_to_vec() {
+                        Ok(bytes) => {
+                            if !bytes.is_empty() {
+                                return Ok(bytes);
+                            } else {
+                                errors.push(format!("{endpoint}: empty SVG response"));
+                            }
+                        }
+                        Err(e) => {
+                            errors.push(format!("{endpoint}: failed reading response ({e})"));
+                        }
+                    }
                 } else {
-                    Err(format!("Kroki returned HTTP {status}"))
+                    errors.push(format!("{endpoint}: HTTP {status}"));
                 }
-            } else {
-                let bytes = resp
-                    .body_mut()
-                    .read_to_vec()
-                    .map_err(|e| format!("Failed to read response from Kroki: {e}"))?;
-                if bytes.is_empty() {
-                    return Err("Kroki returned an empty SVG response".to_string());
-                }
-                Ok(bytes)
             }
-        }
-        Err(e) => {
-            if norm_type == "mermaid" {
-                // Kroki connection failed or timed out, attempt mermaid.ink fallback
-                fetch_mermaid_ink(canonical_code)
-                    .map_err(|ink_err| format!("Kroki unreachable ({e}); mermaid.ink failed ({ink_err})"))
-            } else {
-                Err(format!("Kroki connection failed: {e}"))
+            Err(e) => {
+                errors.push(format!("{endpoint}: connection error ({e})"));
             }
         }
     }
+
+    // If all Kroki endpoints failed, try companion fallback for Mermaid
+    if norm_type == "mermaid"
+        && let Ok(bytes) = fetch_mermaid_ink(canonical_code) {
+            return Ok(bytes);
+    }
+
+    Err(format!(
+        "All Kroki endpoints failed for {norm_type}: {}",
+        errors.join("; ")
+    ))
 }
+
