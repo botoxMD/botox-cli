@@ -13,6 +13,33 @@ pub fn find_matching_brace(s: &str, open_pos: usize) -> Option<usize> {
     None
 }
 
+/// Helper that replaces a LaTeX command while ensuring word boundaries so that
+/// shorter command prefixes (e.g. `\le`, `\tan`, `\to`) do not corrupt longer
+/// tokens (e.g. `\leftarrow`, `\tanh`, `\top`, `\tolerance`).
+fn replace_latex_command(s: &mut String, cmd: &str, replacement: &str) {
+    let cmd_len = cmd.len();
+    let ends_with_letter = cmd.chars().last().is_some_and(|c| c.is_ascii_alphabetic());
+
+    let mut idx = 0;
+    while let Some(pos) = s[idx..].find(cmd) {
+        let abs_pos = idx + pos;
+        let after_pos = abs_pos + cmd_len;
+
+        // If the command ends in an ASCII letter, the following character must not be
+        // an ASCII letter (which would mean cmd is a prefix of a longer command name).
+        if ends_with_letter
+            && let Some(next_ch) = s[after_pos..].chars().next()
+            && next_ch.is_ascii_alphabetic()
+        {
+            idx = abs_pos + 1;
+            continue;
+        }
+
+        s.replace_range(abs_pos..after_pos, replacement);
+        idx = abs_pos + replacement.len();
+    }
+}
+
 pub fn convert_latex_math_to_typst(math: &str) -> String {
     let mut s = math.trim().to_string();
 
@@ -143,7 +170,7 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
     ] {
         while let Some(pos) = s.find(cmd) {
             if let Some(end) = find_matching_brace(&s, pos + cmd.len() - 1) {
-                let inner = s[pos + cmd.len()...end].to_string();
+                let inner = s[pos + cmd.len()..end].to_string();
                 let inner_conv = convert_latex_math_to_typst(&inner);
                 let space_before = if pos > 0 && s[..pos].chars().last().is_some_and(|c| c.is_alphanumeric()) {
                     " "
@@ -198,10 +225,12 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
     }
 
     // Stripping scaling delimiters \left and \right
-    s = s.replace(r"\left", "").replace(r"\right", "");
+    s = s.replace(r"\left.", "").replace(r"\right.", "");
+    replace_latex_command(&mut s, r"\left", "");
+    replace_latex_command(&mut s, r"\right", "");
 
     // Operators and symbols
-    let replacements = [
+    let mut replacements = [
         (r"\sum", "sum"),
         (r"\prod", "product"),
         (r"\int", "integral"),
@@ -213,6 +242,8 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
         (r"\iff", "<=>"),
         (r"\Rightarrow", "=>"),
         (r"\to", "->"),
+        (r"\top", "top"),
+        (r"\bot", "bot"),
         (r"\rightarrow", "->"),
         (r"\leftarrow", "<-"),
         (r"\subset", "subset"),
@@ -304,8 +335,12 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
         (r"\Omega", "Omega"),
     ];
 
+    // Sort replacements by descending pattern length so that longer, more specific
+    // commands (e.g. \leftarrow, \tanh, \subseteq) are matched before shorter prefixes.
+    replacements.sort_by_key(|a| std::cmp::Reverse(a.0.len()));
+
     for (from, to) in replacements {
-        s = s.replace(from, to);
+        replace_latex_command(&mut s, from, to);
     }
 
     // Convert grouping braces in subscripts and superscripts: _{...} -> _(...) and ^{...} -> ^(...)
@@ -331,6 +366,8 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
             || inner.contains('>')
             || inner.contains('/')
             || inner.contains('*')
+            || inner.contains('"')
+            || inner.len() > 3
         {
             inner.to_string()
         } else {
@@ -358,4 +395,35 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
     }
 
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_token_boundary_and_shadowing() {
+        assert_eq!(convert_latex_math_to_typst(r"\leftarrow"), "<-");
+        assert_eq!(convert_latex_math_to_typst(r"\le"), "<=");
+        assert_eq!(convert_latex_math_to_typst(r"\tanh"), "tanh");
+        assert_eq!(convert_latex_math_to_typst(r"\tan"), "tan");
+        assert_eq!(convert_latex_math_to_typst(r"\sinh"), "sinh");
+        assert_eq!(convert_latex_math_to_typst(r"\sin"), "sin");
+        assert_eq!(convert_latex_math_to_typst(r"\cosh"), "cosh");
+        assert_eq!(convert_latex_math_to_typst(r"\cos"), "cos");
+        assert_eq!(convert_latex_math_to_typst(r"\subseteq"), "subset.eq");
+        assert_eq!(convert_latex_math_to_typst(r"\subset"), "subset");
+        assert_eq!(convert_latex_math_to_typst(r"\cdots"), "...");
+        assert_eq!(convert_latex_math_to_typst(r"\cdot"), "dot");
+        assert_eq!(convert_latex_math_to_typst(r"\neq"), "!=");
+        assert_eq!(convert_latex_math_to_typst(r"\ne"), "!=");
+        assert_eq!(convert_latex_math_to_typst(r"\top"), "top");
+    }
+
+    #[test]
+    fn test_subscripts_descriptive_names() {
+        assert_eq!(convert_latex_math_to_typst(r"x_{total}"), "x_(total)");
+        assert_eq!(convert_latex_math_to_typst(r"a_{11}"), "a_(11)");
+        assert_eq!(convert_latex_math_to_typst(r"x_{ij}"), "x_(i j)");
+    }
 }

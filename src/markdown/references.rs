@@ -1,15 +1,16 @@
 pub fn extract_host(url: &str) -> Option<&str> {
-    let without_scheme = if let Some(rest) = url.strip_prefix("https://") {
-        rest
-    } else if let Some(rest) = url.strip_prefix("http://") {
-        rest
-    } else if let Some(rest) = url.strip_prefix("ftp://") {
-        rest
-    } else {
-        url
-    };
-    let host_and_port = without_scheme.split(&['/', '?', '#'][..]).next().unwrap_or("");
-    let host = host_and_port.split(':').next().unwrap_or("");
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .or_else(|| url.strip_prefix("ftp://"))
+        .unwrap_or(url);
+
+    let host = without_scheme
+        .split('/')
+        .next()?
+        .split(':')
+        .next()?;
+
     if host.is_empty() {
         None
     } else {
@@ -24,15 +25,15 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
     let (mut star_pi, mut star_ti) = (None, 0);
 
     while ti < t_chars.len() {
-        if pi < p_chars.len() && (p_chars[pi] == '?' || p_chars[pi] == t_chars[ti]) {
+        if pi < p_chars.len() && (p_chars[pi] == '?' || p_chars[pi].eq_ignore_ascii_case(&t_chars[ti])) {
             pi += 1;
             ti += 1;
         } else if pi < p_chars.len() && p_chars[pi] == '*' {
             star_pi = Some(pi);
-            star_ti = ti;
             pi += 1;
-        } else if let Some(sp) = star_pi {
-            pi = sp + 1;
+            star_ti = ti;
+        } else if let Some(spi) = star_pi {
+            pi = spi + 1;
             star_ti += 1;
             ti = star_ti;
         } else {
@@ -53,40 +54,43 @@ pub fn url_matches_pattern(url: &str, pattern: &str) -> bool {
         return false;
     }
 
-    let url_lower = url.to_lowercase();
-    let pat_lower = pat.to_lowercase();
+    let clean_url = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .or_else(|| url.strip_prefix("ftp://"))
+        .unwrap_or(url);
 
-    // 1. Exact match on URL
-    if url_lower == pat_lower {
-        return true;
-    }
-
-    // 2. Glob pattern with '*'
-    if pat_lower.contains('*') {
-        if glob_match(&pat_lower, &url_lower) {
+    // 1. Wildcard glob match against full url and scheme-stripped url
+    if pat.contains('*') || pat.contains('?') {
+        if glob_match(pat, url) || glob_match(pat, clean_url) {
             return true;
         }
-        if let Some(host) = extract_host(&url_lower)
-            && glob_match(&pat_lower, host) {
+        // Also try matching against host
+        if let Some(host) = extract_host(url)
+            && glob_match(pat, host) {
                 return true;
             }
         return false;
     }
 
-    // 3. Exact host match or domain suffix
-    if let Some(host) = extract_host(&url_lower) {
-        if host == pat_lower {
-            return true;
-        }
-        if let Some(stripped) = host.strip_suffix(&pat_lower)
-            && stripped.ends_with('.') {
-                return true;
-            }
+    // 2. Clean scheme from pattern if present
+    let clean_pat = pat
+        .strip_prefix("https://")
+        .or_else(|| pat.strip_prefix("http://"))
+        .unwrap_or(pat)
+        .trim_end_matches('/');
+
+    // If pattern contains a path (e.g. "github.com/myorg" or "example.com/docs")
+    if clean_pat.contains('/') {
+        return clean_url.to_ascii_lowercase().starts_with(&clean_pat.to_ascii_lowercase())
+            || url.to_ascii_lowercase().contains(&pat.to_ascii_lowercase());
     }
 
-    // 4. Fallback: URL prefix
-    if url_lower.starts_with(&pat_lower) {
-        return true;
+    // If pattern is a domain name (e.g. "github.com", "x.com", "wikipedia.org")
+    if let Some(host) = extract_host(url) {
+        let host_lower = host.to_ascii_lowercase();
+        let pat_lower = clean_pat.to_ascii_lowercase();
+        return host_lower == pat_lower || host_lower.ends_with(&format!(".{pat_lower}"));
     }
 
     false

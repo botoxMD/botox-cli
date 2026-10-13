@@ -1,62 +1,118 @@
 use std::path::{Path, PathBuf};
-use typst_as_lib::file_resolver::FileResolver;
-use typst_as_lib::TypstEngine;
+use typst::LibraryExt;
 
-#[derive(Debug, Clone)]
-struct BotoxFileResolver {
-    resource_dir: PathBuf,
+enum BotoxFonts {
+    Default,
+    Custom {
+        fonts: Vec<typst::text::Font>,
+        book: typst::utils::LazyHash<typst::text::FontBook>,
+    },
 }
 
-impl FileResolver for BotoxFileResolver {
-    fn resolve_binary(
-        &self,
-        id: typst::syntax::FileId,
-    ) -> typst::diag::FileResult<std::borrow::Cow<'_, typst::foundations::Bytes>> {
-        let vpath = id.vpath();
-        let rel_path = Path::new(vpath.get_without_slash());
-        let abs_candidate = Path::new(vpath.get_with_slash());
-
-        // Fast path for absolute paths (e.g. cached diagrams or absolute asset links)
-        if abs_candidate.is_absolute()
-            && let Ok(bytes) = std::fs::read(abs_candidate) {
-                return Ok(std::borrow::Cow::Owned(typst::foundations::Bytes::new(bytes)));
-            }
-
-        let rel_cand = self.resource_dir.join(rel_path);
-        if let Ok(bytes) = std::fs::read(&rel_cand) {
-            return Ok(std::borrow::Cow::Owned(typst::foundations::Bytes::new(bytes)));
+impl BotoxFonts {
+    #[allow(dead_code)]
+    pub fn len(&self) -> usize {
+        match self {
+            BotoxFonts::Default => DEFAULT_EMBEDDED_FONTS.len(),
+            BotoxFonts::Custom { fonts, .. } => fonts.len(),
         }
-
-        if let Ok(bytes) = std::fs::read(rel_path) {
-            return Ok(std::borrow::Cow::Owned(typst::foundations::Bytes::new(bytes)));
-        }
-
-        Err(typst::diag::FileError::NotFound(self.resource_dir.join(rel_path)))
     }
 
-    fn resolve_source(
-        &self,
-        id: typst::syntax::FileId,
-    ) -> typst::diag::FileResult<std::borrow::Cow<'_, typst::syntax::Source>> {
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+struct BotoxWorld {
+    main_id: typst::syntax::FileId,
+    main_source: typst::syntax::Source,
+    resource_dir: PathBuf,
+    fonts: BotoxFonts,
+    now: chrono::DateTime<chrono::Utc>,
+}
+
+impl typst::World for BotoxWorld {
+    fn library(&self) -> &typst::utils::LazyHash<typst::Library> {
+        &DEFAULT_LIBRARY
+    }
+
+    fn book(&self) -> &typst::utils::LazyHash<typst::text::FontBook> {
+        match &self.fonts {
+            BotoxFonts::Default => &DEFAULT_FONT_BOOK,
+            BotoxFonts::Custom { book, .. } => book,
+        }
+    }
+
+    fn main(&self) -> typst::syntax::FileId {
+        self.main_id
+    }
+
+    fn source(&self, id: typst::syntax::FileId) -> typst::diag::FileResult<typst::syntax::Source> {
+        if id == self.main_id {
+            return Ok(self.main_source.clone());
+        }
         let vpath = id.vpath();
         let rel_path = Path::new(vpath.get_without_slash());
         let abs_candidate = Path::new(vpath.get_with_slash());
 
         if abs_candidate.is_absolute()
             && let Ok(content) = std::fs::read_to_string(abs_candidate) {
-                return Ok(std::borrow::Cow::Owned(typst::syntax::Source::new(id, content)));
+                return Ok(typst::syntax::Source::new(id, content));
             }
 
         let rel_cand = self.resource_dir.join(rel_path);
         if let Ok(content) = std::fs::read_to_string(&rel_cand) {
-            return Ok(std::borrow::Cow::Owned(typst::syntax::Source::new(id, content)));
+            return Ok(typst::syntax::Source::new(id, content));
         }
 
         if let Ok(content) = std::fs::read_to_string(rel_path) {
-            return Ok(std::borrow::Cow::Owned(typst::syntax::Source::new(id, content)));
+            return Ok(typst::syntax::Source::new(id, content));
         }
 
         Err(typst::diag::FileError::NotFound(self.resource_dir.join(rel_path)))
+    }
+
+    fn file(&self, id: typst::syntax::FileId) -> typst::diag::FileResult<typst::foundations::Bytes> {
+        if id == self.main_id {
+            return Ok(typst::foundations::Bytes::new(self.main_source.text().as_bytes().to_vec()));
+        }
+        let vpath = id.vpath();
+        let rel_path = Path::new(vpath.get_without_slash());
+        let abs_candidate = Path::new(vpath.get_with_slash());
+
+        if abs_candidate.is_absolute()
+            && let Ok(bytes) = std::fs::read(abs_candidate) {
+                return Ok(typst::foundations::Bytes::new(bytes));
+            }
+
+        let rel_cand = self.resource_dir.join(rel_path);
+        if let Ok(bytes) = std::fs::read(&rel_cand) {
+            return Ok(typst::foundations::Bytes::new(bytes));
+        }
+
+        if let Ok(bytes) = std::fs::read(rel_path) {
+            return Ok(typst::foundations::Bytes::new(bytes));
+        }
+
+        Err(typst::diag::FileError::NotFound(self.resource_dir.join(rel_path)))
+    }
+
+    fn font(&self, id: usize) -> Option<typst::text::Font> {
+        match &self.fonts {
+            BotoxFonts::Default => DEFAULT_EMBEDDED_FONTS.get(id).cloned(),
+            BotoxFonts::Custom { fonts, .. } => fonts.get(id).cloned(),
+        }
+    }
+
+    fn today(&self, offset: Option<typst::foundations::Duration>) -> Option<typst::foundations::Datetime> {
+        let mut now = self.now;
+        if let Some(offset) = offset {
+            now += chrono::Duration::hours(offset.hours() as i64);
+        }
+        let date = now.date_naive();
+        use chrono::Datelike;
+        typst::foundations::Datetime::from_ymd(date.year(), (date.month0() + 1) as u8, (date.day0() + 1) as u8)
     }
 }
 
@@ -110,6 +166,20 @@ static LIBERTINE_FONTS: std::sync::LazyLock<Vec<typst::text::Font>> = std::sync:
     })
 });
 
+static DEFAULT_FONT_BOOK: std::sync::LazyLock<typst::utils::LazyHash<typst::text::FontBook>> =
+    std::sync::LazyLock::new(|| {
+        let mut book = typst::text::FontBook::new();
+        for f in DEFAULT_EMBEDDED_FONTS.iter() {
+            book.push(f.info().clone());
+        }
+        typst::utils::LazyHash::new(book)
+    });
+
+static DEFAULT_LIBRARY: std::sync::LazyLock<typst::utils::LazyHash<typst::Library>> =
+    std::sync::LazyLock::new(|| {
+        typst::utils::LazyHash::new(typst::Library::builder().build())
+    });
+
 fn is_embedded_font(name: &str) -> bool {
     let n = name.trim().trim_matches('"').trim_matches('\'').to_lowercase();
     n == "new computer modern"
@@ -119,14 +189,9 @@ fn is_embedded_font(name: &str) -> bool {
         || n.is_empty()
 }
 
-fn load_needed_fonts(typst_markup: &str) -> Vec<typst::text::Font> {
-    let mut fonts = DEFAULT_EMBEDDED_FONTS.clone();
-
-    // Check if Libertine/Biolinum is requested
+fn load_needed_fonts(typst_markup: &str) -> BotoxFonts {
     let lower_markup = typst_markup.to_ascii_lowercase();
-    if lower_markup.contains("libertin") || lower_markup.contains("biolinum") {
-        fonts.extend(LIBERTINE_FONTS.iter().cloned());
-    }
+    let has_libertine = lower_markup.contains("libertin") || lower_markup.contains("biolinum");
 
     // Check if custom fonts are referenced in typst_markup:
     // e.g. `font: "..."` or `font: ("...", "...")`
@@ -176,9 +241,22 @@ fn load_needed_fonts(typst_markup: &str) -> Vec<typst::text::Font> {
             }
     }
 
+    if !has_libertine && custom_fonts.is_empty() {
+        return BotoxFonts::Default;
+    }
+
+    let mut fonts = DEFAULT_EMBEDDED_FONTS.clone();
+    if has_libertine {
+        fonts.extend(LIBERTINE_FONTS.iter().cloned());
+    }
+
     if !custom_fonts.is_empty() {
-        let mut db = fontdb::Database::new();
-        db.load_system_fonts();
+        static SYSTEM_FONTS_DB: std::sync::OnceLock<fontdb::Database> = std::sync::OnceLock::new();
+        let db = SYSTEM_FONTS_DB.get_or_init(|| {
+            let mut db = fontdb::Database::new();
+            db.load_system_fonts();
+            db
+        });
         for face in db.faces() {
             let matches_custom = face.families.iter().any(|(fam, _)| {
                 custom_fonts.iter().any(|cf| fam.eq_ignore_ascii_case(cf))
@@ -197,20 +275,25 @@ fn load_needed_fonts(typst_markup: &str) -> Vec<typst::text::Font> {
         }
     }
 
-    fonts
+    let mut book = typst::text::FontBook::new();
+    for f in &fonts {
+        book.push(f.info().clone());
+    }
+    BotoxFonts::Custom {
+        fonts,
+        book: typst::utils::LazyHash::new(book),
+    }
 }
 
 fn format_compilation_error(
-    e: &typst_as_lib::TypstAsLibError,
+    diags: &[typst::diag::SourceDiagnostic],
     typst_markup: &str,
     markdown_source: Option<&str>,
     source_filename: Option<&str>,
 ) -> String {
-    match e {
-        typst_as_lib::TypstAsLibError::TypstSource(diags) => {
-            let source = typst::syntax::Source::detached(typst_markup);
-            let mut msgs = Vec::new();
-            for d in diags {
+    let source = typst::syntax::Source::detached(typst_markup);
+    let mut msgs = Vec::new();
+    for d in diags {
                 let mut msg = d.message.to_string();
                 let range = match d.span.get() {
                     typst::syntax::DiagSpanKind::Number { num, sub_range, .. } => {
@@ -415,9 +498,6 @@ fn format_compilation_error(
             } else {
                 msgs.join("\n")
             }
-        }
-        _ => format!("Compilation error: {e}"),
-    }
 }
 
 pub fn compile_typst(
@@ -439,25 +519,31 @@ pub fn compile_typst_with_source(
     let fonts = load_needed_fonts(typst_markup);
     let t_fonts = t0.elapsed();
 
-    let t1 = std::time::Instant::now();
     let res_dir = resource_dir
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    let engine = TypstEngine::builder()
-        .main_file(typst_markup)
-        .fonts(fonts)
-        .add_file_resolver(BotoxFileResolver { resource_dir: res_dir })
-        .build();
-    let t_builder = t1.elapsed();
+    let t1 = std::time::Instant::now();
+    let main_source = typst::syntax::Source::detached(typst_markup.to_string());
+    let world = BotoxWorld {
+        main_id: main_source.id(),
+        main_source,
+        resource_dir: res_dir,
+        fonts,
+        now: chrono::Utc::now(),
+    };
+    let t_world = t1.elapsed();
 
     let t2 = std::time::Instant::now();
-    let compilation_result = engine.compile();
+    let typst::diag::Warned { output, warnings: _ } = typst::compile(&world);
     let t_compile = t2.elapsed();
 
-    let doc: typst_layout::PagedDocument = compilation_result.output.map_err(|e| {
-        let _ = std::fs::write("/tmp/debug_fail.typ", typst_markup);
-        format_compilation_error(&e, typst_markup, markdown_source, source_filename)
+    let doc: typst_layout::PagedDocument = output.map_err(|diags| {
+        if std::env::var("BOTOX_DEBUG").is_ok() {
+            let debug_path = crate::diagrams::get_cache_dir().join("debug_fail.typ");
+            let _ = std::fs::write(debug_path, typst_markup);
+        }
+        format_compilation_error(&diags, typst_markup, markdown_source, source_filename)
     })?;
 
     if output_path.as_os_str() == "-" {
@@ -499,37 +585,34 @@ pub fn compile_typst_with_source(
         out
     }
 
-    fn frame_has_pause_step(frame: &typst_library::layout::Frame) -> bool {
-        for (_, item) in frame.items() {
-            match item {
-                typst_library::layout::FrameItem::Text(text_item) => {
-                    if text_item.text.contains("botox-pause-step") {
-                        return true;
-                    }
-                }
-                typst_library::layout::FrameItem::Group(group)
-                    if frame_has_pause_step(&group.frame) => {
-                        return true;
-                    }
-                _ => {}
-            }
-        }
-        false
+    struct PageWalkContext<'a> {
+        page_idx: usize,
+        page_height: f64,
+        check_pause: bool,
+        text_out: &'a mut String,
+        is_pause_out: &'a mut bool,
+        headings_out: &'a mut Vec<BotoxHeadingInfo>,
     }
 
-    fn extract_text_layer(
+    fn walk_frame_data(
         frame: &typst_library::layout::Frame,
-        parent_ts: typst_library::layout::Transform,
-        out: &mut String,
+        ts: typst_library::layout::Transform,
+        ctx: &mut PageWalkContext<'_>,
     ) {
         for (point, item) in frame.items() {
-            let item_ts = parent_ts.pre_concat(typst_library::layout::Transform::translate(point.x, point.y));
+            let item_ts = ts.pre_concat(typst_library::layout::Transform::translate(point.x, point.y));
             match item {
                 typst_library::layout::FrameItem::Text(text_item) => {
                     let text = text_item.text.as_str();
-                    if text.trim().is_empty() || text.contains("botox-pause-step") {
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
                         continue;
                     }
+                    if ctx.check_pause && text.contains("botox-pause-step") {
+                        *ctx.is_pause_out = true;
+                        continue;
+                    }
+
                     let x = item_ts.tx.to_pt();
                     let y = item_ts.ty.to_pt();
                     let size = (text_item.size.to_pt() * item_ts.sy.get()).abs();
@@ -538,63 +621,26 @@ pub fn compile_typst_with_source(
 
                     use std::fmt::Write;
                     let _ = write!(
-                        out,
+                        ctx.text_out,
                         r#"<text x="{x:.2}" y="{y:.2}" font-size="{size:.2}pt" textLength="{width:.2}" lengthAdjust="spacingAndGlyphs" fill="transparent" stroke="none" style="cursor: text; user-select: text;">{escaped}</text>"#
                     );
-                }
-                typst_library::layout::FrameItem::Group(group) => {
-                    let group_ts = item_ts.pre_concat(group.transform);
-                    extract_text_layer(&group.frame, group_ts, out);
-                }
-                _ => {}
-            }
-        }
-    }
 
-    fn inject_text_layer(mut svg: String, frame: &typst_library::layout::Frame) -> String {
-        let mut text_elements = String::new();
-        extract_text_layer(frame, typst_library::layout::Transform::identity(), &mut text_elements);
-        if !text_elements.is_empty()
-            && let Some(idx) = svg.rfind("</svg>") {
-                svg.insert_str(
-                    idx,
-                    &format!(r#"<g class="botox-text-layer" style="user-select: text; -webkit-user-select: text; pointer-events: auto;">{text_elements}</g>"#),
-                );
-            }
-        svg
-    }
-
-    fn extract_frame_headings(
-        frame: &typst_library::layout::Frame,
-        parent_ts: typst_library::layout::Transform,
-        page_index: usize,
-        page_height: f64,
-        out: &mut Vec<BotoxHeadingInfo>,
-    ) {
-        for (point, item) in frame.items() {
-            let item_ts = parent_ts.pre_concat(typst_library::layout::Transform::translate(point.x, point.y));
-            match item {
-                typst_library::layout::FrameItem::Text(text_item) => {
-                    let y = item_ts.ty.to_pt();
-                    let size = (text_item.size.to_pt() * item_ts.sy.get()).abs();
-                    let is_heading = size >= 12.8;
-                    let trimmed = text_item.text.trim();
-                    if is_heading && !trimmed.is_empty() {
-                        let cur_ratio = (y / page_height).clamp(0.0, 1.0);
-                        if let Some(last) = out.last_mut() {
-                            if last.page_index == page_index && (last.y_ratio - cur_ratio).abs() < 0.008 {
+                    if size >= 12.8 {
+                        let cur_ratio = (y / ctx.page_height).clamp(0.0, 1.0);
+                        if let Some(last) = ctx.headings_out.last_mut() {
+                            if last.page_index == ctx.page_idx && (last.y_ratio - cur_ratio).abs() < 0.008 {
                                 last.text.push(' ');
                                 last.text.push_str(trimmed);
                             } else {
-                                out.push(BotoxHeadingInfo {
-                                    page_index,
+                                ctx.headings_out.push(BotoxHeadingInfo {
+                                    page_index: ctx.page_idx,
                                     text: trimmed.to_string(),
                                     y_ratio: cur_ratio,
                                 });
                             }
                         } else {
-                            out.push(BotoxHeadingInfo {
-                                page_index,
+                            ctx.headings_out.push(BotoxHeadingInfo {
+                                page_index: ctx.page_idx,
                                 text: trimmed.to_string(),
                                 y_ratio: cur_ratio,
                             });
@@ -603,11 +649,55 @@ pub fn compile_typst_with_source(
                 }
                 typst_library::layout::FrameItem::Group(group) => {
                     let group_ts = item_ts.pre_concat(group.transform);
-                    extract_frame_headings(&group.frame, group_ts, page_index, page_height, out);
+                    walk_frame_data(&group.frame, group_ts, ctx);
                 }
                 _ => {}
             }
         }
+    }
+
+    fn process_page_vector(
+        page: &typst_layout::Page,
+        page_idx: usize,
+        svg_opts: &typst_svg::SvgOptions,
+        check_pause: bool,
+    ) -> (String, bool, Vec<BotoxHeadingInfo>) {
+        let mut text_elements = String::new();
+        let mut is_pause = false;
+        let mut headings = Vec::new();
+        let page_height = page.frame.height().to_pt().max(1.0);
+
+        let mut ctx = PageWalkContext {
+            page_idx,
+            page_height,
+            check_pause,
+            text_out: &mut text_elements,
+            is_pause_out: &mut is_pause,
+            headings_out: &mut headings,
+        };
+
+        walk_frame_data(
+            &page.frame,
+            typst_library::layout::Transform::identity(),
+            &mut ctx,
+        );
+
+        let mut svg = typst_svg::svg(page, svg_opts);
+        if !text_elements.is_empty()
+            && let Some(idx) = svg.rfind("</svg>") {
+                svg.insert_str(
+                    idx,
+                    &format!(r#"<g class="botox-text-layer" style="user-select: text; -webkit-user-select: text; pointer-events: auto;">{text_elements}</g>"#),
+                );
+            }
+
+        if is_pause
+            && let Some(pos) = svg.find("<svg") {
+                let insert_pos = pos + 4;
+                svg.insert_str(insert_pos, r#" data-pause-step="true" class="pause-step""#);
+            }
+
+        (svg, is_pause, headings)
     }
 
     match ext.as_str() {
@@ -615,7 +705,7 @@ pub fn compile_typst_with_source(
             let svg_opts = typst_svg::SvgOptions::default();
             let svg_content = if doc.pages().len() <= 1 {
                 if let Some(first_page) = doc.pages().first() {
-                    inject_text_layer(typst_svg::svg(first_page, &svg_opts), &first_page.frame)
+                    process_page_vector(first_page, 0, &svg_opts, false).0
                 } else {
                     String::from("<svg></svg>")
                 }
@@ -626,39 +716,64 @@ pub fn compile_typst_with_source(
                 .map_err(|e| format!("Failed to write output SVG file '{}': {e}", output_path.display()))?;
         }
         "json" => {
+            let t_svg_start = std::time::Instant::now();
             let svg_opts = typst_svg::SvgOptions::default();
-            let mut pause_indices = Vec::new();
-            let mut pages: Vec<String> = Vec::with_capacity(doc.pages().len());
-
-            for (page_idx, p) in doc.pages().iter().enumerate() {
-                let is_pause = frame_has_pause_step(&p.frame);
-                if is_pause {
-                    pause_indices.push(page_idx);
-                }
-                let mut svg = inject_text_layer(typst_svg::svg(p, &svg_opts), &p.frame);
-                if is_pause
-                    && let Some(pos) = svg.find("<svg") {
-                        let insert_pos = pos + 4;
-                        svg.insert_str(insert_pos, r#" data-pause-step="true" class="pause-step""#);
-                    }
-                pages.push(svg);
-            }
-
-            let mut headings = Vec::new();
-            for (page_idx, page) in doc.pages().iter().enumerate() {
-                let page_height = page.frame.height().to_pt().max(1.0);
-                extract_frame_headings(
-                    &page.frame,
-                    typst_library::layout::Transform::identity(),
-                    page_idx,
-                    page_height,
-                    &mut headings,
-                );
-            }
 
             let is_slides = doc.pages().first().map(|p| {
                 p.frame.width().to_pt() > p.frame.height().to_pt()
             }).unwrap_or(false);
+
+            let num_pages = doc.pages().len();
+            let (pages, pause_indices, headings) = if num_pages <= 1 {
+                let mut pages = Vec::with_capacity(num_pages);
+                let mut pause_indices = Vec::new();
+                let mut headings = Vec::new();
+                for (idx, p) in doc.pages().iter().enumerate() {
+                    let (svg, is_pause, h) = process_page_vector(p, idx, &svg_opts, true);
+                    if is_pause {
+                        pause_indices.push(idx);
+                    }
+                    pages.push(svg);
+                    headings.extend(h);
+                }
+                (pages, pause_indices, headings)
+            } else {
+                let num_threads = std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(4)
+                    .min(num_pages);
+                let chunk_size = num_pages.div_ceil(num_threads);
+                let pages_slice = doc.pages();
+                let results: Vec<_> = std::thread::scope(|s| {
+                    let mut handles = Vec::new();
+                    for (chunk_idx, chunk) in pages_slice.chunks(chunk_size).enumerate() {
+                        let start_page_idx = chunk_idx * chunk_size;
+                        let svg_opts_ref = &svg_opts;
+                        handles.push(s.spawn(move || {
+                            let mut chunk_res = Vec::with_capacity(chunk.len());
+                            for (rel_idx, page) in chunk.iter().enumerate() {
+                                let abs_idx = start_page_idx + rel_idx;
+                                chunk_res.push((abs_idx, process_page_vector(page, abs_idx, svg_opts_ref, true)));
+                            }
+                            chunk_res
+                        }));
+                    }
+                    handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+                });
+
+                let mut pages = Vec::with_capacity(num_pages);
+                let mut pause_indices = Vec::new();
+                let mut headings = Vec::new();
+                for (abs_idx, (svg, is_pause, h)) in results {
+                    if is_pause {
+                        pause_indices.push(abs_idx);
+                    }
+                    pages.push(svg);
+                    headings.extend(h);
+                }
+                (pages, pause_indices, headings)
+            };
+            let t_svg_pages = t_svg_start.elapsed();
 
             let output_struct = BotoxPagesOutput {
                 num_pages: pages.len(),
@@ -667,22 +782,57 @@ pub fn compile_typst_with_source(
                 is_slides,
                 pause_indices,
             };
+            let t_ser_start = std::time::Instant::now();
             let json_str = serde_json::to_string(&output_struct)
                 .map_err(|e| format!("Failed to serialize pages to JSON: {e}"))?;
+            let t_ser = t_ser_start.elapsed();
+
+            let t_write_start = std::time::Instant::now();
             std::fs::write(output_path, json_str)
                 .map_err(|e| format!("Failed to write output JSON file '{}': {e}", output_path.display()))?;
+            let t_write = t_write_start.elapsed();
+
+            if std::env::var("BOTOX_PROFILE").is_ok() {
+                eprintln!("[PROFILE:JSON] load_fonts: {t_fonts:.2?}, world_init: {t_world:.2?}, typst_compile: {t_compile:.2?}, svg_pages: {t_svg_pages:.2?}, serde_json: {t_ser:.2?}, write_fs: {t_write:.2?}");
+            }
         }
         "html" | "htm" => {
             let svg_opts = typst_svg::SvgOptions::default();
-            let pages: Vec<String> = doc
-                .pages()
-                .iter()
-                .map(|p| inject_text_layer(typst_svg::svg(p, &svg_opts), &p.frame))
-                .collect();
-
             let is_presentation = doc.pages().first().map(|p| {
                 p.frame.width().to_pt() > p.frame.height().to_pt()
             }).unwrap_or(false);
+
+            let pages_slice = doc.pages();
+            let pages: Vec<String> = if pages_slice.len() <= 1 {
+                pages_slice
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, p)| process_page_vector(p, idx, &svg_opts, is_presentation).0)
+                    .collect()
+            } else {
+                let num_threads = std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(4)
+                    .min(pages_slice.len());
+                let chunk_size = pages_slice.len().div_ceil(num_threads);
+                std::thread::scope(|s| {
+                    let mut handles = Vec::new();
+                    for (chunk_idx, chunk) in pages_slice.chunks(chunk_size).enumerate() {
+                        let start_idx = chunk_idx * chunk_size;
+                        let svg_opts_ref = &svg_opts;
+                        handles.push(s.spawn(move || {
+                            chunk
+                                .iter()
+                                .enumerate()
+                                .map(|(rel_idx, page)| {
+                                    process_page_vector(page, start_idx + rel_idx, svg_opts_ref, is_presentation).0
+                                })
+                                .collect::<Vec<_>>()
+                        }));
+                    }
+                    handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+                })
+            };
 
             let html_content = if is_presentation {
                 render_slides_html(&pages)
@@ -705,7 +855,7 @@ pub fn compile_typst_with_source(
             let t_write = t_write_start.elapsed();
 
             if std::env::var("BOTOX_PROFILE").is_ok() {
-                eprintln!("[PROFILE] load_fonts: {t_fonts:.2?}, builder: {t_builder:.2?}, typst_compile: {t_compile:.2?}, pdf_export: {t_pdf:.2?}, write_fs: {t_write:.2?}");
+                eprintln!("[PROFILE] load_fonts: {t_fonts:.2?}, world_init: {t_world:.2?}, typst_compile: {t_compile:.2?}, pdf_export: {t_pdf:.2?}, write_fs: {t_write:.2?}");
             }
         }
     }
@@ -1205,15 +1355,18 @@ pub fn compile_typst_to_pdf_bytes(
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    let engine = TypstEngine::builder()
-        .main_file(typst_markup)
-        .fonts(fonts)
-        .add_file_resolver(BotoxFileResolver { resource_dir: res_dir })
-        .build();
+    let main_source = typst::syntax::Source::detached(typst_markup.to_string());
+    let world = BotoxWorld {
+        main_id: main_source.id(),
+        main_source,
+        resource_dir: res_dir,
+        fonts,
+        now: chrono::Utc::now(),
+    };
 
-    let compilation_result = engine.compile();
-    let doc: typst_layout::PagedDocument = compilation_result.output.map_err(|e| {
-        format_compilation_error(&e, typst_markup, None, None)
+    let typst::diag::Warned { output, warnings: _ } = typst::compile(&world);
+    let doc: typst_layout::PagedDocument = output.map_err(|diags| {
+        format_compilation_error(&diags, typst_markup, None, None)
     })?;
 
     typst_pdf::pdf(&doc, &typst_pdf::PdfOptions::default())

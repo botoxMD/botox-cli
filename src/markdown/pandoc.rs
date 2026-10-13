@@ -1,14 +1,14 @@
-use super::escapes::escape_typst_text;
 
 pub fn clean_command_title(mut rest: &str) -> Option<String> {
     rest = rest.trim();
     if rest.starts_with(':') {
         rest = rest[1..].trim();
     }
-    if (rest.starts_with('"') && rest.ends_with('"')) || (rest.starts_with('\'') && rest.ends_with('\'')) {
-        rest = &rest[1..rest.len() - 1].trim();
-    } else if rest.starts_with('{') && rest.ends_with('}') {
-        rest = &rest[1..rest.len() - 1].trim();
+    if (rest.starts_with('"') && rest.ends_with('"'))
+        || (rest.starts_with('\'') && rest.ends_with('\''))
+        || (rest.starts_with('{') && rest.ends_with('}'))
+    {
+        rest = rest[1..rest.len() - 1].trim();
     }
     if rest.is_empty() {
         None
@@ -98,28 +98,44 @@ pub fn parse_ref_line(line: &str) -> Option<Option<String>> {
 }
 
 pub fn normalize_dimension(val: &str) -> Option<String> {
-    let trimmed = val.trim().trim_matches(|c| c == '"' || c == '\'');
-    if trimmed.is_empty() {
+    let s = val.trim().trim_matches(|c| c == '"' || c == '\'');
+    if s.is_empty() {
         return None;
     }
-    if let Some(stripped) = trimmed.strip_prefix("0.") {
-        if let Some(rest) = stripped.strip_suffix(r"\linewidth")
-            .or_else(|| stripped.strip_suffix(r"\textwidth"))
-            .or_else(|| stripped.strip_suffix("\\columnwidth"))
-        {
-            let num_str = format!("0.{}", rest.trim());
-            if let Ok(pct) = num_str.parse::<f64>() {
-                return Some(format!("{}%", (pct * 100.0).round() as i64));
-            }
-        }
-    }
-    if trimmed.ends_with(r"\linewidth")
-        || trimmed.ends_with(r"\textwidth")
-        || trimmed.ends_with("\\columnwidth")
-    {
+
+    if s == r"\linewidth" || s == r"\textwidth" || s == "\\linewidth" || s == "\\textwidth" {
         return Some("100%".to_string());
     }
-    Some(trimmed.to_string())
+
+    if let Some(rest) = s.strip_suffix(r"\linewidth").or_else(|| s.strip_suffix(r"\textwidth"))
+        && let Ok(factor) = rest.trim().parse::<f64>() {
+            return Some(format!("{}%", (factor * 100.0).round() as i64));
+        }
+
+    if let Some(px_str) = s.strip_suffix("px")
+        && let Ok(px) = px_str.trim().parse::<f64>() {
+            return Some(format!("{}pt", (px * 0.75).round() as i64));
+        }
+
+    if s.ends_with('%')
+        || s.ends_with("cm")
+        || s.ends_with("mm")
+        || s.ends_with("in")
+        || s.ends_with("pt")
+        || s.ends_with("em")
+    {
+        return Some(s.to_string());
+    }
+
+    if let Ok(n) = s.parse::<f64>() {
+        if n <= 1.0 && n > 0.0 {
+            return Some(format!("{}%", (n * 100.0).round() as i64));
+        } else {
+            return Some(format!("{s}pt"));
+        }
+    }
+
+    Some(s.to_string())
 }
 
 pub fn parse_image_attributes(s: &str) -> (Option<String>, Option<String>, Option<String>) {

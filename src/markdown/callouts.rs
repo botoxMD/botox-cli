@@ -8,7 +8,7 @@ pub fn parse_callout_header(rest: &str) -> (String, String) {
         let q = after_t.chars().next().unwrap_or('"');
         if q == '"' || q == '\'' {
             if let Some(end_q) = after_t[1..].find(q) {
-                title = after_t[1..=end_q].to_string();
+                title = after_t[1..1 + end_q].to_string();
             }
         } else {
             title = after_t.split_whitespace().next().unwrap_or("").to_string();
@@ -52,4 +52,24 @@ pub fn parse_github_callout_header(s: &str) -> Option<(String, String)> {
     };
     let title = rest[end_bracket + 1..].trim();
     Some((kind.to_string(), title.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_callout_header_empty_title() {
+        let (kind, title) = parse_callout_header(r#"{.note title=""}"#);
+        assert_eq!(kind, "note");
+        assert_eq!(title, "");
+
+        let (kind, title) = parse_callout_header("{.warning title=''}");
+        assert_eq!(kind, "warning");
+        assert_eq!(title, "");
+
+        let (kind, title) = parse_callout_header(r#"{.tip title="Custom Tip"}"#);
+        assert_eq!(kind, "tip");
+        assert_eq!(title, "Custom Tip");
+    }
 }

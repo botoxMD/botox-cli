@@ -821,8 +821,11 @@ fn compile_once(
         kroki_url,
         resource_dir: doc_dir,
     };
+    let t_md_start = std::time::Instant::now();
     let body_typst = markdown::markdown_to_typst_with_options(body_md, &md_opts);
+    let t_md = t_md_start.elapsed();
 
+    let t_wrap_start = std::time::Instant::now();
     let typst_markup = if is_slides {
         slides::wrap_slides(&body_typst, &fm, &slides_config, cli_author, cli_theme)
     } else {
@@ -836,6 +839,7 @@ fn compile_once(
             cli_theme,
         )
     };
+    let t_wrap = t_wrap_start.elapsed();
 
     let start = std::time::Instant::now();
     let resource_dir = doc_dir;
@@ -854,6 +858,11 @@ fn compile_once(
         Some(src_filename),
     )?;
     let duration = start.elapsed();
+
+    if std::env::var("BOTOX_PROFILE").is_ok() {
+        eprintln!("[PROFILE:PIPELINE] markdown_transpile: {t_md:.2?}, template_wrap: {t_wrap:.2?}, typst_backend: {duration:.2?}");
+    }
+
     Ok((is_slides, duration))
 }
 
