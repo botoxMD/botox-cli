@@ -1433,6 +1433,7 @@ pub fn markdown_to_typst_with_options(
     let mut in_table = false;
     let mut in_footnote_def = false;
     let mut references: Vec<(String, String)> = Vec::new();
+    let mut in_link = false;
     let mut current_link: Option<(String, String)> = None;
     let mut current_image: Option<(String, String)> = None;
     let mut current_heading: Option<(usize, String)> = None;
@@ -1692,6 +1693,7 @@ pub fn markdown_to_typst_with_options(
                         in_footnote_def = true;
                     }
                     Tag::Link { dest_url, .. } => {
+                        in_link = true;
                         let is_external = dest_url.starts_with("http://")
                             || dest_url.starts_with("https://")
                             || dest_url.starts_with("ftp://");
@@ -1823,20 +1825,22 @@ pub fn markdown_to_typst_with_options(
                         if in_table { current_cell.push(']'); } else { typst.push(']'); }
                     }
                     TagEnd::Link => {
+                        in_link = false;
                         if in_table { current_cell.push(']'); } else { typst.push(']'); }
                         if let Some((url, link_text)) = current_link.take() {
-                            let idx = if let Some(pos) = references.iter().position(|(u, _)| u == &url) {
-                                pos + 1
-                            } else {
-                                references.push((url.clone(), link_text.trim().to_string()));
-                                references.len()
-                            };
-
                             let trimmed = link_text.trim();
+                            // Do not append citation bracket [1] if link only wraps an image badge or is empty
+                            let is_image_only = trimmed.is_empty() || trimmed.contains("#image(");
                             let already_citation = (trimmed.starts_with('[') && trimmed.ends_with(']'))
                                 || trimmed.parse::<usize>().is_ok();
 
-                            if !already_citation {
+                            if !is_image_only && !already_citation {
+                                let idx = if let Some(pos) = references.iter().position(|(u, _)| u == &url) {
+                                    pos + 1
+                                } else {
+                                    references.push((url.clone(), trimmed.to_string()));
+                                    references.len()
+                                };
                                 let cite_code = format!(" #link(<bib-{idx}>)[\\[{idx}\\]]");
                                 if in_table {
                                     current_cell.push_str(&cite_code);
@@ -1954,8 +1958,28 @@ pub fn markdown_to_typst_with_options(
 
                             if in_table {
                                 current_cell.push_str(&format!("#{img_call}"));
-                            } else if current_link.is_some() {
-                                typst.push_str(&format!("#{img_call}"));
+                            } else if in_link {
+                                let alt_attr = if !alt.is_empty() {
+                                    format!(", alt: \"{}\"", alt.replace('\\', "/").replace('"', "\\\""))
+                                } else {
+                                    String::new()
+                                };
+                                let mut link_img_args = vec![format!("\"{final_img_path}\"{alt_attr}")];
+                                if let Some(ref w) = width {
+                                    link_img_args.push(format!("width: {w}"));
+                                }
+                                if let Some(ref h) = height {
+                                    link_img_args.push(format!("height: {h}"));
+                                } else if width.is_none() {
+                                    // Default height for inline linked badges to match surrounding text line
+                                    link_img_args.push("height: 1.35em".to_string());
+                                }
+                                let link_img_call = format!("image({})", link_img_args.join(", "));
+                                let boxed_img = format!("#box(baseline: 20%, {link_img_call}) ");
+                                typst.push_str(&boxed_img);
+                                if let Some((_, ref mut l_text)) = current_link {
+                                    l_text.push_str(&boxed_img);
+                                }
                             } else if is_slides {
                                 if alt == "bg" || alt.starts_with("bg ") {
                                     typst.push_str(&format!("\n#place(top + left, dx: 0pt, dy: 0pt, image(\"{final_img_path}\", width: 100%, height: 100%, fit: \"cover\"))\n\n"));
@@ -2589,8 +2613,7 @@ Check [link](https://example.com/api?q="quoted") here.
 
     #[test]
     fn test_remote_image_badge_caching_and_fallback() {
-        // Test remote badge image inside link (the shields.io pattern)
-        let md = "[![Java](https://img.shields.io/badge/Java-25-ED8B00?logo=openjdk&logoColor=white)](https://openjdk.org/)";
+        let md = "[![Java](https://img.shields.io/badge/Java-25-ED8B00?logo=openjdk&logoColor=white)](https://openjdk.org/)\n[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)\n[![picocli](https://img.shields.io/badge/picocli-4.7.7-blue.svg)](https://picocli.info/)";
         let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
         assert!(typst.contains("#link(\"https://openjdk.org/\")["));
         assert!(typst.contains("#image(\"") || typst.contains("Java"));
