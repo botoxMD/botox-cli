@@ -4,7 +4,7 @@ toc: true
 toc-depth: 3
 number-sections: true
 papersize: a4
-theme: academic
+theme: elegant
 bibliography: true
 exclude-references:
   - "github.com"
