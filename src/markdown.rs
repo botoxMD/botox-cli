@@ -1918,6 +1918,27 @@ pub fn markdown_to_typst_with_options(
                                     ));
                                     continue;
                                 }
+                            } else if url.starts_with("http://") || url.starts_with("https://") {
+                                match crate::diagrams::fetch_and_cache_remote_image(&url) {
+                                    Ok(cached_path) => cached_path.to_string_lossy().replace('\\', "/"),
+                                    Err(_) => {
+                                        // Network unavailable or remote image failed:
+                                        // Gracefully render alt text or placeholder without crashing Typst
+                                        let fallback_text = if !alt.is_empty() {
+                                            escape_typst_text(alt)
+                                        } else {
+                                            escape_typst_text(&url)
+                                        };
+                                        if in_table {
+                                            current_cell.push_str(&fallback_text);
+                                        } else if current_link.is_some() {
+                                            typst.push_str(&fallback_text);
+                                        } else {
+                                            typst.push_str(&format!("[{fallback_text}]"));
+                                        }
+                                        continue;
+                                    }
+                                }
                             } else {
                                 url.replace('\\', "/").replace('"', "\\\"")
                             };
@@ -2564,6 +2585,21 @@ Check [link](https://example.com/api?q="quoted") here.
         let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
         assert!(typst.contains("#figure(image(\"figures/arch.png\"), caption: [Architecture Pipeline])"));
         assert!(typst.contains("#align(center)[#image(\"logo.svg\")]"));
+    }
+
+    #[test]
+    fn test_remote_image_badge_caching_and_fallback() {
+        // Test remote badge image inside link (the shields.io pattern)
+        let md = "[![Java](https://img.shields.io/badge/Java-25-ED8B00?logo=openjdk&logoColor=white)](https://openjdk.org/)";
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
+        assert!(typst.contains("#link(\"https://openjdk.org/\")["));
+        assert!(typst.contains("#image(\"") || typst.contains("Java"));
+
+        // Test unreachable or invalid remote URL falls back gracefully without crashing Typst
+        let md_fallback = "![Alt Missing](http://127.0.0.1:9/nonexistent-botox-test-image.png)";
+        let typst_fallback = markdown_to_typst(md_fallback, false, false, "en", None, None, None, None, None);
+        assert!(!typst_fallback.contains("http://127.0.0.1:9/nonexistent-botox-test-image.png"));
+        assert!(typst_fallback.contains("[Alt Missing]"));
     }
 
     #[test]

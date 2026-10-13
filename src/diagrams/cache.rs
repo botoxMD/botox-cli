@@ -19,6 +19,124 @@ pub fn get_cache_dir() -> PathBuf {
     std::env::temp_dir().join("botox_diagrams")
 }
 
+/// Determine the local cache directory for remote web images and badges.
+pub fn get_image_cache_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("BOTOX_IMAGE_CACHE_DIR") {
+        return PathBuf::from(dir);
+    }
+    if let Ok(dir) = std::env::var("BOTOX_CACHE_DIR") {
+        return PathBuf::from(dir).join("images");
+    }
+    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+        return PathBuf::from(xdg).join("botox").join("images");
+    }
+    if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+        return PathBuf::from(local_appdata).join("botox").join("images");
+    }
+    if let Some(home) = crate::config::dirs_home() {
+        return home.join(".cache").join("botox").join("images");
+    }
+    std::env::temp_dir().join("botox_images")
+}
+
+/// Detect image file extension from response Content-Type or byte magic signatures.
+pub fn detect_image_extension(content_type: Option<&str>, bytes: &[u8]) -> &'static str {
+    if let Some(ct) = content_type {
+        let ct_lower = ct.to_ascii_lowercase();
+        if ct_lower.contains("svg") {
+            return "svg";
+        } else if ct_lower.contains("png") {
+            return "png";
+        } else if ct_lower.contains("jpeg") || ct_lower.contains("jpg") {
+            return "jpg";
+        } else if ct_lower.contains("webp") {
+            return "webp";
+        } else if ct_lower.contains("gif") {
+            return "gif";
+        }
+    }
+
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "png"
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        "jpg"
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        "gif"
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "webp"
+    } else {
+        "svg"
+    }
+}
+
+/// Fetch a remote image/badge over HTTP/HTTPS and save it to the local cache directory.
+pub fn fetch_and_cache_remote_image(url: &str) -> Result<PathBuf, String> {
+    let cache_dir = get_image_cache_dir();
+    fs::create_dir_all(&cache_dir).map_err(|e| format!("Failed to create image cache dir: {e}"))?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(url.as_bytes());
+    let hash: String = hasher.finalize().iter().map(|b| format!("{:02x}", b)).collect();
+
+    // Check if an existing cached file exists for this hash with any recognized extension
+    for ext in &["svg", "png", "jpg", "jpeg", "webp", "gif"] {
+        let candidate = cache_dir.join(format!("{hash}.{ext}"));
+        if candidate.is_file()
+            && let Ok(meta) = fs::metadata(&candidate)
+            && meta.len() > 0 {
+                return Ok(candidate);
+            }
+    }
+
+    let client = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_millis(5000)))
+        .build()
+        .new_agent();
+
+    let mut resp = client
+        .get(url)
+        .header("User-Agent", "botox/0.1")
+        .call()
+        .map_err(|e| format!("Failed to fetch remote image `{url}`: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("Remote image server returned HTTP {status} for `{url}`"));
+    }
+
+    let content_type = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+    let body_bytes = resp
+        .body_mut()
+        .read_to_vec()
+        .map_err(|e| format!("Failed to read remote image `{url}` body: {e}"))?;
+
+    if body_bytes.is_empty() {
+        return Err(format!("Remote image `{url}` returned empty content"));
+    }
+
+    let ext = detect_image_extension(content_type.as_deref(), &body_bytes);
+    let final_bytes = if ext == "svg" {
+        let content_str = String::from_utf8_lossy(&body_bytes);
+        sanitize_svg_for_typesetting(&content_str).into_bytes()
+    } else {
+        body_bytes
+    };
+
+    let cache_file = cache_dir.join(format!("{hash}.{ext}"));
+    let tmp_file = cache_dir.join(format!("{hash}.{}.tmp", std::process::id()));
+
+    if let Err(e) = fs::write(&tmp_file, &final_bytes) {
+        return Err(format!("Failed to write remote image to cache: {e}"));
+    }
+    if let Err(e) = fs::rename(&tmp_file, &cache_file) {
+        let _ = fs::remove_file(&tmp_file);
+        fs::write(&cache_file, &final_bytes)
+            .map_err(|e2| format!("Failed to write remote image cache: {e2} (rename failed: {e})"))?;
+    }
+
+    Ok(cache_file)
+}
+
 /// Minimize and canonicalize diagram source text so that stylistic variations
 /// (such as added newlines, blank lines, indentation changes, CRLF vs LF, or comment lines)
 /// do not alter the cache hash or trigger unnecessary Kroki requests.

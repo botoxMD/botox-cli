@@ -5,7 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub use cache::{
-    canonicalize_diagram_source, compute_diagram_hash, get_cache_dir, sanitize_svg_for_typesetting,
+    canonicalize_diagram_source, compute_diagram_hash, detect_image_extension,
+    fetch_and_cache_remote_image, get_cache_dir, get_image_cache_dir, sanitize_svg_for_typesetting,
 };
 pub use kroki::{fetch_kroki, fetch_mermaid_ink};
 
