@@ -278,8 +278,18 @@ pub fn markdown_to_typst_with_options(
                                             typst.push_str(&format!("\n#align(center)[#{img_call}]\n\n"));
                                         }
                                     }
-                                    Err(_) => {
-                                        let title = "Diagram rendering failed: Kroki unreachable";
+                                    Err(err) => {
+                                        let is_not_configured = err.contains("not configured");
+                                        let title = if is_not_configured {
+                                            "Diagram rendering requires Kroki configuration".to_string()
+                                        } else {
+                                            "Diagram rendering failed: Kroki unreachable".to_string()
+                                        };
+                                        let instruction = if is_not_configured {
+                                            "\nTo render this diagram, configure a Kroki server endpoint.\n\nYou can configure the public service (e.g. `kroki_url: https://kroki.io` or `https://demo.kroki.io`) or run a self-hosted instance (e.g. `http://localhost:8000`) in `botox.yaml`, document frontmatter, or via the `KROKI_ENDPOINT` environment variable.\n\n"
+                                        } else {
+                                            ""
+                                        };
                                         let raw_lang = &spec.diagram_type;
                                         let clean_code = if diag_code.ends_with('\n') {
                                             diag_code
@@ -298,7 +308,7 @@ pub fn markdown_to_typst_with_options(
                                         }
                                         let fence_str = "`".repeat((max_ticks + 1).max(3));
                                         typst.push_str(&format!(
-                                            "\n#botox_callout(\"warning\", \"{title}\")[\n{fence_str}{raw_lang}\n{clean_code}{fence_str}\n]\n\n"
+                                            "\n#botox_callout(\"warning\", \"{title}\")[\n{instruction}{fence_str}{raw_lang}\n{clean_code}{fence_str}\n]\n\n"
                                         ));
                                     }
                                 }
@@ -603,11 +613,25 @@ pub fn markdown_to_typst_with_options(
                                 if let Some(content) = resolve_file_content(&url, opts.resource_dir) {
                                     match crate::diagrams::render_diagram(diag_type, &content, opts.kroki_url) {
                                         Ok(cached_path) => cached_path.to_string_lossy().replace('\\', "/"),
-                                        Err(_) => {
+                                        Err(err) => {
+                                            let is_not_configured = err.contains("not configured");
+                                            let (title, message) = if is_not_configured {
+                                                (
+                                                    "Diagram rendering requires Kroki configuration".to_string(),
+                                                    format!(
+                                                        "To render referenced diagram `{}` (type `{}`), configure a Kroki server endpoint.\n\nYou can configure the public service (e.g. `kroki_url: https://kroki.io` or `https://demo.kroki.io`) or a self-hosted instance (e.g. `http://localhost:8000`) in `botox.yaml`, document frontmatter, or via the `KROKI_ENDPOINT` environment variable.",
+                                                        escape_typst_text(&url),
+                                                        diag_type
+                                                    ),
+                                                )
+                                            } else {
+                                                (
+                                                    format!("Diagram rendering failed: {}", escape_typst_text(&url)),
+                                                    format!("Could not render diagram file `{}` via Kroki: {err}", escape_typst_text(&url)),
+                                                )
+                                            };
                                             typst.push_str(&format!(
-                                                "\n#botox_callout(\"warning\", \"Diagram rendering failed: {}\")[\nCould not render diagram file `{}` via Kroki.\n]\n\n",
-                                                escape_typst_text(&url),
-                                                escape_typst_text(&url),
+                                                "\n#botox_callout(\"warning\", \"{title}\")[\n{message}\n]\n\n"
                                             ));
                                             continue;
                                         }
@@ -813,12 +837,37 @@ pub fn markdown_to_typst_with_options(
                     }
                 } else if html.contains("<!--botox:callout:end-->") {
                     typst.push_str("\n]\n\n");
-                } else if html.contains("pagebreak") || html.contains("page-break") || html.contains("newpage") {
-                    typst.push_str("\n#pagebreak()\n\n");
-                } else if html.contains("colbreak") || html.contains("columnbreak") || html.contains("column-break") {
-                    typst.push_str("\n#colbreak()\n\n");
-                } else if html.contains("<!--botox:pause-->") || html.contains("pause") {
+                } else if html.contains("<!--botox:pause-->")
+                    || html.trim() == "<!-- pause -->"
+                    || html.trim() == "<!--pause-->"
+                    || html.contains("class=\"pause\"")
+                    || html.contains("class='pause'")
+                {
                     typst.push_str("\n#botox_pause()\n\n");
+                } else if html.contains("<!--botox:colbreak-->")
+                    || html.trim() == "<!-- colbreak -->"
+                    || html.trim() == "<!--colbreak-->"
+                    || html.trim() == "<!-- columnbreak -->"
+                    || html.trim() == "<!--columnbreak-->"
+                    || html.contains("class=\"colbreak\"")
+                    || html.contains("class=\"columnbreak\"")
+                    || html.contains("class='colbreak'")
+                    || html.contains("class='columnbreak'")
+                {
+                    typst.push_str("\n#colbreak()\n\n");
+                } else if html.contains("<!--botox:pagebreak-->")
+                    || html.trim() == "<!-- pagebreak -->"
+                    || html.trim() == "<!--pagebreak-->"
+                    || html.trim() == "<!-- newpage -->"
+                    || html.trim() == "<!--newpage-->"
+                    || html.contains("page-break-after")
+                    || html.contains("page-break-before")
+                    || html.contains("class=\"pagebreak\"")
+                    || html.contains("class=\"newpage\"")
+                    || html.contains("class='pagebreak'")
+                    || html.contains("class='newpage'")
+                {
+                    typst.push_str("\n#pagebreak()\n\n");
                 } else if html.contains("<!--botox:toc") {
                     let custom_title = if html.contains("<!--botox:toc:") {
                         let rest = html.split("<!--botox:toc:").nth(1).unwrap_or("");
@@ -1262,6 +1311,12 @@ Check [link](https://example.com/api?q="quoted") here.
 
         assert!(typst_fallback.contains("#botox_callout(\"warning\", \"Diagram rendering failed: Kroki unreachable\")"));
         assert!(typst_fallback.contains("```plantuml\nAlice -> Bob : Ping\n```"));
+
+        // Unconfigured Kroki renders configuration guidance callout proposing https://kroki.io
+        let md_unconfigured = "```plantuml\nAlice -> Bob : Hello\n```";
+        let typst_unconfigured = markdown_to_typst(md_unconfigured, false, false, "en", None, None, None, None, None);
+        assert!(typst_unconfigured.contains("#botox_callout(\"warning\", \"Diagram rendering requires Kroki configuration\")"));
+        assert!(typst_unconfigured.contains("https://kroki.io"));
     }
 
     #[test]
@@ -1288,6 +1343,16 @@ Check [link](https://example.com/api?q="quoted") here.
         let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
         assert!(typst.contains(r#"#botox_callout("warning", "Critical Alert")"#));
         assert!(typst.contains("System check required"));
+    }
+
+    #[test]
+    fn test_nested_code_fences_pandoc_directives() {
+        let md = "````markdown\n```rust\n// \\pause inside code\n// ::: note inside code\n```\n````";
+        let preprocessed = preprocess_pandoc(md);
+        assert!(!preprocessed.contains("<!--botox:pause-->"));
+        assert!(!preprocessed.contains("<!--botox:callout:start"));
+        assert!(preprocessed.contains("// \\pause inside code"));
+        assert!(preprocessed.contains("// ::: note inside code"));
     }
 
     #[test]

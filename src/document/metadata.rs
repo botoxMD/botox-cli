@@ -32,15 +32,34 @@ pub fn format_typst_date(d: &str) -> Option<String> {
     let date_part = trimmed.split(['T', ' ']).next().unwrap_or(trimmed);
     let parts: Vec<&str> = date_part.split(['-', '/']).collect();
     if parts.len() == 3 {
+        // Check for YYYY-MM-DD or YYYY/MM/DD
         if let (Ok(y), Ok(m), Ok(day)) = (parts[0].parse::<i32>(), parts[1].parse::<u8>(), parts[2].parse::<u8>())
-            && (1..=12).contains(&m) && (1..=31).contains(&day) {
+            && (1000..=9999).contains(&y) && (1..=12).contains(&m) && (1..=31).contains(&day) {
                 return Some(format!("datetime(year: {y}, month: {m}, day: {day})"));
-            }
+        }
+        // Check for DD-MM-YYYY, MM-DD-YYYY, DD/MM/YYYY, MM/DD/YYYY
+        if let (Ok(p0), Ok(p1), Ok(y)) = (parts[0].parse::<u8>(), parts[1].parse::<u8>(), parts[2].parse::<i32>())
+            && (1000..=9999).contains(&y) {
+                // If p1 > 12, p1 must be day and p0 month (MM-DD-YYYY)
+                if (1..=12).contains(&p0) && (13..=31).contains(&p1) {
+                    return Some(format!("datetime(year: {y}, month: {p0}, day: {p1})"));
+                }
+                // Otherwise default to DD-MM-YYYY (European / international standard)
+                if (1..=31).contains(&p0) && (1..=12).contains(&p1) {
+                    return Some(format!("datetime(year: {y}, month: {p1}, day: {p0})"));
+                }
+        }
     } else if parts.len() == 2 {
+        // YYYY-MM or YYYY/MM
         if let (Ok(y), Ok(m)) = (parts[0].parse::<i32>(), parts[1].parse::<u8>())
-            && (1..=12).contains(&m) {
+            && (1000..=9999).contains(&y) && (1..=12).contains(&m) {
                 return Some(format!("datetime(year: {y}, month: {m}, day: 1)"));
-            }
+        }
+        // MM-YYYY or MM/YYYY
+        if let (Ok(m), Ok(y)) = (parts[0].parse::<u8>(), parts[1].parse::<i32>())
+            && (1000..=9999).contains(&y) && (1..=12).contains(&m) {
+                return Some(format!("datetime(year: {y}, month: {m}, day: 1)"));
+        }
     } else if parts.len() == 1
         && let Ok(y) = parts[0].parse::<i32>()
         && (1000..=9999).contains(&y) {

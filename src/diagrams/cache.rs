@@ -69,8 +69,45 @@ pub fn detect_image_extension(content_type: Option<&str>, bytes: &[u8]) -> &'sta
     }
 }
 
+static IMAGE_AGENT: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|| {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_millis(5000)))
+        .build()
+        .new_agent()
+});
+
+const MAX_REMOTE_IMAGE_SIZE: usize = 25 * 1024 * 1024; // 25 MB max
+
+fn is_forbidden_remote_host(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    if !lower.starts_with("http://") && !lower.starts_with("https://") {
+        return true;
+    }
+    let without_scheme = lower.strip_prefix("http://").or_else(|| lower.strip_prefix("https://")).unwrap_or(&lower);
+    let host = without_scheme.split(['/', ':', '?', '#']).next().unwrap_or("").trim();
+
+    matches!(
+        host,
+        "localhost"
+            | "127.0.0.1"
+            | "::1"
+            | "0.0.0.0"
+            | "169.254.169.254"
+            | "metadata.google.internal"
+            | "instance-data"
+    ) || host.starts_with("127.")
+        || host.starts_with("10.")
+        || host.starts_with("192.168.")
+        || (host.starts_with("172.")
+            && host.split('.').nth(1).and_then(|p| p.parse::<u8>().ok()).is_some_and(|o| (16..=31).contains(&o)))
+}
+
 /// Fetch a remote image/badge over HTTP/HTTPS and save it to the local cache directory.
 pub fn fetch_and_cache_remote_image(url: &str) -> Result<PathBuf, String> {
+    if is_forbidden_remote_host(url) {
+        return Err(format!("Blocked remote image request to private, local, or invalid network address: `{url}`"));
+    }
+
     let cache_dir = get_image_cache_dir();
     fs::create_dir_all(&cache_dir).map_err(|e| format!("Failed to create image cache dir: {e}"))?;
 
@@ -88,12 +125,7 @@ pub fn fetch_and_cache_remote_image(url: &str) -> Result<PathBuf, String> {
             }
     }
 
-    let client = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_millis(5000)))
-        .build()
-        .new_agent();
-
-    let mut resp = client
+    let mut resp = IMAGE_AGENT
         .get(url)
         .header("User-Agent", "botox/0.1")
         .call()
@@ -105,13 +137,28 @@ pub fn fetch_and_cache_remote_image(url: &str) -> Result<PathBuf, String> {
     }
 
     let content_type = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
-    let body_bytes = resp
-        .body_mut()
-        .read_to_vec()
+    
+    // Check Content-Length header if present
+    if let Some(cl) = resp.headers().get("content-length").and_then(|v| v.to_str().ok())
+        && let Ok(len) = cl.parse::<usize>()
+        && len > MAX_REMOTE_IMAGE_SIZE {
+            return Err(format!("Remote image `{url}` exceeds maximum permitted size of 25MB ({len} bytes)"));
+        }
+
+    use std::io::Read;
+    let mut body_bytes = Vec::new();
+    resp.body_mut()
+        .as_reader()
+        .take((MAX_REMOTE_IMAGE_SIZE + 1) as u64)
+        .read_to_end(&mut body_bytes)
         .map_err(|e| format!("Failed to read remote image `{url}` body: {e}"))?;
 
     if body_bytes.is_empty() {
         return Err(format!("Remote image `{url}` returned empty content"));
+    }
+
+    if body_bytes.len() > MAX_REMOTE_IMAGE_SIZE {
+        return Err(format!("Remote image `{url}` exceeds maximum permitted size of 25MB"));
     }
 
     let ext = detect_image_extension(content_type.as_deref(), &body_bytes);

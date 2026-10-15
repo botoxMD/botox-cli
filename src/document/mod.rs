@@ -919,7 +919,12 @@ mod tests {
         assert_eq!(format_typst_date(r"\today").as_deref(), Some("datetime.today()"));
         assert_eq!(format_typst_date("today").as_deref(), Some("datetime.today()"));
         assert_eq!(format_typst_date("2026-10-07").as_deref(), Some("datetime(year: 2026, month: 10, day: 7)"));
+        assert_eq!(format_typst_date("2026/10/07").as_deref(), Some("datetime(year: 2026, month: 10, day: 7)"));
+        assert_eq!(format_typst_date("15-10-2026").as_deref(), Some("datetime(year: 2026, month: 10, day: 15)"));
+        assert_eq!(format_typst_date("15/10/2026").as_deref(), Some("datetime(year: 2026, month: 10, day: 15)"));
+        assert_eq!(format_typst_date("10/25/2026").as_deref(), Some("datetime(year: 2026, month: 10, day: 25)"));
         assert_eq!(format_typst_date("2026-10").as_deref(), Some("datetime(year: 2026, month: 10, day: 1)"));
+        assert_eq!(format_typst_date("10-2026").as_deref(), Some("datetime(year: 2026, month: 10, day: 1)"));
         assert_eq!(format_typst_date("2026").as_deref(), Some("datetime(year: 2026, month: 1, day: 1)"));
         assert_eq!(format_typst_date("auto").as_deref(), Some("auto"));
         assert_eq!(format_typst_date("none").as_deref(), Some("none"));
@@ -1032,7 +1037,8 @@ title: "Config Fallback"
     fn test_column_pagebreak_sanitization() {
         let default_cfg = DocumentConfig::defaults();
         let fm: Value = serde_yaml::from_str("theme: compact\ntitle: Two Column").unwrap();
-        let doc = wrap_document("= Col 1\n#pagebreak()\n= Col 2", &fm, &default_cfg, None, None, None, None);
+        let doc = wrap_document("= Col 1\n#pagebreak()\n= Col 2\n#colbreak()\n= Col 3", &fm, &default_cfg, None, None, None, None);
+        // Multi-column sanitizes pagebreak to colbreak to prevent Typst container fatal error
         assert!(!doc.contains("#pagebreak()"));
         assert!(doc.contains("#colbreak()"));
 

@@ -220,22 +220,43 @@ pub fn convert_cross_references(s: &str) -> String {
 pub fn preprocess_pandoc(markdown: &str) -> String {
     let mut result = String::with_capacity(markdown.len());
     let mut in_code_fence = false;
+    let mut fence_char = '`';
+    let mut fence_len = 0;
     let mut in_github_callout = false;
 
     for line in markdown.lines() {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            if in_github_callout {
-                result.push_str("\n<!--botox:callout:end-->\n\n");
-                in_github_callout = false;
+        if !in_code_fence {
+            let backticks = trimmed.chars().take_while(|&c| c == '`').count();
+            let tildes = trimmed.chars().take_while(|&c| c == '~').count();
+            if backticks >= 3 {
+                if in_github_callout {
+                    result.push_str("\n<!--botox:callout:end-->\n\n");
+                    in_github_callout = false;
+                }
+                in_code_fence = true;
+                fence_char = '`';
+                fence_len = backticks;
+                result.push_str(line);
+                result.push('\n');
+                continue;
+            } else if tildes >= 3 {
+                if in_github_callout {
+                    result.push_str("\n<!--botox:callout:end-->\n\n");
+                    in_github_callout = false;
+                }
+                in_code_fence = true;
+                fence_char = '~';
+                fence_len = tildes;
+                result.push_str(line);
+                result.push('\n');
+                continue;
             }
-            in_code_fence = !in_code_fence;
-            result.push_str(line);
-            result.push('\n');
-            continue;
-        }
-
-        if in_code_fence {
+        } else {
+            let count = trimmed.chars().take_while(|&c| c == fence_char).count();
+            if count >= fence_len && trimmed[count..].trim().is_empty() {
+                in_code_fence = false;
+            }
             result.push_str(line);
             result.push('\n');
             continue;

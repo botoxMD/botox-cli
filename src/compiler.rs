@@ -24,6 +24,30 @@ impl BotoxFonts {
     }
 }
 
+fn is_path_allowed(path: &Path, resource_dir: &Path) -> bool {
+    let Ok(canonical) = path.canonicalize() else {
+        return false;
+    };
+    let res_dir = if resource_dir.as_os_str().is_empty() {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    } else {
+        resource_dir.to_path_buf()
+    };
+    let allowed_dirs: [Option<PathBuf>; 5] = [
+        Some(res_dir),
+        std::env::current_dir().ok(),
+        Some(crate::diagrams::get_cache_dir()),
+        Some(crate::diagrams::get_image_cache_dir()),
+        Some(std::env::temp_dir()),
+    ];
+
+    allowed_dirs
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.canonicalize().ok())
+        .any(|allowed| canonical.starts_with(allowed))
+}
+
 struct BotoxWorld {
     main_id: typst::syntax::FileId,
     main_source: typst::syntax::Source,
@@ -57,18 +81,21 @@ impl typst::World for BotoxWorld {
         let abs_candidate = Path::new(vpath.get_with_slash());
 
         if abs_candidate.is_absolute()
+            && is_path_allowed(abs_candidate, &self.resource_dir)
             && let Ok(content) = std::fs::read_to_string(abs_candidate) {
                 return Ok(typst::syntax::Source::new(id, content));
             }
 
         let rel_cand = self.resource_dir.join(rel_path);
-        if let Ok(content) = std::fs::read_to_string(&rel_cand) {
-            return Ok(typst::syntax::Source::new(id, content));
-        }
+        if is_path_allowed(&rel_cand, &self.resource_dir)
+            && let Ok(content) = std::fs::read_to_string(&rel_cand) {
+                return Ok(typst::syntax::Source::new(id, content));
+            }
 
-        if let Ok(content) = std::fs::read_to_string(rel_path) {
-            return Ok(typst::syntax::Source::new(id, content));
-        }
+        if is_path_allowed(rel_path, &self.resource_dir)
+            && let Ok(content) = std::fs::read_to_string(rel_path) {
+                return Ok(typst::syntax::Source::new(id, content));
+            }
 
         Err(typst::diag::FileError::NotFound(self.resource_dir.join(rel_path)))
     }
@@ -82,18 +109,21 @@ impl typst::World for BotoxWorld {
         let abs_candidate = Path::new(vpath.get_with_slash());
 
         if abs_candidate.is_absolute()
+            && is_path_allowed(abs_candidate, &self.resource_dir)
             && let Ok(bytes) = std::fs::read(abs_candidate) {
                 return Ok(typst::foundations::Bytes::new(bytes));
             }
 
         let rel_cand = self.resource_dir.join(rel_path);
-        if let Ok(bytes) = std::fs::read(&rel_cand) {
-            return Ok(typst::foundations::Bytes::new(bytes));
-        }
+        if is_path_allowed(&rel_cand, &self.resource_dir)
+            && let Ok(bytes) = std::fs::read(&rel_cand) {
+                return Ok(typst::foundations::Bytes::new(bytes));
+            }
 
-        if let Ok(bytes) = std::fs::read(rel_path) {
-            return Ok(typst::foundations::Bytes::new(bytes));
-        }
+        if is_path_allowed(rel_path, &self.resource_dir)
+            && let Ok(bytes) = std::fs::read(rel_path) {
+                return Ok(typst::foundations::Bytes::new(bytes));
+            }
 
         Err(typst::diag::FileError::NotFound(self.resource_dir.join(rel_path)))
     }
@@ -1539,6 +1569,15 @@ Second column body text.
         assert!(res.is_err());
         let err = res.err().unwrap();
         assert!(err.contains("line 3:"), "Error message must contain line number: {err}");
+        let _ = std::fs::remove_file(tmp_pdf);
+    }
+
+    #[test]
+    fn test_unauthorized_file_access_blocked() {
+        let markup = "= Test\n#read(\"/etc/hosts\")\n";
+        let tmp_pdf = std::env::temp_dir().join("test_sec_file.pdf");
+        let res = compile_typst(markup, &tmp_pdf, None);
+        assert!(res.is_err(), "Accessing /etc/hosts outside allowed roots must fail");
         let _ = std::fs::remove_file(tmp_pdf);
     }
 }

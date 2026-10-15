@@ -1,5 +1,6 @@
 ---
 title: Botox Functionality Reference
+kroki_url: https://kroki.io
 toc: true
 toc-depth: 3
 number-sections: true

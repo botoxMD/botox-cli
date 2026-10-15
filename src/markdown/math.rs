@@ -1,12 +1,22 @@
 pub fn find_matching_brace(s: &str, open_pos: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
     let mut depth = 0;
     for (i, c) in s[open_pos..].char_indices() {
+        let abs = open_pos + i;
         if c == '{' {
+            if abs > 0 && bytes[abs - 1] == b'\\' {
+                // Escaped brace \{
+                continue;
+            }
             depth += 1;
         } else if c == '}' {
+            if abs > 0 && bytes[abs - 1] == b'\\' {
+                // Escaped brace \}
+                continue;
+            }
             depth -= 1;
             if depth == 0 {
-                return Some(open_pos + i);
+                return Some(abs);
             }
         }
     }
@@ -15,28 +25,57 @@ pub fn find_matching_brace(s: &str, open_pos: usize) -> Option<usize> {
 
 /// Helper that replaces a LaTeX command while ensuring word boundaries so that
 /// shorter command prefixes (e.g. `\le`, `\tan`, `\to`) do not corrupt longer
-/// tokens (e.g. `\leftarrow`, `\tanh`, `\top`, `\tolerance`).
+/// tokens (e.g. `\leftarrow`, `\tanh`, `\top`, `\tolerance`), and skips string literals.
 fn replace_latex_command(s: &mut String, cmd: &str, replacement: &str) {
     let cmd_len = cmd.len();
     let ends_with_letter = cmd.chars().last().is_some_and(|c| c.is_ascii_alphabetic());
+    let starts_with_letter = cmd.chars().next().is_some_and(|c| c.is_ascii_alphabetic());
 
     let mut idx = 0;
-    while let Some(pos) = s[idx..].find(cmd) {
-        let abs_pos = idx + pos;
-        let after_pos = abs_pos + cmd_len;
+    let mut in_quote = false;
 
-        // If the command ends in an ASCII letter, the following character must not be
-        // an ASCII letter (which would mean cmd is a prefix of a longer command name).
-        if ends_with_letter
-            && let Some(next_ch) = s[after_pos..].chars().next()
-            && next_ch.is_ascii_alphabetic()
-        {
-            idx = abs_pos + 1;
+    while idx < s.len() {
+        if s.as_bytes()[idx] == b'"' {
+            in_quote = !in_quote;
+            idx += 1;
             continue;
         }
 
-        s.replace_range(abs_pos..after_pos, replacement);
-        idx = abs_pos + replacement.len();
+        if in_quote {
+            idx += 1;
+            continue;
+        }
+
+        if s[idx..].starts_with(cmd) {
+            let abs_pos = idx;
+            let after_pos = abs_pos + cmd_len;
+
+            // If the command starts with an ASCII letter, the preceding character must not be
+            // an ASCII letter or backslash.
+            if starts_with_letter
+                && abs_pos > 0
+                && let Some(prev_ch) = s[..abs_pos].chars().last()
+                && (prev_ch.is_ascii_alphabetic() || prev_ch == '\\')
+            {
+                idx += 1;
+                continue;
+            }
+
+            // If the command ends in an ASCII letter, the following character must not be
+            // an ASCII letter (which would mean cmd is a prefix of a longer command name).
+            if ends_with_letter
+                && let Some(next_ch) = s[after_pos..].chars().next()
+                && next_ch.is_ascii_alphabetic()
+            {
+                idx += 1;
+                continue;
+            }
+
+            s.replace_range(abs_pos..after_pos, replacement);
+            idx = abs_pos + replacement.len();
+        } else {
+            idx += 1;
+        }
     }
 }
 
@@ -296,9 +335,13 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
         (r"\, dr", " dif r"),
         (r"\, du", " dif u"),
         (r"\, dv", " dif v"),
-        (r" dx", " dif x"),
-        (r" dy", " dif y"),
-        (r" dt", " dif t"),
+        (r"\mathrm{d}x", "dif x"),
+        (r"\mathrm{d}y", "dif y"),
+        (r"\mathrm{d}t", "dif t"),
+        (r"\mathrm{d}z", "dif z"),
+        (r"\text{d}x", "dif x"),
+        (r"\text{d}y", "dif y"),
+        (r"\text{d}t", "dif t"),
         // Greek letters
         (r"\alpha", "alpha"),
         (r"\beta", "beta"),
@@ -353,6 +396,9 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
                 | "iota" | "kappa" | "lambda" | "mu" | "nu" | "xi" | "pi" | "rho" | "sigma"
                 | "tau" | "upsilon" | "phi" | "chi" | "psi" | "omega"
                 | "Gamma" | "Delta" | "Theta" | "Lambda" | "Xi" | "Pi" | "Sigma" | "Phi" | "Psi" | "Omega"
+                | "out" | "air" | "net" | "avg" | "pot" | "kin" | "eff" | "ref" | "col" | "row"
+                | "mid" | "top" | "bot" | "len" | "val" | "key" | "err" | "pos" | "src" | "dst"
+                | "in" | "on" | "th" | "eq" | "ex" | "id" | "up" | "bg" | "op"
         );
 
         if is_known
@@ -367,7 +413,7 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
             || inner.contains('/')
             || inner.contains('*')
             || inner.contains('"')
-            || inner.len() > 3
+            || inner.len() >= 3
         {
             inner.to_string()
         } else {
@@ -425,5 +471,15 @@ mod tests {
         assert_eq!(convert_latex_math_to_typst(r"x_{total}"), "x_(total)");
         assert_eq!(convert_latex_math_to_typst(r"a_{11}"), "a_(11)");
         assert_eq!(convert_latex_math_to_typst(r"x_{ij}"), "x_(i j)");
+        assert_eq!(convert_latex_math_to_typst(r"V_{out}"), "V_(out)");
+        assert_eq!(convert_latex_math_to_typst(r"T_{air}"), "T_(air)");
+        assert_eq!(convert_latex_math_to_typst(r"P_{net}"), "P_(net)");
+        assert_eq!(convert_latex_math_to_typst(r"y + dx"), "y + dx");
+        assert_eq!(convert_latex_math_to_typst(r"\int f(x)\, dx"), "integral f(x) dif x");
+    }
+
+    #[test]
+    fn test_escaped_braces() {
+        assert_eq!(convert_latex_math_to_typst(r"\frac{\{x\}}{y}"), r"(\{x\}) / (y)");
     }
 }

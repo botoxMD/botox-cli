@@ -6,7 +6,7 @@ mod compiler;
 pub mod diagrams;
 mod skills;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use serde_yaml::Value;
 
 fn show_help() {
@@ -51,6 +51,10 @@ Slide Options:
 }
 
 fn handle_setup(args: &[String]) {
+    handle_setup_in_dir(args, None);
+}
+
+fn handle_setup_in_dir(args: &[String], local_dir: Option<&Path>) {
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!(r#"Usage: botox setup [options]
 
@@ -209,6 +213,8 @@ Options:
 
     let target_path = if is_global {
         config::global_config_path()
+    } else if let Some(dir) = local_dir {
+        dir.join("botox.yaml")
     } else {
         PathBuf::from("botox.yaml")
     };
@@ -802,10 +808,10 @@ fn compile_once(
     let exclude_opt = if ref_exclude.is_empty() { None } else { Some(ref_exclude) };
     let include_opt = if ref_include.is_empty() { None } else { Some(ref_include) };
 
-    let kroki_url = fm.get("krocki-url")
-        .or_else(|| fm.get("kroki-url"))
+    let kroki_url = fm.get("kroki-url")
         .or_else(|| fm.get("kroki_url"))
-        .or_else(|| fm.get("krocki_url"))
+        .or_else(|| fm.get("kroki-endpoint"))
+        .or_else(|| fm.get("kroki_endpoint"))
         .and_then(|v| v.as_str())
         .or(doc_config.kroki_url.as_deref());
 
@@ -1301,8 +1307,6 @@ mod tests {
     fn test_handle_setup_non_interactive_local() {
         let temp_dir = std::env::temp_dir().join("botox_setup_test");
         let _ = std::fs::create_dir_all(&temp_dir);
-        let orig_dir = std::env::current_dir().unwrap();
-        let _ = std::env::set_current_dir(&temp_dir);
 
         let args = vec![
             "--non-interactive".to_string(),
@@ -1318,7 +1322,7 @@ mod tests {
             "--toc".to_string(),
             "--bibliography".to_string(),
         ];
-        handle_setup(&args);
+        handle_setup_in_dir(&args, Some(&temp_dir));
 
         let local_cfg = temp_dir.join("botox.yaml");
         assert!(local_cfg.is_file(), "Local config should be generated");
@@ -1331,7 +1335,6 @@ mod tests {
         assert!(content.contains("bibliography: true"));
 
         let _ = std::fs::remove_file(local_cfg);
-        let _ = std::env::set_current_dir(orig_dir);
         let _ = std::fs::remove_dir_all(temp_dir);
     }
 

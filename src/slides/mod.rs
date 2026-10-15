@@ -2,7 +2,7 @@ pub mod pauses;
 pub mod themes;
 
 use crate::config::SlidesConfig;
-pub use pauses::process_slide_pauses;
+pub use pauses::{process_slide_pauses, split_outside_code_fences};
 use serde_yaml::Value;
 pub use themes::get_slide_theme_style;
 
@@ -146,7 +146,7 @@ pub fn wrap_slides(
     out.push_str("#let botox_pause() = {}\n\n");
     out.push_str("// BOTOX_BODY_START\n");
 
-    let raw_slides: Vec<&str> = slides_typst.split("#pagebreak()").collect();
+    let raw_slides = split_outside_code_fences(slides_typst, "#pagebreak()");
     let mut first_emitted = false;
 
     for (i, slide) in raw_slides.iter().enumerate() {

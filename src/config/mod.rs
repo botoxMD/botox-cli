@@ -47,7 +47,7 @@ pub struct DocumentConfig {
     pub exclude_references: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_string_or_vec", alias = "include-references", alias = "include_references", alias = "include-links")]
     pub include_references: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "krocki-url", alias = "krocki_url", alias = "kroki-url")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "kroki-url", alias = "kroki_endpoint", alias = "kroki-endpoint")]
     pub kroki_url: Option<String>,
 }
 
@@ -244,7 +244,6 @@ impl BotoxConfig {
         let mut global_candidates = Vec::new();
         if let Some(home) = dirs_home() {
             global_candidates.push(home.join(".config").join("botox").join("config.yaml"));
-            global_candidates.push(home.join(".config").join("skygem").join("config.yaml"));
         }
         if let Ok(appdata) = std::env::var("APPDATA") {
             global_candidates.push(PathBuf::from(appdata).join("botox").join("config.yaml"));
@@ -259,8 +258,8 @@ impl BotoxConfig {
                 }
         }
 
-        // 2. Current working directory config (./botox.yaml, ./skygem.yaml)
-        let cwd_candidates = [PathBuf::from("botox.yaml"), PathBuf::from("skygem.yaml")];
+        // 2. Current working directory config (./botox.yaml)
+        let cwd_candidates = [PathBuf::from("botox.yaml")];
         for path in &cwd_candidates {
             if path.is_file()
                 && let Ok(content) = std::fs::read_to_string(path)
@@ -272,9 +271,9 @@ impl BotoxConfig {
                 }
         }
 
-        // 3. Document directory config (<doc_dir>/botox.yaml, <doc_dir>/skygem.yaml)
+        // 3. Document directory config (<doc_dir>/botox.yaml)
         if let Some(dir) = doc_dir {
-            let doc_candidates = [dir.join("botox.yaml"), dir.join("skygem.yaml")];
+            let doc_candidates = [dir.join("botox.yaml")];
             for path in &doc_candidates {
                 if path.is_file() {
                     let canon_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
