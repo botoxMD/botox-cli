@@ -3,6 +3,7 @@ use typst::LibraryExt;
 
 enum BotoxFonts {
     Default,
+    Libertine,
     Custom {
         fonts: Vec<typst::text::Font>,
         book: typst::utils::LazyHash<typst::text::FontBook>,
@@ -14,6 +15,7 @@ impl BotoxFonts {
     pub fn len(&self) -> usize {
         match self {
             BotoxFonts::Default => DEFAULT_EMBEDDED_FONTS.len(),
+            BotoxFonts::Libertine => LIBERTINE_COMBINED_FONTS.len(),
             BotoxFonts::Custom { fonts, .. } => fonts.len(),
         }
     }
@@ -64,6 +66,7 @@ impl typst::World for BotoxWorld {
     fn book(&self) -> &typst::utils::LazyHash<typst::text::FontBook> {
         match &self.fonts {
             BotoxFonts::Default => &DEFAULT_FONT_BOOK,
+            BotoxFonts::Libertine => &LIBERTINE_FONT_BOOK,
             BotoxFonts::Custom { book, .. } => book,
         }
     }
@@ -131,6 +134,7 @@ impl typst::World for BotoxWorld {
     fn font(&self, id: usize) -> Option<typst::text::Font> {
         match &self.fonts {
             BotoxFonts::Default => DEFAULT_EMBEDDED_FONTS.get(id).cloned(),
+            BotoxFonts::Libertine => LIBERTINE_COMBINED_FONTS.get(id).cloned(),
             BotoxFonts::Custom { fonts, .. } => fonts.get(id).cloned(),
         }
     }
@@ -165,35 +169,23 @@ pub struct BotoxPagesOutput {
 }
 
 static DEFAULT_EMBEDDED_FONTS: std::sync::LazyLock<Vec<typst::text::Font>> = std::sync::LazyLock::new(|| {
-    let font_bytes_list: Vec<&'static [u8]> = typst_assets::fonts().skip(6).collect();
-    std::thread::scope(|s| {
-        let handles: Vec<_> = font_bytes_list
-            .into_iter()
-            .map(|fb| {
-                s.spawn(move || {
-                    let bytes = typst::foundations::Bytes::new(fb);
-                    typst::text::Font::iter(bytes).collect::<Vec<_>>()
-                })
-            })
-            .collect();
-        handles.into_iter().flat_map(|h| h.join().ok()).flatten().collect()
-    })
+    typst_assets::fonts()
+        .skip(6)
+        .flat_map(|fb| typst::text::Font::iter(typst::foundations::Bytes::new(fb)))
+        .collect()
 });
 
 static LIBERTINE_FONTS: std::sync::LazyLock<Vec<typst::text::Font>> = std::sync::LazyLock::new(|| {
-    let font_bytes_list: Vec<&'static [u8]> = typst_assets::fonts().take(6).collect();
-    std::thread::scope(|s| {
-        let handles: Vec<_> = font_bytes_list
-            .into_iter()
-            .map(|fb| {
-                s.spawn(move || {
-                    let bytes = typst::foundations::Bytes::new(fb);
-                    typst::text::Font::iter(bytes).collect::<Vec<_>>()
-                })
-            })
-            .collect();
-        handles.into_iter().flat_map(|h| h.join().ok()).flatten().collect()
-    })
+    typst_assets::fonts()
+        .take(6)
+        .flat_map(|fb| typst::text::Font::iter(typst::foundations::Bytes::new(fb)))
+        .collect()
+});
+
+static LIBERTINE_COMBINED_FONTS: std::sync::LazyLock<Vec<typst::text::Font>> = std::sync::LazyLock::new(|| {
+    let mut fonts = DEFAULT_EMBEDDED_FONTS.clone();
+    fonts.extend(LIBERTINE_FONTS.iter().cloned());
+    fonts
 });
 
 static DEFAULT_FONT_BOOK: std::sync::LazyLock<typst::utils::LazyHash<typst::text::FontBook>> =
@@ -205,17 +197,32 @@ static DEFAULT_FONT_BOOK: std::sync::LazyLock<typst::utils::LazyHash<typst::text
         typst::utils::LazyHash::new(book)
     });
 
+static LIBERTINE_FONT_BOOK: std::sync::LazyLock<typst::utils::LazyHash<typst::text::FontBook>> =
+    std::sync::LazyLock::new(|| {
+        let mut book = typst::text::FontBook::new();
+        for f in LIBERTINE_COMBINED_FONTS.iter() {
+            book.push(f.info().clone());
+        }
+        typst::utils::LazyHash::new(book)
+    });
+
 static DEFAULT_LIBRARY: std::sync::LazyLock<typst::utils::LazyHash<typst::Library>> =
     std::sync::LazyLock::new(|| {
         typst::utils::LazyHash::new(typst::Library::builder().build())
     });
 
+pub fn preheat() {
+    let _ = &*DEFAULT_FONT_BOOK;
+    let _ = &*LIBERTINE_FONT_BOOK;
+    let _ = &*DEFAULT_LIBRARY;
+}
+
 fn is_embedded_font(name: &str) -> bool {
     let n = name.trim().trim_matches('"').trim_matches('\'').to_lowercase();
-    n == "new computer modern"
-        || n == "new computer modern math"
-        || n == "dejavu sans mono"
-        || n == "libertinus serif"
+    n.contains("computer modern")
+        || n.contains("dejavu sans mono")
+        || n.contains("libertin")
+        || n.contains("biolinum")
         || n.is_empty()
 }
 
@@ -271,14 +278,19 @@ fn load_needed_fonts(typst_markup: &str) -> BotoxFonts {
             }
     }
 
-    if !has_libertine && custom_fonts.is_empty() {
-        return BotoxFonts::Default;
+    if custom_fonts.is_empty() {
+        return if has_libertine {
+            BotoxFonts::Libertine
+        } else {
+            BotoxFonts::Default
+        };
     }
 
-    let mut fonts = DEFAULT_EMBEDDED_FONTS.clone();
-    if has_libertine {
-        fonts.extend(LIBERTINE_FONTS.iter().cloned());
-    }
+    let mut fonts = if has_libertine {
+        LIBERTINE_COMBINED_FONTS.clone()
+    } else {
+        DEFAULT_EMBEDDED_FONTS.clone()
+    };
 
     if !custom_fonts.is_empty() {
         static SYSTEM_FONTS_DB: std::sync::OnceLock<fontdb::Database> = std::sync::OnceLock::new();
@@ -530,6 +542,234 @@ fn format_compilation_error(
             }
 }
 
+fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+struct PageWalkContext<'a> {
+    page_idx: usize,
+    page_height: f64,
+    check_pause: bool,
+    text_out: &'a mut String,
+    is_pause_out: &'a mut bool,
+    headings_out: &'a mut Vec<BotoxHeadingInfo>,
+}
+
+fn walk_frame_data(
+    frame: &typst_library::layout::Frame,
+    ts: typst_library::layout::Transform,
+    ctx: &mut PageWalkContext<'_>,
+) {
+    for (point, item) in frame.items() {
+        let item_ts = ts.pre_concat(typst_library::layout::Transform::translate(point.x, point.y));
+        match item {
+            typst_library::layout::FrameItem::Text(text_item) => {
+                let text = text_item.text.as_str();
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if ctx.check_pause && text.contains("botox-pause-step") {
+                    *ctx.is_pause_out = true;
+                    continue;
+                }
+
+                let x = item_ts.tx.to_pt();
+                let y = item_ts.ty.to_pt();
+                let size = (text_item.size.to_pt() * item_ts.sy.get()).abs();
+                let width = (text_item.width().to_pt() * item_ts.sx.get()).abs();
+                let escaped = xml_escape(text);
+
+                use std::fmt::Write;
+                let _ = write!(
+                    ctx.text_out,
+                    r#"<text x="{x:.2}" y="{y:.2}" font-size="{size:.2}pt" textLength="{width:.2}" lengthAdjust="spacingAndGlyphs" fill="transparent" stroke="none" style="cursor: text; user-select: text;">{escaped}</text>"#
+                );
+
+                if size >= 12.8 {
+                    let cur_ratio = (y / ctx.page_height).clamp(0.0, 1.0);
+                    if let Some(last) = ctx.headings_out.last_mut() {
+                        if last.page_index == ctx.page_idx && (last.y_ratio - cur_ratio).abs() < 0.008 {
+                            last.text.push(' ');
+                            last.text.push_str(trimmed);
+                        } else {
+                            ctx.headings_out.push(BotoxHeadingInfo {
+                                page_index: ctx.page_idx,
+                                text: trimmed.to_string(),
+                                y_ratio: cur_ratio,
+                            });
+                        }
+                    } else {
+                        ctx.headings_out.push(BotoxHeadingInfo {
+                            page_index: ctx.page_idx,
+                            text: trimmed.to_string(),
+                            y_ratio: cur_ratio,
+                        });
+                    }
+                }
+            }
+            typst_library::layout::FrameItem::Group(group) => {
+                let group_ts = item_ts.pre_concat(group.transform);
+                walk_frame_data(&group.frame, group_ts, ctx);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn process_page_vector(
+    page: &typst_layout::Page,
+    page_idx: usize,
+    svg_opts: &typst_svg::SvgOptions,
+    check_pause: bool,
+) -> (String, bool, Vec<BotoxHeadingInfo>) {
+    let mut text_elements = String::new();
+    let mut is_pause = false;
+    let mut headings = Vec::new();
+    let page_height = page.frame.height().to_pt().max(1.0);
+
+    let mut ctx = PageWalkContext {
+        page_idx,
+        page_height,
+        check_pause,
+        text_out: &mut text_elements,
+        is_pause_out: &mut is_pause,
+        headings_out: &mut headings,
+    };
+
+    walk_frame_data(
+        &page.frame,
+        typst_library::layout::Transform::identity(),
+        &mut ctx,
+    );
+
+    let mut svg = typst_svg::svg(page, svg_opts);
+    if !text_elements.is_empty()
+        && let Some(idx) = svg.rfind("</svg>") {
+            svg.insert_str(
+                idx,
+                &format!(r#"<g class="botox-text-layer" style="user-select: text; -webkit-user-select: text; pointer-events: auto;">{text_elements}</g>"#),
+            );
+        }
+
+    if is_pause
+        && let Some(pos) = svg.find("<svg") {
+            let insert_pos = pos + 4;
+            svg.insert_str(insert_pos, r#" data-pause-step="true" class="pause-step""#);
+        }
+
+    (svg, is_pause, headings)
+}
+
+pub fn render_doc_to_pages(doc: &typst_layout::PagedDocument) -> BotoxPagesOutput {
+    let svg_opts = typst_svg::SvgOptions::default();
+    let is_slides = doc.pages().first().map(|p| {
+        p.frame.width().to_pt() > p.frame.height().to_pt()
+    }).unwrap_or(false);
+
+    let num_pages = doc.pages().len();
+    let (pages, pause_indices, headings) = if num_pages <= 1 {
+        let mut pages = Vec::with_capacity(num_pages);
+        let mut pause_indices = Vec::new();
+        let mut headings = Vec::new();
+        for (idx, p) in doc.pages().iter().enumerate() {
+            let (svg, is_pause, h) = process_page_vector(p, idx, &svg_opts, true);
+            if is_pause {
+                pause_indices.push(idx);
+            }
+            pages.push(svg);
+            headings.extend(h);
+        }
+        (pages, pause_indices, headings)
+    } else {
+        let num_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .min(num_pages);
+        let chunk_size = num_pages.div_ceil(num_threads);
+        let pages_slice = doc.pages();
+        let results: Vec<_> = std::thread::scope(|s| {
+            let mut handles = Vec::new();
+            for (chunk_idx, chunk) in pages_slice.chunks(chunk_size).enumerate() {
+                let start_page_idx = chunk_idx * chunk_size;
+                let svg_opts_ref = &svg_opts;
+                handles.push(s.spawn(move || {
+                    let mut chunk_res = Vec::with_capacity(chunk.len());
+                    for (rel_idx, page) in chunk.iter().enumerate() {
+                        let abs_idx = start_page_idx + rel_idx;
+                        chunk_res.push((abs_idx, process_page_vector(page, abs_idx, svg_opts_ref, true)));
+                    }
+                    chunk_res
+                }));
+            }
+            handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        });
+
+        let mut pages = Vec::with_capacity(num_pages);
+        let mut pause_indices = Vec::new();
+        let mut headings = Vec::new();
+        for (abs_idx, (svg, is_pause, h)) in results {
+            if is_pause {
+                pause_indices.push(abs_idx);
+            }
+            pages.push(svg);
+            headings.extend(h);
+        }
+        (pages, pause_indices, headings)
+    };
+
+    BotoxPagesOutput {
+        num_pages: pages.len(),
+        pages,
+        headings,
+        is_slides,
+        pause_indices,
+    }
+}
+
+pub fn compile_typst_to_pages(
+    typst_markup: &str,
+    resource_dir: Option<&Path>,
+    markdown_source: Option<&str>,
+    source_filename: Option<&str>,
+) -> Result<BotoxPagesOutput, String> {
+    let fonts = load_needed_fonts(typst_markup);
+    let res_dir = resource_dir
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    let main_source = typst::syntax::Source::detached(typst_markup.to_string());
+    let world = BotoxWorld {
+        main_id: main_source.id(),
+        main_source,
+        resource_dir: res_dir,
+        fonts,
+        now: chrono::Utc::now(),
+    };
+
+    let typst::diag::Warned { output, warnings: _ } = typst::compile(&world);
+    let doc: typst_layout::PagedDocument = output.map_err(|diags| {
+        if std::env::var("BOTOX_DEBUG").is_ok() {
+            let debug_path = crate::diagrams::get_cache_dir().join("debug_fail.typ");
+            let _ = std::fs::write(debug_path, typst_markup);
+        }
+        format_compilation_error(&diags, typst_markup, markdown_source, source_filename)
+    })?;
+
+    Ok(render_doc_to_pages(&doc))
+}
+
 pub fn compile_typst(
     typst_markup: &str,
     output_path: &Path,
@@ -599,137 +839,6 @@ pub fn compile_typst_with_source(
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
-
-    fn xml_escape(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        for c in s.chars() {
-            match c {
-                '&' => out.push_str("&amp;"),
-                '<' => out.push_str("&lt;"),
-                '>' => out.push_str("&gt;"),
-                '"' => out.push_str("&quot;"),
-                '\'' => out.push_str("&apos;"),
-                _ => out.push(c),
-            }
-        }
-        out
-    }
-
-    struct PageWalkContext<'a> {
-        page_idx: usize,
-        page_height: f64,
-        check_pause: bool,
-        text_out: &'a mut String,
-        is_pause_out: &'a mut bool,
-        headings_out: &'a mut Vec<BotoxHeadingInfo>,
-    }
-
-    fn walk_frame_data(
-        frame: &typst_library::layout::Frame,
-        ts: typst_library::layout::Transform,
-        ctx: &mut PageWalkContext<'_>,
-    ) {
-        for (point, item) in frame.items() {
-            let item_ts = ts.pre_concat(typst_library::layout::Transform::translate(point.x, point.y));
-            match item {
-                typst_library::layout::FrameItem::Text(text_item) => {
-                    let text = text_item.text.as_str();
-                    let trimmed = text.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    if ctx.check_pause && text.contains("botox-pause-step") {
-                        *ctx.is_pause_out = true;
-                        continue;
-                    }
-
-                    let x = item_ts.tx.to_pt();
-                    let y = item_ts.ty.to_pt();
-                    let size = (text_item.size.to_pt() * item_ts.sy.get()).abs();
-                    let width = (text_item.width().to_pt() * item_ts.sx.get()).abs();
-                    let escaped = xml_escape(text);
-
-                    use std::fmt::Write;
-                    let _ = write!(
-                        ctx.text_out,
-                        r#"<text x="{x:.2}" y="{y:.2}" font-size="{size:.2}pt" textLength="{width:.2}" lengthAdjust="spacingAndGlyphs" fill="transparent" stroke="none" style="cursor: text; user-select: text;">{escaped}</text>"#
-                    );
-
-                    if size >= 12.8 {
-                        let cur_ratio = (y / ctx.page_height).clamp(0.0, 1.0);
-                        if let Some(last) = ctx.headings_out.last_mut() {
-                            if last.page_index == ctx.page_idx && (last.y_ratio - cur_ratio).abs() < 0.008 {
-                                last.text.push(' ');
-                                last.text.push_str(trimmed);
-                            } else {
-                                ctx.headings_out.push(BotoxHeadingInfo {
-                                    page_index: ctx.page_idx,
-                                    text: trimmed.to_string(),
-                                    y_ratio: cur_ratio,
-                                });
-                            }
-                        } else {
-                            ctx.headings_out.push(BotoxHeadingInfo {
-                                page_index: ctx.page_idx,
-                                text: trimmed.to_string(),
-                                y_ratio: cur_ratio,
-                            });
-                        }
-                    }
-                }
-                typst_library::layout::FrameItem::Group(group) => {
-                    let group_ts = item_ts.pre_concat(group.transform);
-                    walk_frame_data(&group.frame, group_ts, ctx);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    fn process_page_vector(
-        page: &typst_layout::Page,
-        page_idx: usize,
-        svg_opts: &typst_svg::SvgOptions,
-        check_pause: bool,
-    ) -> (String, bool, Vec<BotoxHeadingInfo>) {
-        let mut text_elements = String::new();
-        let mut is_pause = false;
-        let mut headings = Vec::new();
-        let page_height = page.frame.height().to_pt().max(1.0);
-
-        let mut ctx = PageWalkContext {
-            page_idx,
-            page_height,
-            check_pause,
-            text_out: &mut text_elements,
-            is_pause_out: &mut is_pause,
-            headings_out: &mut headings,
-        };
-
-        walk_frame_data(
-            &page.frame,
-            typst_library::layout::Transform::identity(),
-            &mut ctx,
-        );
-
-        let mut svg = typst_svg::svg(page, svg_opts);
-        if !text_elements.is_empty()
-            && let Some(idx) = svg.rfind("</svg>") {
-                svg.insert_str(
-                    idx,
-                    &format!(r#"<g class="botox-text-layer" style="user-select: text; -webkit-user-select: text; pointer-events: auto;">{text_elements}</g>"#),
-                );
-            }
-
-        if is_pause
-            && let Some(pos) = svg.find("<svg") {
-                let insert_pos = pos + 4;
-                svg.insert_str(insert_pos, r#" data-pause-step="true" class="pause-step""#);
-            }
-
-        (svg, is_pause, headings)
-    }
-
     match ext.as_str() {
         "svg" => {
             let svg_opts = typst_svg::SvgOptions::default();
@@ -747,71 +856,9 @@ pub fn compile_typst_with_source(
         }
         "json" => {
             let t_svg_start = std::time::Instant::now();
-            let svg_opts = typst_svg::SvgOptions::default();
-
-            let is_slides = doc.pages().first().map(|p| {
-                p.frame.width().to_pt() > p.frame.height().to_pt()
-            }).unwrap_or(false);
-
-            let num_pages = doc.pages().len();
-            let (pages, pause_indices, headings) = if num_pages <= 1 {
-                let mut pages = Vec::with_capacity(num_pages);
-                let mut pause_indices = Vec::new();
-                let mut headings = Vec::new();
-                for (idx, p) in doc.pages().iter().enumerate() {
-                    let (svg, is_pause, h) = process_page_vector(p, idx, &svg_opts, true);
-                    if is_pause {
-                        pause_indices.push(idx);
-                    }
-                    pages.push(svg);
-                    headings.extend(h);
-                }
-                (pages, pause_indices, headings)
-            } else {
-                let num_threads = std::thread::available_parallelism()
-                    .map(|n| n.get())
-                    .unwrap_or(4)
-                    .min(num_pages);
-                let chunk_size = num_pages.div_ceil(num_threads);
-                let pages_slice = doc.pages();
-                let results: Vec<_> = std::thread::scope(|s| {
-                    let mut handles = Vec::new();
-                    for (chunk_idx, chunk) in pages_slice.chunks(chunk_size).enumerate() {
-                        let start_page_idx = chunk_idx * chunk_size;
-                        let svg_opts_ref = &svg_opts;
-                        handles.push(s.spawn(move || {
-                            let mut chunk_res = Vec::with_capacity(chunk.len());
-                            for (rel_idx, page) in chunk.iter().enumerate() {
-                                let abs_idx = start_page_idx + rel_idx;
-                                chunk_res.push((abs_idx, process_page_vector(page, abs_idx, svg_opts_ref, true)));
-                            }
-                            chunk_res
-                        }));
-                    }
-                    handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
-                });
-
-                let mut pages = Vec::with_capacity(num_pages);
-                let mut pause_indices = Vec::new();
-                let mut headings = Vec::new();
-                for (abs_idx, (svg, is_pause, h)) in results {
-                    if is_pause {
-                        pause_indices.push(abs_idx);
-                    }
-                    pages.push(svg);
-                    headings.extend(h);
-                }
-                (pages, pause_indices, headings)
-            };
+            let output_struct = render_doc_to_pages(&doc);
             let t_svg_pages = t_svg_start.elapsed();
 
-            let output_struct = BotoxPagesOutput {
-                num_pages: pages.len(),
-                pages,
-                headings,
-                is_slides,
-                pause_indices,
-            };
             let t_ser_start = std::time::Instant::now();
             let json_str = serde_json::to_string(&output_struct)
                 .map_err(|e| format!("Failed to serialize pages to JSON: {e}"))?;
@@ -1550,7 +1597,6 @@ Second column body text.
             #show raw: set text(font: ("DejaVu Sans Mono",))
         "#;
         let fonts = load_needed_fonts(default_markup);
-        // Default fonts should contain only embedded New Computer Modern, Math, and DejaVu variants
         assert!(!fonts.is_empty());
         assert!(fonts.len() <= 12, "Should only load default embedded fonts, got {}", fonts.len());
 

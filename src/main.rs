@@ -5,6 +5,7 @@ mod slides;
 mod compiler;
 pub mod diagrams;
 mod skills;
+pub mod daemon;
 
 use std::path::{Path, PathBuf};
 use serde_yaml::Value;
@@ -16,6 +17,7 @@ fn show_help() {
        botox config
        botox setup [options]
        botox --skills [options]
+       botox daemon [options]
 
 Pure Rust single native binary: Transforms Markdown into LaTeX-quality PDF documents or presentation slides.
 Mode is detected automatically from frontmatter structure, or specified explicitly.
@@ -25,6 +27,7 @@ Commands:
   config                  Display currently active configuration settings and loaded sources
   setup                   Interactive configuration wizard to configure user defaults
   skills, --skills        Generate agent skill definition (SKILL.md) for AI coding agents
+  daemon, --daemon        Start persistent preview compiler daemon for instant editor live updates
 
 Common Options:
   -o, --output <file>     Output file path (default: .html for slides, .pdf for documents, or '-' for stdout)
@@ -677,9 +680,8 @@ fn take_watch_snapshot(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn compile_once(
-    input_path: &std::path::Path,
-    output_path: &std::path::Path,
+pub fn transpile_markdown_to_typst_markup(
+    raw_content: &str,
     doc_dir: Option<&std::path::Path>,
     config_data: &config::BotoxConfig,
     explicit_pdf: bool,
@@ -691,23 +693,11 @@ fn compile_once(
     cli_theme: Option<&str>,
     cli_exclude_ref: &[String],
     cli_include_ref: &[String],
-    is_stdin: bool,
-    cli_source_file: Option<&str>,
-) -> Result<(bool, std::time::Duration), String> {
-    let raw_content = if is_stdin {
-        use std::io::Read;
-        let mut buffer = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buffer)
-            .map_err(|e| format!("Error reading from stdin: {e}"))?;
-        buffer
-    } else {
-        std::fs::read_to_string(input_path)
-            .map_err(|e| format!("Error reading '{}': {e}", input_path.display()))?
-    };
-
-    let (fm, body_md) = extract_frontmatter(&raw_content);
-    let is_slides = detect_is_slides(&fm, &raw_content, input_path, explicit_slides, explicit_pdf);
+    source_path: Option<&std::path::Path>,
+) -> (String, bool) {
+    let (fm, body_md) = extract_frontmatter(raw_content);
+    let fallback = source_path.unwrap_or(std::path::Path::new("document.md"));
+    let is_slides = detect_is_slides(&fm, raw_content, fallback, explicit_slides, explicit_pdf);
 
     let doc_config = config_data.document.clone().unwrap_or_default();
     let slides_config = config_data.slides.clone().unwrap_or_default();
@@ -827,11 +817,8 @@ fn compile_once(
         kroki_url,
         resource_dir: doc_dir,
     };
-    let t_md_start = std::time::Instant::now();
     let body_typst = markdown::markdown_to_typst_with_options(body_md, &md_opts);
-    let t_md = t_md_start.elapsed();
 
-    let t_wrap_start = std::time::Instant::now();
     let typst_markup = if is_slides {
         slides::wrap_slides(&body_typst, &fm, &slides_config, cli_author, cli_theme)
     } else {
@@ -845,7 +832,63 @@ fn compile_once(
             cli_theme,
         )
     };
-    let t_wrap = t_wrap_start.elapsed();
+
+    (typst_markup, is_slides)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_once(
+    input_path: &std::path::Path,
+    output_path: &std::path::Path,
+    doc_dir: Option<&std::path::Path>,
+    config_data: &config::BotoxConfig,
+    explicit_pdf: bool,
+    explicit_slides: bool,
+    cli_toc: Option<bool>,
+    cli_author: Option<&str>,
+    cli_font: Option<&str>,
+    cli_bibliography: Option<bool>,
+    cli_theme: Option<&str>,
+    cli_exclude_ref: &[String],
+    cli_include_ref: &[String],
+    is_stdin: bool,
+    cli_source_file: Option<&str>,
+) -> Result<(bool, std::time::Duration), String> {
+    let raw_content = if is_stdin {
+        use std::io::Read;
+        let mut buffer = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buffer)
+            .map_err(|e| format!("Error reading from stdin: {e}"))?;
+        buffer
+    } else {
+        std::fs::read_to_string(input_path)
+            .map_err(|e| format!("Error reading '{}': {e}", input_path.display()))?
+    };
+
+    let src_path = if is_stdin {
+        cli_source_file.map(std::path::Path::new)
+    } else {
+        Some(input_path)
+    };
+
+    let t_transpile_start = std::time::Instant::now();
+    let (typst_markup, is_slides) = transpile_markdown_to_typst_markup(
+        &raw_content,
+        doc_dir,
+        config_data,
+        explicit_pdf,
+        explicit_slides,
+        cli_toc,
+        cli_author,
+        cli_font,
+        cli_bibliography,
+        cli_theme,
+        cli_exclude_ref,
+        cli_include_ref,
+        src_path,
+    );
+    let t_transpile = t_transpile_start.elapsed();
 
     let start = std::time::Instant::now();
     let resource_dir = doc_dir;
@@ -866,7 +909,7 @@ fn compile_once(
     let duration = start.elapsed();
 
     if std::env::var("BOTOX_PROFILE").is_ok() {
-        eprintln!("[PROFILE:PIPELINE] markdown_transpile: {t_md:.2?}, template_wrap: {t_wrap:.2?}, typst_backend: {duration:.2?}");
+        eprintln!("[PROFILE:PIPELINE] markdown_transpile: {t_transpile:.2?}, typst_backend: {duration:.2?}");
     }
 
     Ok((is_slides, duration))
@@ -930,6 +973,11 @@ fn main() {
 
     if args[1] == "skills" || args[1] == "--skills" {
         skills::handle_skills(&args[2..]);
+        return;
+    }
+
+    if args[1] == "daemon" || args[1] == "--daemon" || args[1] == "serve" {
+        daemon::handle_daemon(&args[2..]);
         return;
     }
 
