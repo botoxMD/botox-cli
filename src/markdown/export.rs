@@ -617,27 +617,30 @@ pub fn export_to_normal_markdown(
 
                     if export_success {
                         let rel_path = format!("{relative_assets_prefix}/{asset_filename}");
-                        out.push_str(&format!("![{alt_text}]({rel_path})\n"));
+                        let width_attr = if let Some(ref w) = spec.width {
+                            format!(" width=\"{w}\"")
+                        } else {
+                            String::new()
+                        };
+                        out.push_str("<p align=\"center\">\n");
+                        out.push_str(&format!("  <img src=\"{rel_path}\" alt=\"{alt_text}\"{width_attr} style=\"border-radius: 8px;\" />"));
                         if let Some(ref cap) = spec.caption {
-                            out.push_str(&format!("*Figure {cur_fig_num}: {cap}*\n\n"));
+                            out.push_str(&format!("<br>\n  <em>Figure {cur_fig_num}: {cap}</em>\n"));
                         } else {
                             out.push('\n');
                         }
+                        out.push_str("</p>\n\n");
                     } else {
                         // Fallback: If Mermaid, output native GitHub ```mermaid block!
                         if spec.diagram_type == "mermaid" {
-                            out.push_str(&format!("```mermaid\n{diag_code}```\n"));
+                            out.push_str(&format!("```mermaid\n{diag_code}```\n\n"));
                             if let Some(ref cap) = spec.caption {
-                                out.push_str(&format!("*Figure {cur_fig_num}: {cap}*\n\n"));
-                            } else {
-                                out.push('\n');
+                                out.push_str(&format!("<p align=\"center\"><em>Figure {cur_fig_num}: {cap}</em></p>\n\n"));
                             }
                         } else {
-                            out.push_str(&format!("```{}\n{diag_code}```\n", spec.diagram_type));
+                            out.push_str(&format!("```{}\n{diag_code}```\n\n", spec.diagram_type));
                             if let Some(ref cap) = spec.caption {
-                                out.push_str(&format!("*Figure {cur_fig_num}: {cap}*\n\n"));
-                            } else {
-                                out.push('\n');
+                                out.push_str(&format!("<p align=\"center\"><em>Figure {cur_fig_num}: {cap}</em></p>\n\n"));
                             }
                         }
                     }
@@ -796,10 +799,12 @@ pub fn export_to_normal_markdown(
                     {
                         cur_fig_num += 1;
                         let mut fig_id = None;
+                        let mut fig_width = None;
                         let after_paren = &trimmed[open_paren + close_paren + 1..].trim();
                         if after_paren.starts_with('{') {
-                            let (_, _, id_opt) = parse_image_attributes(&after_paren[1..after_paren.len().saturating_sub(1)]);
+                            let (w, _, id_opt) = parse_image_attributes(&after_paren[1..after_paren.len().saturating_sub(1)]);
                             fig_id = id_opt;
+                            fig_width = w;
                         }
                         let id = fig_id.unwrap_or_else(|| format!("fig-{cur_fig_num}"));
                         let clean_id = id.replace(':', "-");
@@ -829,13 +834,32 @@ pub fn export_to_normal_markdown(
                             }
                         }
 
+                        let width_attr = if let Some(ref w) = fig_width {
+                            format!(" width=\"{w}\"")
+                        } else {
+                            String::new()
+                        };
+
                         out.push_str(&format!("<a id=\"{clean_id}\"></a>\n"));
                         if export_success {
                             let rel_path = format!("{relative_assets_prefix}/{asset_filename}");
-                            out.push_str(&format!("![{title}]({rel_path})\n"));
-                            out.push_str(&format!("*Figure {cur_fig_num}: {title}*\n\n"));
+                            out.push_str("<p align=\"center\">\n");
+                            out.push_str(&format!("  <img src=\"{rel_path}\" alt=\"{title}\"{width_attr} style=\"border-radius: 8px;\" />"));
+                            if !title.is_empty() {
+                                out.push_str(&format!("<br>\n  <em>Figure {cur_fig_num}: {title}</em>\n"));
+                            } else {
+                                out.push('\n');
+                            }
+                            out.push_str("</p>\n\n");
                         } else {
-                            out.push_str(&format!("![{title}]({url})\n\n"));
+                            out.push_str("<p align=\"center\">\n");
+                            out.push_str(&format!("  <img src=\"{url}\" alt=\"{title}\"{width_attr} style=\"border-radius: 8px;\" />"));
+                            if !title.is_empty() {
+                                out.push_str(&format!("<br>\n  <em>Figure {cur_fig_num}: {title}</em>\n"));
+                            } else {
+                                out.push('\n');
+                            }
+                            out.push_str("</p>\n\n");
                         }
 
                         line_idx += 1;
@@ -1179,5 +1203,16 @@ mod tests {
         assert!(res.content.contains("## Table of Contents"));
         assert!(res.content.contains("- [1 Introduction](#sec-intro)"));
         assert!(res.content.contains("  - [1.1 Details](#sec-details)"));
+    }
+
+    #[test]
+    fn test_export_diagram_figure_formatting() {
+        let md = "```mermaid {caption=\"Compiler Pipeline\" width=70% #fig:mermaid-pipeline}\ngraph LR\n  A --> B\n```";
+        let opts = MarkdownExportOptions::default();
+        let res = export_to_normal_markdown(md, &opts).unwrap();
+        assert!(res.content.contains("<a id=\"fig-mermaid-pipeline\"></a>"));
+        assert!(res.content.contains("<p align=\"center\">"));
+        assert!(res.content.contains("Figure 1: Compiler Pipeline"));
+        assert!(res.content.contains("</p>"));
     }
 }
