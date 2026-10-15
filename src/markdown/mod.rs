@@ -1,5 +1,6 @@
 pub mod callouts;
 pub mod escapes;
+pub mod export;
 pub mod math;
 pub mod pandoc;
 pub mod references;
@@ -8,6 +9,7 @@ pub mod tables;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 pub use escapes::escape_typst_text;
+pub use export::{export_to_normal_markdown, MarkdownExportOptions};
 pub use math::convert_latex_math_to_typst;
 pub use pandoc::{
     parse_heading_attributes, parse_image_attributes, preprocess_pandoc,

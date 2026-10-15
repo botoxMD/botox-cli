@@ -11,28 +11,33 @@ use std::path::{Path, PathBuf};
 use serde_yaml::Value;
 
 fn show_help() {
-    println!(r#"Usage: botox <input.md> [options]
-       botox <pdf|slides> <input.md> [options]
+    println!(r#"Usage: botox <input.md|input.btx|input.btx.md> [options]
+       botox <pdf|slides|markdown> <input> [options]
        botox init <filename> [options]
        botox config
        botox setup [options]
        botox --skills [options]
        botox daemon [options]
 
-Pure Rust single native binary: Transforms Markdown into LaTeX-quality PDF documents or presentation slides.
-Mode is detected automatically from frontmatter structure, or specified explicitly.
+Pure Rust single native binary: Transforms Markdown and Botox (.btx, .btx.md) into LaTeX-quality PDF documents, presentation slides, or clean standard Markdown.
+Mode is detected automatically from frontmatter structure and file extensions, or specified explicitly.
 
 Commands:
-  init <filename>         Initialize a new Markdown document or presentation slide deck
+  init <filename>         Initialize a new Markdown/Botox document or presentation slide deck
+  markdown, md            Export to clean, portable standard Markdown with assets & resolved citations
   config                  Display currently active configuration settings and loaded sources
   setup                   Interactive configuration wizard to configure user defaults
   skills, --skills        Generate agent skill definition (SKILL.md) for AI coding agents
   daemon, --daemon        Start persistent preview compiler daemon for instant editor live updates
 
 Common Options:
-  -o, --output <file>     Output file path (default: .html for slides, .pdf for documents, or '-' for stdout)
+  -o, --output <file>     Output file path (default: .html for slides, .pdf for documents, .md for markdown export, or '-' for stdout)
   -w, --watch             Watch input file and directory for changes and recompile automatically
   --config <file>         Custom configuration YAML path
+
+Markdown Export Options:
+  --markdown, --md        Force normal Markdown export mode
+  --assets-dir <dir>      Directory for exported diagram images (default: 'assets')
 
 Documentation Options:
   --pdf                   Force PDF documentation mode
@@ -632,14 +637,57 @@ fn is_relevant_watch_file(path: &std::path::Path, output_path: &std::path::Path)
     if file_name.starts_with('.') || file_name.ends_with('~') {
         return false;
     }
+    let name_lower = file_name.to_lowercase();
+    if name_lower.ends_with(".btx.md") || name_lower.ends_with(".bbl.md") {
+        return true;
+    }
     let ext = match path.extension().and_then(|e| e.to_str()) {
         Some(e) => e.to_lowercase(),
         None => return false,
     };
     matches!(
         ext.as_str(),
-        "md" | "markdown" | "yaml" | "yml" | "typ" | "bib" | "png" | "jpg" | "jpeg" | "svg" | "webp" | "gif"
+        "md" | "markdown" | "btx" | "bbl" | "yaml" | "yml" | "typ" | "bib" | "png" | "jpg" | "jpeg" | "svg" | "webp" | "gif"
     )
+}
+
+pub fn compute_default_output_path(input_path: &Path, target_ext: &str) -> PathBuf {
+    let file_name = input_path.file_name().and_then(|n| n.to_str()).unwrap_or("document");
+    let stem = if let Some(stripped) = file_name.strip_suffix(".btx.md") {
+        stripped
+    } else if let Some(stripped) = file_name.strip_suffix(".bbl.md") {
+        stripped
+    } else if let Some(stripped) = file_name.strip_suffix(".btx") {
+        stripped
+    } else if let Some(stripped) = file_name.strip_suffix(".md") {
+        stripped
+    } else if let Some(stripped) = file_name.strip_suffix(".markdown") {
+        stripped
+    } else {
+        input_path.file_stem().and_then(|s| s.to_str()).unwrap_or(file_name)
+    };
+
+    let final_stem = if target_ext == "md" && (file_name.ends_with(".md") && !file_name.ends_with(".btx.md") && !file_name.ends_with(".bbl.md")) {
+        format!("{stem}.export")
+    } else {
+        stem.to_string()
+    };
+
+    let parent = input_path.parent();
+    match parent {
+        Some(p) if !p.as_os_str().is_empty() => p.join(format!("{final_stem}.{target_ext}")),
+        _ => PathBuf::from(format!("{final_stem}.{target_ext}")),
+    }
+}
+
+pub fn extract_yaml_string_list(val: &Value) -> Vec<String> {
+    if let Some(arr) = val.as_sequence() {
+        arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
+    } else if let Some(s) = val.as_str() {
+        vec![s.to_string()]
+    } else {
+        Vec::new()
+    }
 }
 
 fn take_watch_snapshot(
@@ -915,9 +963,186 @@ fn compile_once(
     Ok((is_slides, duration))
 }
 
+#[allow(clippy::too_many_arguments)]
+fn compile_markdown_once(
+    input_path: &std::path::Path,
+    output_path: &std::path::Path,
+    doc_dir: Option<&std::path::Path>,
+    config_data: &config::BotoxConfig,
+    cli_assets_dir: Option<&std::path::Path>,
+    cli_toc: Option<bool>,
+    _cli_author: Option<&str>,
+    cli_bibliography: Option<bool>,
+    cli_number_sections: bool,
+    cli_exclude_ref: &[String],
+    cli_include_ref: &[String],
+    is_stdin: bool,
+) -> Result<(usize, std::time::Duration), String> {
+    let raw_content = if is_stdin {
+        use std::io::Read;
+        let mut buffer = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buffer)
+            .map_err(|e| format!("Error reading from stdin: {e}"))?;
+        buffer
+    } else {
+        std::fs::read_to_string(input_path)
+            .map_err(|e| format!("Error reading '{}': {e}", input_path.display()))?
+    };
+
+    let start = std::time::Instant::now();
+    let (fm_raw, _) = markdown::export::extract_frontmatter_raw(&raw_content);
+    let fm: serde_yaml::Value = serde_yaml::from_str(fm_raw).unwrap_or(serde_yaml::Value::Null);
+    let doc_config = config_data.document.clone().unwrap_or_default();
+
+    let lang = fm.get("lang")
+        .and_then(|v| v.as_str())
+        .or(doc_config.lang.as_deref())
+        .unwrap_or("en");
+
+    let biblio_title = fm.get("biblio-title")
+        .or_else(|| fm.get("bibliography-title"))
+        .or_else(|| fm.get("references-title"))
+        .and_then(|v| v.as_str());
+
+    let should_enable_bib = if let Some(cli) = cli_bibliography {
+        cli
+    } else if let Some(fm_bib) = fm.get("bibliography")
+        .or_else(|| fm.get("links-as-references"))
+        .or_else(|| fm.get("cite-links"))
+    {
+        match fm_bib {
+            serde_yaml::Value::Bool(b) => *b,
+            serde_yaml::Value::String(s) => !s.is_empty() && s != "false" && s != "no" && s != "off",
+            _ => false,
+        }
+    } else {
+        doc_config.bibliography.unwrap_or(false)
+    };
+
+    let toc_title = fm.get("toc-title")
+        .or_else(|| fm.get("toc_title"))
+        .and_then(|v| v.as_str())
+        .or(doc_config.toc_title.as_deref());
+
+    let toc_depth = fm.get("toc-depth")
+        .or_else(|| fm.get("toc_depth"))
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize)
+        .or(doc_config.toc_depth);
+
+    let number_sections = if cli_number_sections {
+        true
+    } else if let Some(v) = fm.get("number-sections").or_else(|| fm.get("number_sections")) {
+        match v {
+            serde_yaml::Value::Bool(b) => *b,
+            serde_yaml::Value::String(s) => s == "true" || s == "yes" || s == "1",
+            _ => false,
+        }
+    } else {
+        doc_config.section_numbering.unwrap_or(false)
+    };
+
+    let kroki_url = fm.get("kroki-url")
+        .or_else(|| fm.get("kroki_url"))
+        .or_else(|| fm.get("kroki-endpoint"))
+        .or_else(|| fm.get("kroki_endpoint"))
+        .and_then(|v| v.as_str())
+        .or(doc_config.kroki_url.as_deref());
+
+    let mut ref_exclude = Vec::new();
+    ref_exclude.extend_from_slice(cli_exclude_ref);
+    if let Some(ref cfg_ref) = config_data.references
+        && let Some(ref exc) = cfg_ref.exclude {
+            ref_exclude.extend(exc.clone());
+        }
+    if let Some(ref cfg_ref) = doc_config.references
+        && let Some(ref exc) = cfg_ref.exclude {
+            ref_exclude.extend(exc.clone());
+        }
+    if let Some(ref exc) = doc_config.exclude_references {
+        ref_exclude.extend(exc.clone());
+    }
+    if let Some(v) = fm.get("references").and_then(|r| r.get("exclude")) {
+        ref_exclude.extend(extract_yaml_string_list(v));
+    }
+    if let Some(v) = fm.get("exclude-references")
+        .or_else(|| fm.get("exclude_references"))
+        .or_else(|| fm.get("exclude-links"))
+        .or_else(|| fm.get("exclude_links"))
+    {
+        ref_exclude.extend(extract_yaml_string_list(v));
+    }
+
+    let mut ref_include = Vec::new();
+    ref_include.extend_from_slice(cli_include_ref);
+    if let Some(ref cfg_ref) = config_data.references
+        && let Some(ref inc) = cfg_ref.include {
+            ref_include.extend(inc.clone());
+        }
+    if let Some(ref cfg_ref) = doc_config.references
+        && let Some(ref inc) = cfg_ref.include {
+            ref_include.extend(inc.clone());
+        }
+    if let Some(ref inc) = doc_config.include_references {
+        ref_include.extend(inc.clone());
+    }
+    if let Some(v) = fm.get("references").and_then(|r| r.get("include")) {
+        ref_include.extend(extract_yaml_string_list(v));
+    }
+    if let Some(v) = fm.get("include-references")
+        .or_else(|| fm.get("include_references"))
+        .or_else(|| fm.get("include-links"))
+        .or_else(|| fm.get("include_links"))
+    {
+        ref_include.extend(extract_yaml_string_list(v));
+    }
+
+    let exclude_opt = if ref_exclude.is_empty() { None } else { Some(ref_exclude) };
+    let include_opt = if ref_include.is_empty() { None } else { Some(ref_include) };
+
+    let export_opts = markdown::MarkdownExportOptions {
+        output_path: Some(output_path),
+        assets_dir: cli_assets_dir,
+        resource_dir: doc_dir,
+        kroki_url,
+        bibliography: should_enable_bib,
+        lang,
+        biblio_title,
+        toc_title,
+        toc_depth,
+        ref_exclude: exclude_opt.as_deref(),
+        ref_include: include_opt.as_deref(),
+        generate_toc: cli_toc.unwrap_or(false),
+        number_sections,
+    };
+
+    let result = markdown::export_to_normal_markdown(&raw_content, &export_opts)?;
+
+    if output_path.as_os_str() == "-" {
+        use std::io::Write;
+        std::io::stdout()
+            .write_all(result.content.as_bytes())
+            .map_err(|e| format!("Error writing to stdout: {e}"))?;
+    } else {
+        if let Some(parent) = output_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create output directory '{}': {e}", parent.display()))?;
+            }
+        }
+        std::fs::write(output_path, result.content.as_bytes())
+            .map_err(|e| format!("Error writing to '{}': {e}", output_path.display()))?;
+    }
+
+    Ok((result.exported_assets.len(), start.elapsed()))
+}
+
 fn format_mode_str(is_slides: bool, output_path: &std::path::Path) -> &'static str {
     let ext = output_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    if is_slides {
+    if ext == "md" || ext == "markdown" {
+        "Normal Markdown"
+    } else if is_slides {
         if ext == "html" || ext == "htm" {
             "HTML presentation slides"
         } else if ext == "svg" {
@@ -995,6 +1220,9 @@ fn main() {
     let mut cli_source_file: Option<String> = None;
     let mut explicit_pdf = false;
     let mut explicit_slides = false;
+    let mut explicit_markdown = false;
+    let mut cli_assets_dir: Option<PathBuf> = None;
+    let mut cli_number_sections = false;
     let mut watch_mode = false;
 
     let mut i = 1;
@@ -1005,6 +1233,9 @@ fn main() {
             }
             "slides" | "slide" => {
                 explicit_slides = true;
+            }
+            "markdown" | "md" | "--markdown" | "--md" => {
+                explicit_markdown = true;
             }
             "--pdf" => {
                 explicit_pdf = true;
@@ -1100,8 +1331,14 @@ fn main() {
                     cli_source_file = Some(args[i].clone());
                 }
             }
+            "--assets-dir" => {
+                i += 1;
+                if i < args.len() {
+                    cli_assets_dir = Some(PathBuf::from(&args[i]));
+                }
+            }
             "-N" | "--number-sections" => {
-                // Handled in document wrapper via flag or frontmatter
+                cli_number_sections = true;
             }
             other => {
                 if other == "-" && input_file.is_none() {
@@ -1133,7 +1370,18 @@ fn main() {
         std::process::exit(1);
     }
 
-    let is_preliminary_slides = if explicit_slides {
+    let is_markdown_mode = if explicit_markdown {
+        true
+    } else if let Some(ref out_f) = output_file {
+        let ext = out_f.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        (ext == "md" || ext == "markdown") && !explicit_pdf && !explicit_slides
+    } else {
+        false
+    };
+
+    let is_preliminary_slides = if is_markdown_mode {
+        false
+    } else if explicit_slides {
         true
     } else if explicit_pdf {
         false
@@ -1149,11 +1397,17 @@ fn main() {
         false
     };
 
-    let default_ext = if is_preliminary_slides { "html" } else { "pdf" };
+    let default_ext = if is_markdown_mode {
+        "md"
+    } else if is_preliminary_slides {
+        "html"
+    } else {
+        "pdf"
+    };
     let default_output = if is_stdin {
         PathBuf::from(format!("output.{default_ext}"))
     } else {
-        input_path.with_extension(default_ext)
+        compute_default_output_path(&input_path, default_ext)
     };
     let output_path = output_file.unwrap_or(default_output);
     let is_stdout = output_path.as_os_str() == "-";
@@ -1170,6 +1424,145 @@ fn main() {
     });
 
     let (config_data, _) = config::BotoxConfig::load(custom_config.as_deref(), doc_dir.as_deref());
+
+    if is_markdown_mode {
+        if !watch_mode {
+            match compile_markdown_once(
+                &input_path,
+                &output_path,
+                doc_dir.as_deref(),
+                &config_data,
+                cli_assets_dir.as_deref(),
+                cli_toc,
+                cli_author.as_deref(),
+                cli_bibliography,
+                cli_number_sections,
+                &cli_exclude_ref,
+                &cli_include_ref,
+                is_stdin,
+            ) {
+                Ok((assets_count, duration)) => {
+                    if !is_stdout {
+                        let assets_info = if assets_count > 0 {
+                            format!(" (exported {assets_count} diagram assets)")
+                        } else {
+                            String::new()
+                        };
+                        println!("Compiled Normal Markdown -> '{}' in {:.2?}{assets_info}", output_path.display(), duration);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Compilation failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+
+        // Markdown Watch mode:
+        match compile_markdown_once(
+            &input_path,
+            &output_path,
+            doc_dir.as_deref(),
+            &config_data,
+            cli_assets_dir.as_deref(),
+            cli_toc,
+            cli_author.as_deref(),
+            cli_bibliography,
+            cli_number_sections,
+            &cli_exclude_ref,
+            &cli_include_ref,
+            false,
+        ) {
+            Ok((assets_count, duration)) => {
+                let assets_info = if assets_count > 0 {
+                    format!(" (exported {assets_count} diagram assets)")
+                } else {
+                    String::new()
+                };
+                if is_stdout {
+                    eprintln!("[{}] Compiled Normal Markdown -> stdout in {:.2?}{assets_info}", get_timestamp(), duration);
+                } else {
+                    println!("Compiled Normal Markdown -> '{}' in {:.2?}{assets_info}", output_path.display(), duration);
+                }
+            }
+            Err(e) => {
+                eprintln!("[{}] Initial compilation failed: {e}", get_timestamp());
+            }
+        }
+
+        let start_time = get_timestamp();
+        if is_stdout {
+            eprintln!("[{start_time}] Watching '{}' for changes (Ctrl+C to stop)...", input_path.display());
+        } else {
+            println!("[{start_time}] Watching '{}' for changes (Ctrl+C to stop)...", input_path.display());
+        }
+
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
+        let _ = ctrlc::set_handler(move || {
+            r.store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        let mut last_snapshot = take_watch_snapshot(&input_path, &output_path, doc_dir.as_deref(), custom_config.as_deref());
+
+        while running.load(std::sync::atomic::Ordering::SeqCst) {
+            for _ in 0..5 {
+                if !running.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            if !running.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+
+            let current_snapshot = take_watch_snapshot(&input_path, &output_path, doc_dir.as_deref(), custom_config.as_deref());
+            if current_snapshot != last_snapshot {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                let current_snapshot = take_watch_snapshot(&input_path, &output_path, doc_dir.as_deref(), custom_config.as_deref());
+                last_snapshot = current_snapshot;
+
+                let (updated_cfg, _) = config::BotoxConfig::load(custom_config.as_deref(), doc_dir.as_deref());
+
+                let now = get_timestamp();
+                match compile_markdown_once(
+                    &input_path,
+                    &output_path,
+                    doc_dir.as_deref(),
+                    &updated_cfg,
+                    cli_assets_dir.as_deref(),
+                    cli_toc,
+                    cli_author.as_deref(),
+                    cli_bibliography,
+                    cli_number_sections,
+                    &cli_exclude_ref,
+                    &cli_include_ref,
+                    false,
+                ) {
+                    Ok((assets_count, duration)) => {
+                        let assets_info = if assets_count > 0 {
+                            format!(" (exported {assets_count} diagram assets)")
+                        } else {
+                            String::new()
+                        };
+                        let target = if is_stdout { "stdout".to_string() } else { format!("'{}'", output_path.display()) };
+                        let msg = format!("[{now}] Recompiled Normal Markdown -> {target} in {:.2?}{assets_info}", duration);
+                        if is_stdout {
+                            eprintln!("{msg}");
+                        } else {
+                            println!("{msg}");
+                        }
+                    }
+                    Err(e) => {
+                        let now = get_timestamp();
+                        eprintln!("[{now}] Compilation failed: {e}");
+                    }
+                }
+            }
+        }
+        return;
+    }
 
     if !watch_mode {
         match compile_once(
@@ -1398,6 +1791,64 @@ mod tests {
 
         // When explicit_pdf is set, even marp: true is treated as pdf
         assert!(!detect_is_slides(&fm, slides_md, Path::new("test.md"), false, true));
+    }
+
+    #[test]
+    fn test_compute_default_output_path_btx_and_markdown() {
+        // .btx.md inputs
+        assert_eq!(
+            compute_default_output_path(Path::new("paper.btx.md"), "pdf"),
+            PathBuf::from("paper.pdf")
+        );
+        assert_eq!(
+            compute_default_output_path(Path::new("deck.btx.md"), "html"),
+            PathBuf::from("deck.html")
+        );
+        assert_eq!(
+            compute_default_output_path(Path::new("paper.btx.md"), "md"),
+            PathBuf::from("paper.md")
+        );
+
+        // .btx inputs
+        assert_eq!(
+            compute_default_output_path(Path::new("doc.btx"), "pdf"),
+            PathBuf::from("doc.pdf")
+        );
+        assert_eq!(
+            compute_default_output_path(Path::new("doc.btx"), "md"),
+            PathBuf::from("doc.md")
+        );
+
+        // standard .md inputs
+        assert_eq!(
+            compute_default_output_path(Path::new("report.md"), "pdf"),
+            PathBuf::from("report.pdf")
+        );
+        assert_eq!(
+            compute_default_output_path(Path::new("report.md"), "md"),
+            PathBuf::from("report.export.md")
+        );
+
+        // directory preserving
+        assert_eq!(
+            compute_default_output_path(Path::new("examples/paper.btx.md"), "pdf"),
+            PathBuf::from("examples/paper.pdf")
+        );
+        assert_eq!(
+            compute_default_output_path(Path::new("examples/paper.btx.md"), "md"),
+            PathBuf::from("examples/paper.md")
+        );
+    }
+
+    #[test]
+    fn test_is_relevant_watch_file_supports_btx() {
+        let out = Path::new("doc.pdf");
+        assert!(is_relevant_watch_file(Path::new("document.btx"), out));
+        assert!(is_relevant_watch_file(Path::new("document.btx.md"), out));
+        assert!(is_relevant_watch_file(Path::new("slides.btx"), out));
+        assert!(is_relevant_watch_file(Path::new("slides.btx.md"), out));
+        assert!(is_relevant_watch_file(Path::new("sub/module.btx"), out));
+        assert!(!is_relevant_watch_file(Path::new(".hidden.btx"), out));
     }
 }
 
