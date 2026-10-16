@@ -89,6 +89,151 @@ fn format_today_date(lang: &str) -> String {
     }
 }
 
+pub fn is_references_heading_title(title: &str, biblio_title: Option<&str>) -> bool {
+    let lower = title.trim().to_lowercase();
+    if let Some(bt) = biblio_title {
+        if lower == bt.trim().to_lowercase() {
+            return true;
+        }
+    }
+    matches!(
+        lower.as_str(),
+        "references"
+            | "reference"
+            | "bibliography"
+            | "works cited"
+            | "sources"
+            | "références"
+            | "literaturverzeichnis"
+            | "referencias"
+            | "riferimenti bibliografici"
+    )
+}
+
+pub fn detect_list_indent(lines: &[&str], current_line_idx: usize) -> Option<&'static str> {
+    let mut k = current_line_idx;
+    while k > 0 {
+        k -= 1;
+        let prev = lines[k].trim();
+        if prev.is_empty() {
+            continue;
+        }
+        let trimmed_start = lines[k].trim_start();
+        if let Some(rest) = trimmed_start.strip_prefix(|c: char| c.is_ascii_digit()) {
+            let after_digits = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+            if after_digits.starts_with(". ") || after_digits.starts_with(") ") {
+                return Some("   ");
+            }
+        }
+        if trimmed_start.starts_with("* ")
+            || trimmed_start.starts_with("- ")
+            || trimmed_start.starts_with("+ ")
+        {
+            return Some("  ");
+        }
+        break;
+    }
+    None
+}
+
+pub fn filter_frontmatter_for_markdown(raw_fm: &str) -> Option<String> {
+    let val: serde_yaml::Value = serde_yaml::from_str(raw_fm).ok()?;
+    let map = val.as_mapping()?;
+    let mut new_map = serde_yaml::Mapping::new();
+
+    let internal_keys = [
+        "theme", "slides_theme", "slides-theme",
+        "papersize", "paper", "pagesize", "page-size",
+        "fontsize", "font-size", "font",
+        "margin", "margins", "columns", "gutter",
+        "linestretch", "line-spacing", "line_spacing",
+        "pagebreak-before", "pagebreak_before",
+        "kroki_url", "kroki-url", "kroki_endpoint", "kroki-endpoint",
+        "toc", "toc-depth", "toc_depth", "toc-title", "toc_title",
+        "number-sections", "number_sections",
+        "bibliography", "bibliography-title", "biblio-title", "biblio_title", "references-title", "references_title",
+        "links-as-references", "links_as_references", "cite-links", "cite_links",
+        "exclude-references", "exclude_references", "exclude-links", "exclude_links",
+        "include-references", "include_references", "include-links", "include_links",
+        "marp", "slide", "slides", "presentation",
+        "_class",
+    ];
+
+    for (k, v) in map {
+        if let Some(key_str) = k.as_str() {
+            let key_norm = key_str.to_ascii_lowercase().replace('_', "-");
+            let is_internal = internal_keys.iter().any(|ik| {
+                let ik_norm = ik.replace('_', "-");
+                key_norm == ik_norm
+            });
+            if !is_internal {
+                new_map.insert(k.clone(), v.clone());
+            }
+        } else {
+            new_map.insert(k.clone(), v.clone());
+        }
+    }
+
+    if new_map.is_empty() {
+        None
+    } else {
+        let serialized = serde_yaml::to_string(&serde_yaml::Value::Mapping(new_map)).ok()?;
+        Some(serialized.trim().to_string())
+    }
+}
+
+pub fn normalize_markdown_blank_lines(content: &str) -> String {
+    let mut result = String::with_capacity(content.len());
+    let mut in_fence = false;
+    let mut fence_char = '`';
+    let mut fence_len = 0;
+    let mut consecutive_empty = 0;
+
+    for line in content.lines() {
+        let trimmed_end = line.trim_end();
+        let trimmed_start = trimmed_end.trim_start();
+
+        if !in_fence {
+            let backticks = trimmed_start.chars().take_while(|&c| c == '`').count();
+            let tildes = trimmed_start.chars().take_while(|&c| c == '~').count();
+            if backticks >= 3 || tildes >= 3 {
+                in_fence = true;
+                fence_char = if backticks >= 3 { '`' } else { '~' };
+                fence_len = backticks.max(tildes);
+                consecutive_empty = 0;
+                result.push_str(trimmed_end);
+                result.push('\n');
+                continue;
+            }
+
+            if trimmed_start.is_empty() {
+                consecutive_empty += 1;
+                if consecutive_empty <= 1 && !result.is_empty() {
+                    result.push('\n');
+                }
+            } else {
+                consecutive_empty = 0;
+                result.push_str(trimmed_end);
+                result.push('\n');
+            }
+        } else {
+            let count = trimmed_start.chars().take_while(|&c| c == fence_char).count();
+            if count >= fence_len && trimmed_start[count..].trim().is_empty() {
+                in_fence = false;
+            }
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+
+    let trimmed = result.trim_end();
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!("{trimmed}\n")
+    }
+}
+
 fn parse_display_math_block(
     lines: &[&str],
     start_idx: usize,
@@ -242,7 +387,31 @@ pub fn export_to_normal_markdown(
 
     // Determine target assets directory
     let (target_assets_dir, relative_assets_prefix) = if let Some(ad) = opts.assets_dir {
-        (ad.to_path_buf(), ad.to_string_lossy().to_string())
+        let rel_prefix = if ad.is_absolute() {
+            if let Some(out_p) = opts.output_path {
+                let out_parent = if out_p.as_os_str() == "-" {
+                    Path::new(".")
+                } else {
+                    out_p.parent().unwrap_or(Path::new("."))
+                };
+                if let (Ok(canon_ad), Ok(canon_out)) = (ad.canonicalize(), out_parent.canonicalize()) {
+                    if let Ok(rel) = canon_ad.strip_prefix(&canon_out) {
+                        rel.to_string_lossy().to_string()
+                    } else {
+                        ad.to_string_lossy().to_string()
+                    }
+                } else if let Ok(rel) = ad.strip_prefix(out_parent) {
+                    rel.to_string_lossy().to_string()
+                } else {
+                    ad.to_string_lossy().to_string()
+                }
+            } else {
+                ad.to_string_lossy().to_string()
+            }
+        } else {
+            ad.to_string_lossy().to_string()
+        };
+        (ad.to_path_buf(), rel_prefix)
     } else if let Some(out_p) = opts.output_path {
         if out_p.as_os_str() == "-" {
             (PathBuf::from("assets"), "assets".to_string())
@@ -317,7 +486,10 @@ pub fn export_to_normal_markdown(
             let hashes = trimmed.chars().take_while(|&c| c == '#').count();
             if hashes <= 6 && trimmed.chars().nth(hashes).map(|c| c.is_whitespace()).unwrap_or(false) {
                 let h_text = trimmed[hashes..].trim();
-                let (title, is_unnumbered, id_opt) = parse_heading_attributes(h_text);
+                let (title, mut is_unnumbered, id_opt) = parse_heading_attributes(h_text);
+                if is_references_heading_title(&title, biblio_title) {
+                    is_unnumbered = true;
+                }
                 let id = id_opt.unwrap_or_else(|| slugify(&title));
                 let clean_id = id.replace(':', "-");
 
@@ -412,7 +584,7 @@ pub fn export_to_normal_markdown(
                         }
                         let id = fig_id.unwrap_or_else(|| format!("fig-{fig_counter}"));
                         let clean_id = id.replace(':', "-");
-                        let alt = &trimmed[2..open_paren - 2];
+                        let alt = trimmed[2..open_paren].trim_end_matches(']').trim();
                         let title = if alt.is_empty() { format!("Figure {fig_counter}") } else { alt.to_string() };
                         let info = TargetInfo {
                             kind: TargetKind::Figure,
@@ -512,13 +684,13 @@ pub fn export_to_normal_markdown(
     let mut has_rendered_toc = false;
     let mut has_rendered_ref = false;
 
-    // Output frontmatter if present
+    // Output frontmatter if present (cleaned of internal compiler keys)
     if !fm_raw.trim().is_empty() {
-        out.push_str("---\n");
-        // Keep user frontmatter intact or clean
-        let clean_fm = fm_raw.trim();
-        out.push_str(clean_fm);
-        out.push_str("\n---\n\n");
+        if let Some(clean_fm) = filter_frontmatter_for_markdown(fm_raw) {
+            out.push_str("---\n");
+            out.push_str(&clean_fm);
+            out.push_str("\n---\n\n");
+        }
     }
 
     // If explicit --toc was requested and no \toc in body, prepend TOC
@@ -551,6 +723,7 @@ pub fn export_to_normal_markdown(
 
                 // A. Check diagram fence first
                 if let Some(spec) = parse_diagram_fence(fence_str) {
+                    let fence_start_idx = line_idx;
                     cur_fig_num += 1;
                     // Gather diagram source code
                     let mut diag_code = String::new();
@@ -612,7 +785,7 @@ pub fn export_to_normal_markdown(
                     }
 
                     // Emit Markdown
-                    out.push_str(&format!("<a id=\"{clean_id}\"></a>\n"));
+                    let indent = detect_list_indent(&lines, fence_start_idx).unwrap_or("");
                     let alt_text = spec.caption.as_deref().unwrap_or("Diagram");
 
                     if export_success {
@@ -622,26 +795,25 @@ pub fn export_to_normal_markdown(
                         } else {
                             String::new()
                         };
-                        out.push_str("<p align=\"center\">\n");
-                        out.push_str(&format!("  <img src=\"{rel_path}\" alt=\"{alt_text}\"{width_attr} style=\"border-radius: 8px;\" />"));
+                        out.push_str(&format!("{indent}<p align=\"center\" id=\"{clean_id}\">\n"));
+                        out.push_str(&format!("{indent}  <img src=\"{rel_path}\" alt=\"{alt_text}\"{width_attr} style=\"border-radius: 8px;\" />"));
                         if let Some(ref cap) = spec.caption {
-                            out.push_str(&format!("<br>\n  <em>Figure {cur_fig_num}: {cap}</em>\n"));
+                            out.push_str(&format!("<br>\n{indent}  <em>Figure {cur_fig_num}: {cap}</em>\n"));
                         } else {
                             out.push('\n');
                         }
-                        out.push_str("</p>\n\n");
+                        out.push_str(&format!("{indent}</p>\n\n"));
                     } else {
                         // Fallback: If Mermaid, output native GitHub ```mermaid block!
-                        if spec.diagram_type == "mermaid" {
-                            out.push_str(&format!("```mermaid\n{diag_code}```\n\n"));
-                            if let Some(ref cap) = spec.caption {
-                                out.push_str(&format!("<p align=\"center\"><em>Figure {cur_fig_num}: {cap}</em></p>\n\n"));
-                            }
-                        } else {
-                            out.push_str(&format!("```{}\n{diag_code}```\n\n", spec.diagram_type));
-                            if let Some(ref cap) = spec.caption {
-                                out.push_str(&format!("<p align=\"center\"><em>Figure {cur_fig_num}: {cap}</em></p>\n\n"));
-                            }
+                        let fence_prefix = if indent.is_empty() { String::new() } else { indent.to_string() };
+                        let indented_code: String = diag_code.lines()
+                            .map(|l| if l.is_empty() { String::new() } else { format!("{fence_prefix}{l}") })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let diag_type = &spec.diagram_type;
+                        out.push_str(&format!("{fence_prefix}```{diag_type}\n{indented_code}\n{fence_prefix}```\n\n"));
+                        if let Some(ref cap) = spec.caption {
+                            out.push_str(&format!("{indent}<p align=\"center\" id=\"{clean_id}\"><em>Figure {cur_fig_num}: {cap}</em></p>\n\n"));
                         }
                     }
 
@@ -730,9 +902,8 @@ pub fn export_to_normal_markdown(
             if hashes <= 6 && trimmed.chars().nth(hashes).map(|c| c.is_whitespace()).unwrap_or(false) {
                 let h_text = trimmed[hashes..].trim();
                 let (title, _is_unnumbered, id_opt) = parse_heading_attributes(h_text);
-                let clean_id = id_opt.unwrap_or_else(|| slugify(&title)).replace(':', "-");
+                let clean_id = id_opt.clone().unwrap_or_else(|| slugify(&title)).replace(':', "-");
 
-                out.push_str(&format!("<a id=\"{clean_id}\"></a>\n"));
                 let hashes_str = "#".repeat(hashes);
 
                 let target_info = labels.get(&clean_id);
@@ -743,7 +914,13 @@ pub fn export_to_normal_markdown(
                         String::new()
                     };
 
-                out.push_str(&format!("{hashes_str} {num_prefix}{title}\n\n"));
+                let anchor_suffix = if id_opt.is_some() {
+                    format!(" <a id=\"{clean_id}\"></a>")
+                } else {
+                    String::new()
+                };
+
+                out.push_str(&format!("{hashes_str} {num_prefix}{title}{anchor_suffix}\n\n"));
                 line_idx += 1;
                 continue;
             }
@@ -756,8 +933,7 @@ pub fn export_to_normal_markdown(
             let id = id_opt.unwrap_or_else(|| format!("tbl-{cur_tbl_num}"));
             let clean_id = id.replace(':', "-");
 
-            out.push_str(&format!("<a id=\"{clean_id}\"></a>\n"));
-            out.push_str(&format!("*Table {cur_tbl_num}: {caption}*\n\n"));
+            out.push_str(&format!("<p align=\"center\" id=\"{clean_id}\"><em>Table {cur_tbl_num}: {caption}</em></p>\n\n"));
             line_idx += 1;
             continue;
         }
@@ -808,7 +984,7 @@ pub fn export_to_normal_markdown(
                         }
                         let id = fig_id.unwrap_or_else(|| format!("fig-{cur_fig_num}"));
                         let clean_id = id.replace(':', "-");
-                        let alt = &trimmed[2..open_paren - 2];
+                        let alt = trimmed[2..open_paren].trim_end_matches(']').trim();
                         let title = if alt.is_empty() { format!("Figure {cur_fig_num}") } else { alt.to_string() };
 
                         let diag_type = if norm.ends_with(".uxf") || norm.ends_with(".umlet") {
@@ -834,33 +1010,27 @@ pub fn export_to_normal_markdown(
                             }
                         }
 
+                        let indent = detect_list_indent(&lines, line_idx).unwrap_or("");
                         let width_attr = if let Some(ref w) = fig_width {
                             format!(" width=\"{w}\"")
                         } else {
                             String::new()
                         };
 
-                        out.push_str(&format!("<a id=\"{clean_id}\"></a>\n"));
-                        if export_success {
-                            let rel_path = format!("{relative_assets_prefix}/{asset_filename}");
-                            out.push_str("<p align=\"center\">\n");
-                            out.push_str(&format!("  <img src=\"{rel_path}\" alt=\"{title}\"{width_attr} style=\"border-radius: 8px;\" />"));
-                            if !title.is_empty() {
-                                out.push_str(&format!("<br>\n  <em>Figure {cur_fig_num}: {title}</em>\n"));
-                            } else {
-                                out.push('\n');
-                            }
-                            out.push_str("</p>\n\n");
+                        let img_src = if export_success {
+                            format!("{relative_assets_prefix}/{asset_filename}")
                         } else {
-                            out.push_str("<p align=\"center\">\n");
-                            out.push_str(&format!("  <img src=\"{url}\" alt=\"{title}\"{width_attr} style=\"border-radius: 8px;\" />"));
-                            if !title.is_empty() {
-                                out.push_str(&format!("<br>\n  <em>Figure {cur_fig_num}: {title}</em>\n"));
-                            } else {
-                                out.push('\n');
-                            }
-                            out.push_str("</p>\n\n");
+                            url.to_string()
+                        };
+
+                        out.push_str(&format!("{indent}<p align=\"center\" id=\"{clean_id}\">\n"));
+                        out.push_str(&format!("{indent}  <img src=\"{img_src}\" alt=\"{title}\"{width_attr} style=\"border-radius: 8px;\" />"));
+                        if !title.is_empty() {
+                            out.push_str(&format!("<br>\n{indent}  <em>Figure {cur_fig_num}: {title}</em>\n"));
+                        } else {
+                            out.push('\n');
                         }
+                        out.push_str(&format!("{indent}</p>\n\n"));
 
                         line_idx += 1;
                         continue;
@@ -884,7 +1054,17 @@ pub fn export_to_normal_markdown(
         // 8. References line: \ref "Works Cited", \references, \bibliography
         if let Some(custom_bib_title) = parse_ref_line(trimmed) {
             let title_to_use = custom_bib_title.as_deref().unwrap_or(biblio_title.unwrap_or("References"));
-            out.push_str(&render_references_section(title_to_use, &references, lang));
+            let prev_heading_is_ref = headings_list.iter().rev().find(|(lvl, _, _, _)| *lvl == 1)
+                .map(|(_, title, _, _)| is_references_heading_title(title, biblio_title))
+                .unwrap_or(false);
+            let heading_level = if custom_bib_title.is_some() {
+                if prev_heading_is_ref { 2 } else { 1 }
+            } else if prev_heading_is_ref {
+                0
+            } else {
+                1
+            };
+            out.push_str(&render_references_section(title_to_use, &references, lang, heading_level));
             out.push_str("\n\n");
             has_rendered_ref = true;
             line_idx += 1;
@@ -946,13 +1126,19 @@ pub fn export_to_normal_markdown(
             "it" => "Riferimenti bibliografici",
             _ => "References",
         });
+        let last_heading_is_ref = headings_list.last()
+            .map(|(_, title, _, _)| is_references_heading_title(title, biblio_title))
+            .unwrap_or(false);
+        let heading_level = if last_heading_is_ref { 0 } else { 1 };
         out.push_str("\n");
-        out.push_str(&render_references_section(title_to_use, &references, lang));
+        out.push_str(&render_references_section(title_to_use, &references, lang, heading_level));
         out.push('\n');
     }
 
+    let normalized = normalize_markdown_blank_lines(&out);
+
     Ok(MarkdownExportResult {
-        content: out,
+        content: normalized,
         exported_assets,
     })
 }
@@ -982,6 +1168,7 @@ fn render_references_section(
     title: &str,
     refs: &[(String, String)],
     lang: &str,
+    heading_level: usize,
 ) -> String {
     let (online_label, available_label) = match lang {
         "fr" => ("[En ligne]", "Disponible sur :"),
@@ -991,7 +1178,12 @@ fn render_references_section(
         _ => ("[Online]", "Available:"),
     };
 
-    let mut s = format!("## {title}\n\n");
+    let mut s = String::new();
+    if heading_level > 0 && !title.is_empty() {
+        let hashes = "#".repeat(heading_level);
+        s.push_str(&format!("{hashes} {title}\n\n"));
+    }
+
     for (i, (url, label)) in refs.iter().enumerate() {
         let idx = i + 1;
         let is_url_label = label.is_empty()
@@ -1174,7 +1366,7 @@ mod tests {
             ..Default::default()
         };
         let res = export_to_normal_markdown(md, &opts).unwrap();
-        assert!(res.content.contains("<a id=\"tbl-targets\"></a>"));
+        assert!(res.content.contains("id=\"tbl-targets\""));
         assert!(res.content.contains("[1](#tbl-targets)"));
         assert!(res.content.contains("[1](#sec-intro)"));
     }
@@ -1188,7 +1380,7 @@ mod tests {
         };
         let res = export_to_normal_markdown(md, &opts).unwrap();
         assert!(res.content.contains("[Typst Docs](https://typst.app/docs) [[1]](#bib-1)"));
-        assert!(res.content.contains("## Works Cited"));
+        assert!(res.content.contains("# Works Cited"));
         assert!(res.content.contains("<a id=\"bib-1\"></a>[1] \"Typst Docs\", [Online]. Available: <https://typst.app/docs>."));
     }
 
@@ -1210,9 +1402,40 @@ mod tests {
         let md = "```mermaid {caption=\"Compiler Pipeline\" width=70% #fig:mermaid-pipeline}\ngraph LR\n  A --> B\n```";
         let opts = MarkdownExportOptions::default();
         let res = export_to_normal_markdown(md, &opts).unwrap();
-        assert!(res.content.contains("<a id=\"fig-mermaid-pipeline\"></a>"));
-        assert!(res.content.contains("<p align=\"center\">"));
+        assert!(res.content.contains("id=\"fig-mermaid-pipeline\""));
+        assert!(res.content.contains("<p align=\"center\" id=\"fig-mermaid-pipeline\">"));
         assert!(res.content.contains("Figure 1: Compiler Pipeline"));
         assert!(res.content.contains("</p>"));
+    }
+
+    #[test]
+    fn test_export_frontmatter_cleaning() {
+        let md = "---\ntitle: My Document\ntheme: elegant\npapersize: a4\ntoc: true\nauthor: Alice\n---\n\n# Body";
+        let opts = MarkdownExportOptions::default();
+        let res = export_to_normal_markdown(md, &opts).unwrap();
+        assert!(res.content.contains("title: My Document"));
+        assert!(res.content.contains("author: Alice"));
+        assert!(!res.content.contains("theme: elegant"));
+        assert!(!res.content.contains("papersize: a4"));
+        assert!(!res.content.contains("toc: true"));
+    }
+
+    #[test]
+    fn test_export_ordered_list_with_diagram() {
+        let md = "1. First item:\n\n```mermaid {caption=\"Step 1\" #fig:step1}\ngraph LR\n  A --> B\n```\n\n2. Second item.";
+        let opts = MarkdownExportOptions::default();
+        let res = export_to_normal_markdown(md, &opts).unwrap();
+        assert!(res.content.contains("1. First item:"));
+        assert!(res.content.contains("   <p align=\"center\" id=\"fig-step1\">"));
+        assert!(res.content.contains("2. Second item."));
+    }
+
+    #[test]
+    fn test_export_alt_text_preservation() {
+        let md = "![UMLet Architecture via Image Syntax](architecture.uxf){#fig:arch width=60%}";
+        let opts = MarkdownExportOptions::default();
+        let res = export_to_normal_markdown(md, &opts).unwrap();
+        assert!(res.content.contains("alt=\"UMLet Architecture via Image Syntax\""));
+        assert!(res.content.contains("Figure 1: UMLet Architecture via Image Syntax"));
     }
 }
