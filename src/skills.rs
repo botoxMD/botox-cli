@@ -87,7 +87,11 @@ botox skills -o -                    # Print skill definition directly to stdout
 | `--no-bibliography` | None | Disable link-to-citation bibliography transformation | Enabled |
 | `--exclude-ref` | `<csv>` | Comma-separated domains/patterns to exclude from bibliography (e.g. `github.com,x.com`) | None |
 | `--include-ref` | `<csv>` | Comma-separated domains/patterns to restrict bibliography citations to | None |
+| `--markdown, --md` | None | Export to clean, portable standard Markdown with assets & resolved citations | Disabled |
+| `--assets-dir` | `<dir>` | Directory for exported diagram images in Markdown export mode | `assets` |
 | `--config` | `<path>` | Path to custom `botox.yaml` configuration file | Auto-discovered |
+| `-V, --version` | None | Print version information and exit | None |
+| `-h, --help` | None | Print CLI help information and exit | None |
 
 ---
 
@@ -125,6 +129,7 @@ table-of-contents: true              # Generate Table of Contents
 toc-depth: 3                         # 1 (H1), 2 (H1-H2), 3 (H1-H3)
 toc-title: "Table of Contents"       # Custom outline header
 linkcolor: "#2563eb"                 # Hex color or named color (blue, red, teal, etc.)
+kroki_url: "https://kroki.io"        # Kroki endpoint for diagram compilation (or kroki-url / kroki_endpoint)
 bibliography: true                   # Transform web links into an IEEE bibliography
 exclude-references:
   - "github.com"
@@ -237,7 +242,17 @@ graph LR;
 
 ## 5. Diagrams & Visualizations (Kroki & Mermaid)
 
-Botox natively converts diagram code fences into sharp, scalable vector graphics. Diagrams are rendered, cached locally by content SHA256, and embedded as native vector assets.
+Botox natively converts diagram code fences into sharp, scalable vector graphics. Diagrams are rendered via a Kroki endpoint, cached locally by content SHA256, and embedded as native vector assets.
+
+### Configuring `kroki_url` (Required for Diagram Compilation)
+To enable diagram rendering, configure `kroki_url` (also accepts `kroki-url` or `kroki_endpoint`) in either your document's YAML frontmatter or under `document:` in `botox.yaml`:
+```yaml
+---
+kroki_url: "https://kroki.io"
+---
+```
+> [!TIP]
+> For complex flowcharts with multi-line node labels (`\n`) or nested subgraphs, **`graphviz` (`dot`)** is strongly recommended over `mermaid`, because Graphviz computes native SVG `<text>` bounding boxes server-side without relying on browser DOM `<foreignObject>` measurements.
 
 ### Supported Diagram Engines
 | Fence Identifier | Engine | Description |
@@ -456,6 +471,7 @@ document:
   papersize: a4
   fontsize: 11pt
   mainfont: "New Computer Modern"
+  kroki_url: "https://kroki.io"
   section_numbering: true
   toc: false
   bibliography: true

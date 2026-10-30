@@ -1,5 +1,6 @@
 pub mod callouts;
 pub mod escapes;
+pub mod export;
 pub mod math;
 pub mod pandoc;
 pub mod references;
@@ -8,6 +9,7 @@ pub mod tables;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 pub use escapes::escape_typst_text;
+pub use export::{export_to_normal_markdown, MarkdownExportOptions};
 pub use math::convert_latex_math_to_typst;
 pub use pandoc::{
     parse_heading_attributes, parse_image_attributes, preprocess_pandoc,
@@ -155,12 +157,30 @@ pub fn markdown_to_typst_with_options(
                 match tag {
                     Tag::Paragraph => {
                         if let Some(Event::Text(next_text)) = events.get(i + 1) {
-                            let trimmed = next_text.trim();
+                            let trimmed = next_text.trim_start();
                             if (trimmed.starts_with("Table:") || trimmed.starts_with(": ")) && trimmed.len() > 2 {
-                                let mut j = i + 2;
+                                let mut j = i + 1;
                                 let mut is_tbl = false;
+                                let mut raw_cap = String::new();
                                 while j < num_events {
                                     match &events[j] {
+                                        Event::Text(t) => {
+                                            raw_cap.push_str(t);
+                                            j += 1;
+                                        }
+                                        Event::Code(c) => {
+                                            raw_cap.push('`');
+                                            raw_cap.push_str(c);
+                                            raw_cap.push('`');
+                                            j += 1;
+                                        }
+                                        Event::InlineMath(m) => {
+                                            let conv = convert_latex_math_to_typst(m);
+                                            raw_cap.push('$');
+                                            raw_cap.push_str(conv.trim());
+                                            raw_cap.push('$');
+                                            j += 1;
+                                        }
                                         Event::End(TagEnd::Paragraph) => {
                                             if let Some(Event::Start(Tag::Table(_))) = events.get(j + 1) {
                                                 is_tbl = true;
@@ -171,7 +191,7 @@ pub fn markdown_to_typst_with_options(
                                     }
                                 }
                                 if is_tbl {
-                                    let (caption, label) = parse_caption_and_label(trimmed);
+                                    let (caption, label) = parse_caption_and_label(raw_cap.trim());
                                     pending_table_caption = Some((caption, label));
                                     i = j + 1;
                                     continue;
@@ -286,9 +306,9 @@ pub fn markdown_to_typst_with_options(
                                             "Diagram rendering failed: Kroki unreachable".to_string()
                                         };
                                         let instruction = if is_not_configured {
-                                            "\nTo render this diagram, configure a Kroki server endpoint.\n\nYou can configure the public service (e.g. `kroki_url: https://kroki.io` or `https://demo.kroki.io`) or run a self-hosted instance (e.g. `http://localhost:8000`) in `botox.yaml`, document frontmatter, or via the `KROKI_ENDPOINT` environment variable.\n\n"
+                                            "\nTo render this diagram, configure a Kroki server endpoint.\n\nYou can configure the public service (e.g. `kroki_url: https://kroki.io` or `https://demo.kroki.io`) or run a self-hosted instance (e.g. `http://localhost:8000`) in `botox.yaml`, document frontmatter, or via the `KROKI_ENDPOINT` environment variable.\n\n".to_string()
                                         } else {
-                                            ""
+                                            format!("\n{}\n\n", escape_typst_text(&err))
                                         };
                                         let raw_lang = &spec.diagram_type;
                                         let clean_code = if diag_code.ends_with('\n') {
@@ -356,6 +376,9 @@ pub fn markdown_to_typst_with_options(
                         continue;
                     }
                     Tag::List(_) => {
+                        if list_depth > 0 && !typst.ends_with('\n') {
+                            typst.push('\n');
+                        }
                         list_depth += 1;
                     }
                     Tag::Item => {
@@ -503,7 +526,9 @@ pub fn markdown_to_typst_with_options(
                         }
                     }
                     TagEnd::Item => {
-                        typst.push('\n');
+                        if !typst.ends_with('\n') {
+                            typst.push('\n');
+                        }
                     }
                     TagEnd::Emphasis => {
                         if let Some((_, ref mut h_buf)) = current_heading {
@@ -781,6 +806,52 @@ pub fn markdown_to_typst_with_options(
                         }
                         tbl_str.push(')');
 
+                        if pending_table_caption.is_none()
+                            && let Some(Event::Start(Tag::Paragraph)) = events.get(i + 1)
+                            && let Some(Event::Text(next_text)) = events.get(i + 2)
+                        {
+                            let t = next_text.trim();
+                            if t.starts_with("Table:") || t.starts_with(": ") {
+                                let mut full_p = String::new();
+                                let mut j = i + 2;
+                                let mut valid_caption = false;
+                                while let Some(ev) = events.get(j) {
+                                    match ev {
+                                        Event::Text(s) => full_p.push_str(s),
+                                        Event::Code(c) => {
+                                            full_p.push('`');
+                                            full_p.push_str(c);
+                                            full_p.push('`');
+                                        }
+                                        Event::InlineMath(m) => {
+                                            full_p.push('$');
+                                            full_p.push_str(m);
+                                            full_p.push('$');
+                                        }
+                                        Event::SoftBreak => full_p.push(' '),
+                                        Event::End(TagEnd::Paragraph) => {
+                                            valid_caption = true;
+                                            break;
+                                        }
+                                        _ => break,
+                                    }
+                                    j += 1;
+                                }
+                                if valid_caption {
+                                    let stripped = full_p
+                                        .trim()
+                                        .strip_prefix("Table:")
+                                        .or_else(|| full_p.trim().strip_prefix(": "))
+                                        .unwrap_or("")
+                                        .trim();
+                                    let (caption, label) = parse_caption_and_label(stripped);
+                                    pending_table_caption = Some((caption, label));
+                                    i = j;
+                                }
+                            }
+                        }
+
+                        let row_count = if cols > 0 { table_cells.len() / cols } else { 0 };
                         if let Some((caption, label)) = pending_table_caption.take() {
                             let escaped_caption = escape_typst_text(&caption);
                             let mut fig = format!("\n#figure(\n  {tbl_str},\n  caption: [{escaped_caption}],\n)");
@@ -789,6 +860,8 @@ pub fn markdown_to_typst_with_options(
                             }
                             fig.push_str("\n\n");
                             typst.push_str(&fig);
+                        } else if !is_slides && row_count > 0 && row_count <= 8 {
+                            typst.push_str(&format!("#block(breakable: false)[#{tbl_str}]\n\n"));
                         } else {
                             typst.push_str(&format!("#{tbl_str}\n\n"));
                         }
@@ -903,7 +976,11 @@ pub fn markdown_to_typst_with_options(
                 } else {
                     let trimmed = html.trim().to_lowercase();
                     if trimmed == "<br>" || trimmed == "<br/>" || trimmed == "<br />" {
-                        typst.push_str(" \\ \n");
+                        if in_table {
+                            current_cell.push_str(" \\ ");
+                        } else {
+                            typst.push_str(" \\ \n");
+                        }
                     } else {
                         let escaped = escape_typst_text(&html);
                         if in_table {
@@ -1057,7 +1134,7 @@ pub fn markdown_to_typst_with_options(
                     continue;
                 }
                 if in_table {
-                    current_cell.push(' ');
+                    current_cell.push_str(" \\ ");
                 } else {
                     typst.push_str("\\\n");
                 }
@@ -1457,5 +1534,42 @@ Check [link](https://example.com/api?q="quoted") here.
         let md = "# Slide 1\nPoint 1\n\n\\pause\n\nPoint 2";
         let typst = markdown_to_typst(md, true, false, "en", None, None, None, None, None);
         assert!(typst.contains("#botox_pause()"));
+    }
+
+    #[test]
+    fn test_nested_bullet_lists() {
+        let md = "- **Parent Bullet Title**:\n  - First nested sub-item\n  - Second nested sub-item\n";
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
+        assert!(
+            typst.contains("- *Parent Bullet Title*:\n  - First nested sub-item\n  - Second nested sub-item"),
+            "Nested bullet list did not emit newline before first child item: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_trailing_table_caption_without_blank_line_and_br_in_cells() {
+        let md = "| Param | Conditions |\n|---|---|\n| Lock | 1. Mutual exclusion<br>2. Hold and wait |\nTable: Performance Comparison of `std::thread` {#tbl:perf}";
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
+        assert!(typst.contains("#figure("), "Expected #figure wrapper: {typst}");
+        assert!(
+            typst.contains("caption: [Performance Comparison of `std::thread`]"),
+            "Expected table caption: {typst}"
+        );
+        assert!(typst.contains("<tbl-perf>"), "Expected <tbl-perf> label: {typst}");
+        assert!(
+            typst.contains("[1. Mutual exclusion \\ 2. Hold and wait]"),
+            "Expected <br> inside table cell to emit Typst line break: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_mermaid_comma_fence_syntax() {
+        let md = "```{mermaid, caption=\"Microservices Event Mesh\", id=\"fig:event-mesh\", width=\"85%\"}\nsequenceDiagram\n    Client->>Server: Request\n```";
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
+        // Without kroki_url configured, it should be recognized as a diagram and emit the Kroki warning callout rather than a raw code block!
+        assert!(
+            typst.contains("Diagram rendering requires Kroki configuration"),
+            "Expected {{mermaid, ...}} fence to be parsed as a diagram: {typst}"
+        );
     }
 }
