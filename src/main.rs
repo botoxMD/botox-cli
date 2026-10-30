@@ -16,7 +16,7 @@ fn show_help() {
        botox init <filename> [options]
        botox config
        botox setup [options]
-       botox --skills [options]
+       botox skills [options]
        botox daemon [options]
 
 Pure Rust single native binary: Transforms Markdown and Botox (.btx, .btx.md) into LaTeX-quality PDF documents, presentation slides, or clean standard Markdown.
@@ -34,6 +34,8 @@ Common Options:
   -o, --output <file>     Output file path (default: .html for slides, .pdf for documents, .md for markdown export, or '-' for stdout)
   -w, --watch             Watch input file and directory for changes and recompile automatically
   --config <file>         Custom configuration YAML path
+  -V, --version           Print version information and exit
+  -h, --help              Print this help message and exit
 
 Markdown Export Options:
   --markdown, --md        Force normal Markdown export mode
@@ -54,7 +56,7 @@ Documentation Options:
 
 Slide Options:
   --slides                Force presentation slide deck mode (default output: .html)
-  --theme <theme>         Slide theme: default, academic, dark, nord
+  --theme <theme>         Slide theme: default, academic, gaia, uncover, nord, dark
 "#);
 }
 
@@ -74,7 +76,7 @@ Options:
   --author <name>         Pre-set default author
   --affiliation <org>     Pre-set default affiliation
   --theme <theme>         Pre-set default document theme (academic, modern, elegant, technical, compact, minimal)
-  --slides-theme <theme>  Pre-set default slide theme (default, academic, dark, nord)
+  --slides-theme <theme>  Pre-set default slide theme (default, academic, gaia, uncover, nord, dark)
   --papersize <size>      Pre-set default paper size (a4, us-letter)
   --toc                   Enable Table of Contents by default
   --no-toc                Disable Table of Contents by default
@@ -192,8 +194,8 @@ Options:
             &default_doc_theme,
         );
         let slides_theme = prompt_choice(
-            "4. Default Slide Theme (default, academic, dark, nord)",
-            &["default", "academic", "dark", "nord"],
+            "4. Default Slide Theme (default, academic, gaia, uncover, nord, dark)",
+            &["default", "academic", "gaia", "uncover", "nord", "dark"],
             &default_slides_theme,
         );
         let papersize = prompt_choice(
@@ -1168,6 +1170,11 @@ fn main() {
         return;
     }
 
+    if args[1] == "-V" || args[1] == "--version" || args[1] == "version" {
+        println!("botox {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
     if args[1] == "init" {
         handle_init(&args[2..]);
         return;
@@ -1849,6 +1856,86 @@ mod tests {
         assert!(is_relevant_watch_file(Path::new("slides.btx.md"), out));
         assert!(is_relevant_watch_file(Path::new("sub/module.btx"), out));
         assert!(!is_relevant_watch_file(Path::new(".hidden.btx"), out));
+    }
+
+    #[test]
+    fn test_pco_feedback_report_end_to_end_pdf_compilation() {
+        let md = r#"---
+title: "PCO Principles Summary"
+theme: technical
+---
+
+# Math Regression Cases
+
+1. UTF-8 inside `\text{...}`: $\frac{\text{observé}}{\text{attendu}}$
+2. Thin spaces between digits: $1\,000\,000$
+3. Backslash-space in math: $\approx 20 \text{ to } 100\ \mu\text{s}$
+4. Floor and modulo: $\lfloor N / K \rfloor$ and $N \bmod K$
+5. Escaped underscore in text: $K = \min(\text{NB\_THREADS}, N)$
+
+# Nested Bullet Lists
+
+- **Parent Bullet Title**:
+  - First nested sub-item
+  - Second nested sub-item
+
+# Table With Trailing Caption & `<br>`
+
+| Primitive | Necessary Conditions |
+| :--- | :--- |
+| Mutex | 1. Mutual exclusion<br>2. Hold and wait |
+| Semaphore | 1. Resource pool<br>2. Atomic counter |
+Table: Synchronization Primitives Comparison {#tbl:sync}
+
+See @tbl:sync for details.
+"#;
+        let cfg = config::BotoxConfig::default();
+        let (typst_markup, is_slides) = transpile_markdown_to_typst_markup(
+            md,
+            None,
+            &cfg,
+            true,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            Some(Path::new("pco_principles_summary.md")),
+        );
+        assert!(!is_slides);
+        let pdf_bytes = compiler::compile_typst_to_pdf_bytes(&typst_markup, None)
+            .expect("PCO reproduction document should compile cleanly to PDF");
+        assert!(pdf_bytes.starts_with(b"%PDF-"));
+    }
+
+    #[test]
+    fn test_compile_ex_c_end_to_end() {
+        let content = std::fs::read_to_string("ex-c.md").unwrap();
+        let cfg = config::BotoxConfig::default();
+        let (typst_markup, is_slides) = transpile_markdown_to_typst_markup(
+            &content,
+            None,
+            &cfg,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            Some(Path::new("ex-c.md")),
+        );
+        assert!(!is_slides);
+        let res = compiler::compile_typst_to_pdf_bytes(&typst_markup, None);
+        if let Err(ref e) = res {
+            eprintln!("EX-C COMPILATION ERROR:\n{e}");
+        }
+        assert!(res.is_ok());
     }
 }
 

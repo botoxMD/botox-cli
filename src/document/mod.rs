@@ -615,7 +615,8 @@ pub fn wrap_document(
     out.push_str("#show heading: set par(justify: false)\n");
     out.push_str("#show list: set par(justify: false)\n");
     out.push_str("#show enum: set par(justify: false)\n");
-    out.push_str("#show table.cell: set par(justify: false)\n\n");
+    out.push_str("#show table.cell: set par(justify: false)\n");
+    out.push_str("#set table.cell(breakable: false)\n\n");
 
     // Code styling
     out.push_str(&format!("#show raw: set text(font: {monofont_family})\n"));

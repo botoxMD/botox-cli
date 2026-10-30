@@ -46,7 +46,10 @@ pub fn parse_code_fence_file(fence: &str) -> (String, Option<String>) {
         trimmed
     };
     let mut parts = inside.split_whitespace();
-    let first = parts.next().unwrap_or("").trim_start_matches('.');
+    let first = parts
+        .next()
+        .unwrap_or("")
+        .trim_matches(|c| c == '.' || c == ',' || c == ';');
     let (lang, colon_file) = if let Some((l, f)) = first.split_once(':') {
         (l.to_string(), Some(f.to_string()))
     } else {
@@ -145,16 +148,28 @@ pub fn parse_diagram_fence(fence: &str) -> Option<DiagramSpec> {
     if trimmed.starts_with('{') && trimmed.ends_with('}') {
         let inside = trimmed[1..trimmed.len() - 1].trim();
         for token in inside.split_whitespace() {
-            if token.starts_with('.') {
-                lang_candidate = token.trim_start_matches('.').to_string();
+            let clean_tok = token.trim_matches(|c| c == '.' || c == ',' || c == ';' || c == '{' || c == '}');
+            if token.starts_with('.') && !clean_tok.is_empty() {
+                lang_candidate = clean_tok.to_string();
                 break;
             }
+        }
+        if lang_candidate.is_empty()
+            && let Some(first_tok) = inside.split_whitespace().next()
+        {
+            lang_candidate = first_tok
+                .trim_matches(|c| c == '.' || c == ',' || c == ';' || c == '{' || c == '}')
+                .to_string();
         }
         attr_str = inside;
     } else if let Some(brace_pos) = trimmed.find('{') {
         let before_brace = trimmed[..brace_pos].trim();
         let mut parts = before_brace.splitn(2, |c: char| c.is_whitespace());
-        lang_candidate = parts.next().unwrap_or("").trim_start_matches('.').to_string();
+        lang_candidate = parts
+            .next()
+            .unwrap_or("")
+            .trim_matches(|c| c == '.' || c == ',' || c == ';')
+            .to_string();
         pre_brace_attr = parts.next().unwrap_or("").trim();
 
         let rest = &trimmed[brace_pos + 1..];
@@ -165,7 +180,11 @@ pub fn parse_diagram_fence(fence: &str) -> Option<DiagramSpec> {
         }
     } else {
         let mut parts = trimmed.splitn(2, |c: char| c.is_whitespace());
-        lang_candidate = parts.next().unwrap_or("").trim_start_matches('.').to_string();
+        lang_candidate = parts
+            .next()
+            .unwrap_or("")
+            .trim_matches(|c| c == '.' || c == ',' || c == ';')
+            .to_string();
         if let Some(rest) = parts.next() {
             attr_str = rest;
         }
@@ -185,12 +204,17 @@ pub fn parse_diagram_fence(fence: &str) -> Option<DiagramSpec> {
     let diagram_type = match norm_lang.as_str() {
         "mermaid" | "mmd" => "mermaid".to_string(),
         "plantuml" | "puml" => "plantuml".to_string(),
+        "c4plantuml" => "c4plantuml".to_string(),
         "umlet" | "uxf" => "umlet".to_string(),
         "graphviz" | "dot" => "graphviz".to_string(),
+        "d2" => "d2".to_string(),
         "ditaa" => "ditaa".to_string(),
         "wavedrom" => "wavedrom".to_string(),
         "bytefield" => "bytefield".to_string(),
         "bpmn" => "bpmn".to_string(),
+        "erd" => "erd".to_string(),
+        "nomnoml" => "nomnoml".to_string(),
+        "svgbob" => "svgbob".to_string(),
         _ => return None,
     };
 

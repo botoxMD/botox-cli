@@ -323,7 +323,8 @@ pub fn sanitize_svg_for_typesetting(svg: &str) -> String {
             .replace("<br/>", "\n")
             .replace("<br />", "\n")
             .replace("</p>", "\n")
-            .replace("</div>", "\n");
+            .replace("</div>", "\n")
+            .replace(r"\n", "\n");
 
         // Strip HTML tags
         let mut in_tag = false;
@@ -348,14 +349,46 @@ pub fn sanitize_svg_for_typesetting(svg: &str) -> String {
             .replace("&#39;", "'")
             .replace("&apos;", "'");
 
-        let lines: Vec<&str> = decoded
+        let raw_lines: Vec<String> = decoded
             .lines()
-            .map(|l| l.trim())
+            .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty())
             .collect();
 
-        if lines.is_empty() {
+        if raw_lines.is_empty() {
             continue;
+        }
+
+        // If the <foreignObject> was relying on browser CSS word-wrapping (e.g. a long line
+        // inside a fixed-width foreignObject with multi-line height), wrap overly long lines.
+        let mut lines: Vec<String> = Vec::new();
+        let target_wrap_chars = if width > 40.0 {
+            ((width / 7.2).round() as usize).max(16)
+        } else {
+            usize::MAX
+        };
+
+        for line in raw_lines {
+            let char_count = line.chars().count();
+            if width > 40.0 && height > 30.0 && char_count > target_wrap_chars + 6 && line.contains(' ') {
+                let mut current = String::new();
+                for word in line.split_whitespace() {
+                    if !current.is_empty() && current.chars().count() + 1 + word.chars().count() > target_wrap_chars {
+                        lines.push(current);
+                        current = word.to_string();
+                    } else {
+                        if !current.is_empty() {
+                            current.push(' ');
+                        }
+                        current.push_str(word);
+                    }
+                }
+                if !current.is_empty() {
+                    lines.push(current);
+                }
+            } else {
+                lines.push(line);
+            }
         }
 
         let escape_xml = |s: &str| -> String {
@@ -366,14 +399,31 @@ pub fn sanitize_svg_for_typesetting(svg: &str) -> String {
         };
 
         let font_family = "DejaVu Sans, Liberation Sans, -apple-system, Segoe UI, sans-serif";
-        let font_size = 14;
-        let line_height = 18.0;
+        let mut font_size = 12.5_f64;
+        let max_chars = lines.iter().map(|l| l.chars().count()).max().unwrap_or(1) as f64;
+
+        if width > 16.0 {
+            let est_width = max_chars * font_size * 0.56;
+            if est_width > width * 0.96 {
+                font_size = ((width * 0.96) / (max_chars * 0.56)).clamp(7.5, 12.5);
+            }
+        }
+
+        let mut line_height = font_size * 1.28;
+        if height > 16.0 && lines.len() > 1 {
+            let total_h = lines.len() as f64 * line_height;
+            if total_h > height * 0.98 {
+                let scale = (height * 0.98) / total_h;
+                font_size = (font_size * scale).clamp(7.0, 12.5);
+                line_height = font_size * 1.25;
+            }
+        }
 
         if lines.len() == 1 {
             let y_pos = y_attr + height / 2.0;
-            let line_esc = escape_xml(lines[0]);
+            let line_esc = escape_xml(&lines[0]);
             result.push_str(&format!(
-                r#"<text x="{x_pos:.1}" y="{y_pos:.1}" text-anchor="{anchor}" dominant-baseline="central" fill="{fill_color}" font-family="{font_family}" font-size="{font_size}">{line_esc}</text>"#
+                r#"<text x="{x_pos:.1}" y="{y_pos:.1}" text-anchor="{anchor}" dominant-baseline="central" fill="{fill_color}" font-family="{font_family}" font-size="{font_size:.1}">{line_esc}</text>"#
             ));
         } else {
             let total_height = (lines.len() as f64 - 1.0) * line_height;
@@ -392,7 +442,7 @@ pub fn sanitize_svg_for_typesetting(svg: &str) -> String {
                 }
             }
             result.push_str(&format!(
-                r#"<text text-anchor="{anchor}" dominant-baseline="central" fill="{fill_color}" font-family="{font_family}" font-size="{font_size}">{tspans}</text>"#
+                r#"<text text-anchor="{anchor}" dominant-baseline="central" fill="{fill_color}" font-family="{font_family}" font-size="{font_size:.1}">{tspans}</text>"#
             ));
         }
     }

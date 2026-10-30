@@ -339,6 +339,18 @@ pub fn preprocess_pandoc(markdown: &str) -> String {
             continue;
         }
 
+        if (trimmed.starts_with("Table:") || trimmed.starts_with(": ")) && trimmed.len() > 2 {
+            if !result.is_empty() && !result.ends_with("\n\n") {
+                if !result.ends_with('\n') {
+                    result.push('\n');
+                }
+                result.push('\n');
+            }
+            result.push_str(line);
+            result.push_str("\n\n");
+            continue;
+        }
+
         result.push_str(line);
         result.push('\n');
     }
