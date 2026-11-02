@@ -82,7 +82,11 @@ botox skills -o -                    # Print skill definition directly to stdout
 | `--no-bibliography` | None | Disable link-to-citation bibliography transformation | Enabled |
 | `--exclude-ref` | `<csv>` | Comma-separated domains/patterns to exclude from bibliography (e.g. `github.com,x.com`) | None |
 | `--include-ref` | `<csv>` | Comma-separated domains/patterns to restrict bibliography citations to | None |
+| `--markdown, --md` | None | Export to clean, portable standard Markdown with assets & resolved citations | Disabled |
+| `--assets-dir` | `<dir>` | Directory for exported diagram images in Markdown export mode | `assets` |
 | `--config` | `<path>` | Path to custom `botox.yaml` configuration file | Auto-discovered |
+| `-V, --version` | None | Print version information and exit | None |
+| `-h, --help` | None | Print CLI help information and exit | None |
 
 ---
 
@@ -120,6 +124,7 @@ table-of-contents: true              # Generate Table of Contents
 toc-depth: 3                         # 1 (H1), 2 (H1-H2), 3 (H1-H3)
 toc-title: "Table of Contents"       # Custom outline header
 linkcolor: "#2563eb"                 # Hex color or named color (blue, red, teal, etc.)
+kroki_url: "https://kroki.io"        # Kroki endpoint for diagram compilation (or kroki-url / kroki_endpoint)
 bibliography: true                   # Transform web links into an IEEE bibliography
 exclude-references:
   - "github.com"
@@ -232,7 +237,23 @@ graph LR;
 
 ## 5. Diagrams & Visualizations (Kroki & Mermaid)
 
-Botox natively converts diagram code fences into sharp, scalable vector graphics. Diagrams are rendered, cached locally by content SHA256, and embedded as native vector assets.
+Botox natively converts diagram code fences into sharp, scalable vector graphics. Diagrams are rendered via a Kroki endpoint, cached locally by content SHA256, and embedded as native vector assets.
+
+> [!IMPORTANT]
+> **Never Create Diagrams by Hand**:
+> * **NO Hand-Drawn ASCII Art**: Do **NOT** draw diagrams by hand using plain text characters (`+---+`, `|   |`, `-->`). ASCII art breaks responsive wrapping, cannot scale, looks amateurish in publication PDFs, and fails on mobile screens.
+> * **NO Raw SVG XML or Ad-Hoc Scripts**: Do **NOT** hand-craft raw `<svg>` code or generate ad-hoc image scripts when a declarative diagram syntax exists.
+> * **ALWAYS Use Botox Native Declarative Fences**: Write clean Diagram-as-Code fences (`mermaid`, `dot`/`graphviz`, `d2`, `plantuml`, `bytefield`, `wavedrom`, `erd`). Botox automatically transpiles and compiles them into publication-grade vector graphics with automatic local caching.
+
+### Configuring `kroki_url` (Required for Diagram Compilation)
+To enable diagram rendering, configure `kroki_url` (also accepts `kroki-url` or `kroki_endpoint`) in either your document's YAML frontmatter or under `document:` in `botox.yaml`:
+```yaml
+---
+kroki_url: "https://kroki.io"
+---
+```
+> [!TIP]
+> For complex flowcharts with multi-line node labels (`\n`) or nested subgraphs, **`graphviz` (`dot`)** is strongly recommended over `mermaid`, because Graphviz computes native SVG `<text>` bounding boxes server-side without relying on browser DOM `<foreignObject>` measurements.
 
 ### Supported Diagram Engines
 | Fence Identifier | Engine | Description |
@@ -285,6 +306,270 @@ Include external files directly to prevent code duplication:
 ```rust file="src/main.rs"
 ```
 ````
+
+### Diagram Design Principles: Good vs. Bad Examples
+
+Effective diagrams provide an immediate, accurate mental model of a system. Poor diagrams induce cognitive overload with tangled lines, ambiguous labels, and mixed levels of abstraction.
+
+#### 1. System Architecture & Flowcharts: Spaghetti vs. Bounded Flow
+
+##### 🔴 Anti-Pattern: The "Hairball / Spaghetti" Diagram
+- **Symptoms**: Criss-crossing arrows, mixed directional flow, ambiguous generic labels (*"connects to"*, *"data"*), missing tier boundaries, and inconsistent node shapes.
+````markdown
+```mermaid
+graph TD
+    Client --> API
+    API --> DB
+    Worker --> API
+    API --> Cache
+    Worker --> DB
+    Client --> Cache
+    API --> ThirdParty
+    ThirdParty --> DB
+    Cache --> API
+```
+````
+*Why it fails*:
+- **Visual Friction**: Intersecting edges force the reader's eye to untangle lines rather than understand the architecture.
+- **Mixed Abstraction**: A high-level client device is placed on the same level as internal in-memory caches and background queue workers.
+- **Zero Protocol Insight**: Arrows provide no information on whether communication is synchronous HTTPS, asynchronous pub/sub, or a direct database query.
+
+##### 🟢 Best Practice: Structured Tiers & Unidirectional Flow
+- **Pattern**: Strict left-to-right (`flowchart LR`) or top-to-bottom (`flowchart TD`) flow, semantic subgraphs, explicit protocols, and consistent node shapes.
+````markdown
+```mermaid
+flowchart LR
+    subgraph Ingestion["Client & Edge Tier"]
+        Browser["Web Client<br/><i>(React SPA)</i>"]
+        Gateway["API Gateway / Envoy<br/><i>(TLS Termination)</i>"]
+    end
+
+    subgraph ServiceMesh["Core Microservices Tier"]
+        AuthSvc["Auth Service<br/><i>(OAuth2 / JWT)</i>"]
+        OrderSvc["Order Service<br/><i>(Rust / Axum)</i>"]
+    end
+
+    subgraph Storage["Persistence & Event Tier"]
+        DB[("Order DB<br/><i>(PostgreSQL Primary)</i>")]
+        Broker(["Kafka Event Bus<br/><i>(Topic: orders-v1)</i>"])
+    end
+
+    Browser -->|HTTPS POST /checkout| Gateway
+    Gateway -->|mTLS /validate| AuthSvc
+    Gateway -->|gRPC CreateOrder| OrderSvc
+    OrderSvc -->|SQL Transaction| DB
+    OrderSvc -.->|Async Event| Broker
+```
+````
+*Why it works*:
+- **Unidirectional Layout**: Left-to-right movement mirrors the natural processing lifecycle (Client $\to$ Gateway $\to$ Microservice $\to$ Storage).
+- **Grouped Bounded Contexts**: `subgraph` blocks clearly isolate networking and security zones.
+- **Protocol Precision**: Connections explicitly document the transport (`HTTPS`, `mTLS`, `gRPC`, `SQL`, `Kafka`).
+- **Semantic Shapes**: Standard rectangles for services, cylinders `[(...)]` for persistence, and rounded stadiums `([...])` for event queues.
+
+---
+
+#### 2. Sequence Diagrams: Unbounded Blast Radius vs. Scoped Workflows
+
+##### 🔴 Anti-Pattern: The Uncontrolled Blast Radius
+- **Symptoms**: Dozens of actors crammed onto one diagram, no step numbers (`autonumber`), synchronous arrows used for background tasks, missing execution lifelines, and zero error handling.
+````markdown
+```mermaid
+sequenceDiagram
+    User->>Frontend: Click Buy
+    Frontend->>Backend: Process
+    Backend->>Payment: Pay
+    Backend->>Warehouse: Stock
+    Backend->>Email: Send
+    Payment->>Backend: OK
+    Warehouse->>Backend: OK
+    Backend->>Frontend: Done
+    Frontend->>User: Success
+```
+````
+*Why it fails*:
+- Without `autonumber` and execution activations (`activate`/`deactivate`), it is impossible to tell which service is waiting and which is working in parallel.
+- Fails to model the reality of real systems: network failures, declined cards, and timeouts.
+
+##### 🟢 Best Practice: Scoped Lifelines, Activations & Error Paths
+- **Pattern**: Use `autonumber`, distinct sync (`->>`) vs async (`--)`) lines, execution activations (`+`/`-`), and explicit `alt ... else ... end` branches.
+````markdown
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Customer as User
+    participant Web as Web Frontend
+    participant API as Order Service
+    participant Pay as Payment Gateway
+    participant Bus as Kafka Broker
+
+    Customer->>Web: Submit Checkout
+    activate Web
+    Web->>+API: POST /api/checkout (Payload)
+    API->>+Pay: ChargeCustomer(Amount, Token)
+    
+    alt Payment Succeeded
+        Pay-->>-API: 200 OK (ChargeID)
+        API-)Bus: Publish OrderPaidEvent (Async)
+        API-->>-Web: 201 Created (OrderRef)
+        Web-->>Customer: Display Order Confirmation
+    else Payment Declined / Timeout
+        Pay-->>API: 402 Card Declined
+        API-->>Web: 400 Bad Request (ErrorCode)
+        Web-->>-Customer: Show Retry Payment Prompt
+    end
+    deactivate Web
+```
+````
+*Why it works*:
+- **Temporal Clarity**: `autonumber` allows accompanying prose to reference specific operations (e.g., *"In step 4, the event is emitted asynchronously"*).
+- **Blocking vs Non-Blocking**: Synchronous remote calls (`->>`) are clearly distinguished from asynchronous event dispatches (`-)`).
+- **Resilient Modeling**: Models alternative flows and failures explicitly.
+
+---
+
+#### 3. Scientific, Mathematical & Engineering Diagrams: Topological Congruence
+
+Diagrams representing mathematics, probability, set theory, or physical systems must preserve **topological congruence**: the visual grammar (boxes, arrows, spatial enclosures) must match the underlying mathematical reality.
+
+##### 🔴 Anti-Pattern 1: The "Tree Fallacy" for Sets & Partitions
+- **Symptoms**: Modeling a static set system, partition, or Venn diagram as a directed tree flowchart with arrows (`Universe -> E_only, Both, F_only, Neither`).
+- **Why it fails**:
+  - **Category Error**: Arrows denote time, state transitions, or causality. Sets are static spatial containment regions.
+  - **Destroys Additive Intuition**: The reader cannot visually see that $E$ is composed of $(E \cap F) \cup (E \cap \bar{F})$.
+
+##### 🟢 Best Practice: 2×2 Partition Contingency Matrix
+- **Pattern**: Use a 2D spatial matrix (`shape=none, label=<<table ...>>`) aligning intersections with row and column marginal sums.
+````markdown
+```dot
+digraph PartitionMatrix {
+    bgcolor="transparent";
+    node [shape=none, fontname="DejaVu Sans", fontsize=10];
+
+    Matrix [label=<
+        <table border="0" cellborder="1" cellspacing="0" cellpadding="6">
+            <tr>
+                <td bgcolor="#f8fafc" border="0"><b>Univers &Omega;</b></td>
+                <td bgcolor="#dbeafe"><b>Événement <i>F</i></b></td>
+                <td bgcolor="#f1f5f9"><b>Contraire <i>F&#772;</i></b></td>
+                <td bgcolor="#f8fafc"><b>Total Marginal</b></td>
+            </tr>
+            <tr>
+                <td bgcolor="#dbeafe"><b>Événement <i>E</i></b></td>
+                <td bgcolor="#93c5fd"><i>E &cap; F</i><br/><font point-size="8" color="#1e3a8a">Intersection</font></td>
+                <td bgcolor="#eff6ff"><i>E &cap; F&#772;</i><br/><font point-size="8" color="#1e3a8a"><i>E</i> seulement</font></td>
+                <td bgcolor="#dbeafe"><b>P(<i>E</i>)</b></td>
+            </tr>
+            <tr>
+                <td bgcolor="#f1f5f9"><b>Contraire <i>E&#772;</i></b></td>
+                <td bgcolor="#eff6ff"><i>E&#772; &cap; F</i><br/><font point-size="8" color="#1e3a8a"><i>F</i> seulement</font></td>
+                <td bgcolor="#f8fafc"><i>E&#772; &cap; F&#772;</i><br/><font point-size="8" color="#475569">Extérieur</font></td>
+                <td bgcolor="#f1f5f9"><b>P(<i>E&#772;</i>)</b></td>
+            </tr>
+            <tr>
+                <td bgcolor="#f8fafc"><b>Total Marginal</b></td>
+                <td bgcolor="#dbeafe"><b>P(<i>F</i>)</b></td>
+                <td bgcolor="#f1f5f9"><b>P(<i>F&#772;</i>)</b></td>
+                <td bgcolor="#bbf7d0"><b>P(&Omega;) = 1</b></td>
+            </tr>
+        </table>
+    >];
+}
+```
+````
+*Why it works*: Shows the exact geometric summation: rows sum to $P(E)$, columns sum to $P(F)$, and the whole space sums to 1.
+
+---
+
+##### 🔴 Anti-Pattern 2: System Reliability Spurious Body-Port Splitting
+- **Symptoms**: Branching parallel edges directly out of a single component box face (`C1 -> C2; C1 -> C3;`), creating angled diagonal wires.
+- **Why it fails**: Components are two-terminal blocks ($In \to Out$). Fanning out directly from a component implies the component itself is a demultiplexer. Diagonal lines clutter the schematic.
+
+##### 🟢 Best Practice: Orthogonal Bus Routing with Explicit Junction Nodes
+- **Pattern**: Use `splines=ortho`, explicit junction dots (`shape=point, width=0.08`), and component probability annotations.
+````markdown
+```dot
+digraph MixedReliabilityCircuit {
+    rankdir=LR;
+    bgcolor="transparent";
+    splines=ortho;
+    nodesep=0.5;
+    ranksep=0.6;
+
+    node [shape=box, style="filled,rounded", fontname="DejaVu Sans", fontsize=10];
+    edge [color="#0284c7", penwidth=1.5, arrowhead=none];
+
+    In  [shape=circle, label="I", fillcolor="#e0f2fe", color="#0284c7", width=0.4];
+    Out [shape=circle, label="O", fillcolor="#e0f2fe", color="#0284c7", width=0.4];
+
+    C1 [label="Composant 1\nP(A1) = 0.50", fillcolor="#eff6ff", color="#3b82f6"];
+    C2 [label="Composant 2\nP(A2) = 0.45", fillcolor="#eff6ff", color="#3b82f6"];
+    C3 [label="Composant 3\nP(A3) = 0.50", fillcolor="#eff6ff", color="#3b82f6"];
+
+    J1 [shape=point, width=0.08, color="#0284c7"];
+    J2 [shape=point, width=0.08, color="#0284c7"];
+
+    In -> C1;
+    C1 -> J1;
+    J1 -> C2 -> J2;
+    J1 -> C3 -> J2;
+    J2 -> Out [arrowhead=vee];
+}
+```
+````
+
+---
+
+##### 🔴 Anti-Pattern 3: The Cluttered Probability Tree & ASCII Math
+- **Symptoms**: Duplicating probabilities on both branch edges and leaf nodes, wrapping every leaf in heavy rectangular boxes, using ASCII approximations (`E n F_bar`), and failing to visually emphasize the Bayesian evidence vs target hypothesis.
+
+##### 🟢 Best Practice: Two-Stage Bayesian Tree with Evidence Highlighting
+- **Pattern**: Clean stage transitions (Priors on stage 1 edges $\to$ Conditionals on stage 2 edges $\to$ Joint probabilities on leaves), Unicode math symbols ($\cap$, $\bar{A}$), dimmed eliminated paths, and highlighted Bayesian target paths.
+````markdown
+```dot
+digraph BayesTree {
+    rankdir=LR;
+    bgcolor="transparent";
+    nodesep=0.35;
+    ranksep=0.8;
+
+    node [fontname="DejaVu Sans", fontsize=10];
+    edge [fontname="DejaVu Sans", fontsize=9, color="#64748b"];
+
+    Root [shape=circle, label="Source", fillcolor="#f1f5f9", style="filled", color="#94a3b8", width=0.5];
+
+    A   [shape=box, style="filled,rounded", label="A", fillcolor="#eff6ff", color="#3b82f6"];
+    nA  [shape=box, style="filled,rounded", label="A&#772;", fillcolor="#fef3c7", color="#f59e0b", penwidth=2];
+
+    AB  [shape=box, style="filled,rounded", label="B\nP(A &cap; B)", fillcolor="#dbeafe", color="#3b82f6"];
+    AnB [shape=box, style="filled,dashed,rounded", label="B&#772;\n[Eliminated]", fillcolor="#f8fafc", color="#cbd5e1", fontcolor="#94a3b8"];
+
+    nAB [shape=box, style="filled,rounded", label="B (Target)\nP(A&#772; &cap; B)", fillcolor="#fef08a", color="#d97706", penwidth=2];
+    nAnB [shape=box, style="filled,dashed,rounded", label="B&#772;\n[Eliminated]", fillcolor="#f8fafc", color="#cbd5e1", fontcolor="#94a3b8"];
+
+    Root -> A  [label=" P(A) ", color="#3b82f6"];
+    Root -> nA [label=" P(A&#772;) ", color="#f59e0b", penwidth=2];
+
+    A -> AB  [label=" P(B|A) ", color="#3b82f6"];
+    A -> AnB [label=" P(B&#772;|A) ", style="dashed", color="#cbd5e1"];
+
+    nA -> nAB  [label=" P(B|A&#772;) ", color="#d97706", penwidth=2];
+    nA -> nAnB [label=" P(B&#772;|A&#772;) ", style="dashed", color="#cbd5e1"];
+}
+```
+````
+
+---
+
+#### 4. Diagram Engine Selection: Avoiding Common Pitfalls
+
+| Use Case | Recommended Engine | Avoid | Rationale |
+| :--- | :--- | :--- | :--- |
+| **State Machines & Automata** | `graphviz` (`dot`) | `mermaid` | Graphviz natively computes exact vector bounding boxes server-side without relying on browser `<foreignObject>` font metrics, preventing text clipping. |
+| **Dense Network Topologies** | `graphviz` (`dot`) or `d2` | `mermaid` | Graphviz's Neato/Dot routing engines resolve complex multi-edge crossings cleanly without line collisions. |
+| **Microservice Architecture** | `d2` or `mermaid` | ASCII art | `d2` and `mermaid` provide structured container nesting and clean orthogonal arrow routing. |
+| **Sequence Interactions** | `mermaid` or `plantuml` | `graphviz` | Sequence diagrams require linear actor lifelines and activation boxes designed natively into Mermaid/PlantUML. |
+| **Database Schemas & ERDs** | `erd` or `mermaid` | Manual flowcharts | Native ERD engines automatically format primary keys, foreign keys, and cardinalities (`1--*`, `0..1`). |
 
 ---
 
@@ -451,6 +736,7 @@ document:
   papersize: a4
   fontsize: 11pt
   mainfont: "New Computer Modern"
+  kroki_url: "https://kroki.io"
   section_numbering: true
   toc: false
   bibliography: true
