@@ -14,13 +14,38 @@ use crate::diagrams::{
 };
 
 pub fn extract_frontmatter_raw(content: &str) -> (&str, &str) {
-    let trimmed = content.trim_start();
-    if trimmed.starts_with("---") {
-        let parts: Vec<&str> = trimmed.splitn(3, "---").collect();
-        if parts.len() >= 3 {
-            return (parts[1], parts[2].trim_start());
-        }
+    let trimmed_start = content.trim_start();
+    if !trimmed_start.starts_with("---") {
+        return ("", content);
     }
+
+    let first_line_end = match trimmed_start.find('\n') {
+        Some(idx) => idx,
+        None => return ("", content),
+    };
+
+    let first_line = trimmed_start[..first_line_end].trim();
+    if first_line != "---" {
+        return ("", content);
+    }
+
+    let rest = &trimmed_start[first_line_end + 1..];
+    let mut current_idx = 0;
+    while current_idx < rest.len() {
+        let line_end = rest[current_idx..].find('\n').map(|i| current_idx + i).unwrap_or(rest.len());
+        let line = rest[current_idx..line_end].trim();
+        if line == "---" || line == "..." {
+            let fm = &rest[..current_idx];
+            let body = if line_end < rest.len() {
+                &rest[line_end + 1..]
+            } else {
+                ""
+            };
+            return (fm, body);
+        }
+        current_idx = if line_end < rest.len() { line_end + 1 } else { rest.len() };
+    }
+
     ("", content)
 }
 
@@ -1437,5 +1462,14 @@ mod tests {
         let res = export_to_normal_markdown(md, &opts).unwrap();
         assert!(res.content.contains("alt=\"UMLet Architecture via Image Syntax\""));
         assert!(res.content.contains("Figure 1: UMLet Architecture via Image Syntax"));
+    }
+
+    #[test]
+    fn test_extract_frontmatter_raw_with_dashes_in_fields() {
+        let md = "---\ntitle: Guide\ndescription: Zero-cost --- Abstractions\n---\n# Body\nHere is content with --- inside body.\n";
+        let (fm, body) = extract_frontmatter_raw(md);
+        assert!(fm.contains("title: Guide"));
+        assert!(fm.contains("description: Zero-cost --- Abstractions"));
+        assert!(body.starts_with("# Body"));
     }
 }

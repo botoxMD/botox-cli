@@ -529,23 +529,40 @@ Check out the [Botox Documentation](https://github.com) for more examples.
     }
 }
 
-fn extract_frontmatter(content: &str) -> (Value, &str) {
-    let trimmed = content.trim_start();
-    if trimmed.starts_with("---") {
-        let parts: Vec<&str> = trimmed.splitn(3, "---").collect();
-        if parts.len() >= 3 {
-            if let Ok(val) = serde_yaml::from_str::<Value>(parts[1]) {
-                return (val, parts[2].trim_start());
-            }
-            // Fallback: sanitize unquoted \today which can cause YAML parser errors
-            let sanitized = parts[1].replace(r"\today", r#""\today""#);
+pub fn extract_frontmatter(content: &str) -> (Value, &str) {
+    let (fm_raw, body) = markdown::export::extract_frontmatter_raw(content);
+    if fm_raw.trim().is_empty() {
+        return (Value::Null, body);
+    }
+    match serde_yaml::from_str::<Value>(fm_raw) {
+        Ok(val) => (val, body),
+        Err(_) => {
+            let sanitized = fm_raw.replace(r"\today", r#""\today""#);
             if let Ok(val) = serde_yaml::from_str::<Value>(&sanitized) {
-                return (val, parts[2].trim_start());
+                (val, body)
+            } else {
+                (Value::Null, body)
             }
-            return (Value::Null, parts[2].trim_start());
         }
     }
-    (Value::Null, content)
+}
+
+pub fn parse_frontmatter_strict(content: &str) -> Result<(Value, &str), String> {
+    let (fm_raw, body) = markdown::export::extract_frontmatter_raw(content);
+    if fm_raw.trim().is_empty() {
+        return Ok((Value::Null, body));
+    }
+    match serde_yaml::from_str::<Value>(fm_raw) {
+        Ok(val) => Ok((val, body)),
+        Err(err) => {
+            let sanitized = fm_raw.replace(r"\today", r#""\today""#);
+            if let Ok(val) = serde_yaml::from_str::<Value>(&sanitized) {
+                Ok((val, body))
+            } else {
+                Err(format!("{err}"))
+            }
+        }
+    }
 }
 
 fn detect_is_slides(
@@ -744,8 +761,8 @@ pub fn transpile_markdown_to_typst_markup(
     cli_exclude_ref: &[String],
     cli_include_ref: &[String],
     source_path: Option<&std::path::Path>,
-) -> (String, bool) {
-    let (fm, body_md) = extract_frontmatter(raw_content);
+) -> Result<(String, bool), String> {
+    let (fm, body_md) = parse_frontmatter_strict(raw_content)?;
     let fallback = source_path.unwrap_or(std::path::Path::new("document.md"));
     let is_slides = detect_is_slides(&fm, raw_content, fallback, explicit_slides, explicit_pdf);
 
@@ -883,7 +900,7 @@ pub fn transpile_markdown_to_typst_markup(
         )
     };
 
-    (typst_markup, is_slides)
+    Ok((typst_markup, is_slides))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -937,7 +954,13 @@ fn compile_once(
         cli_exclude_ref,
         cli_include_ref,
         src_path,
-    );
+    ).map_err(|e| {
+        let fname = src_path
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("document.md");
+        format!("[YAML Frontmatter Error] {fname}: {e}")
+    })?;
     let t_transpile = t_transpile_start.elapsed();
 
     let start = std::time::Instant::now();
@@ -1904,7 +1927,7 @@ See @tbl:sync for details.
             &[],
             &[],
             Some(Path::new("pco_principles_summary.md")),
-        );
+        ).expect("transpile should succeed");
         assert!(!is_slides);
         let pdf_bytes = compiler::compile_typst_to_pdf_bytes(&typst_markup, None)
             .expect("PCO reproduction document should compile cleanly to PDF");
@@ -1929,7 +1952,7 @@ See @tbl:sync for details.
             &[],
             &[],
             Some(Path::new("ex-c.md")),
-        );
+        ).expect("transpile should succeed");
         assert!(!is_slides);
         let res = compiler::compile_typst_to_pdf_bytes(&typst_markup, None);
         if let Err(ref e) = res {

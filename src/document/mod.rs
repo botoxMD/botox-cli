@@ -368,8 +368,14 @@ pub fn wrap_document(
         })
         .unwrap_or_else(|| doc_theme.default_columns());
 
+    let col_page_arg = if columns > 1 {
+        format!(",\n  columns: {columns}")
+    } else {
+        String::new()
+    };
+
     out.push_str(&format!(
-        "#set page(\n  paper: \"{papersize}\",\n  margin: (x: {margin_x}, y: {margin_y}),\n  numbering: \"1\",\n)\n"
+        "#set page(\n  paper: \"{papersize}\",\n  margin: (x: {margin_x}, y: {margin_y}),\n  numbering: \"1\"{col_page_arg}\n)\n"
     ));
 
     // 2. Typography
@@ -824,6 +830,11 @@ pub fn wrap_document(
         abstract_text,
         keywords_str.as_deref(),
     );
+    let rendered_header = if columns > 1 && !rendered_header.trim().is_empty() {
+        format!("#place(top, float: true, scope: \"parent\")[\n{rendered_header}]\n\n")
+    } else {
+        rendered_header
+    };
     out.push_str(&rendered_header);
 
     if columns > 1 {
@@ -837,7 +848,7 @@ pub fn wrap_document(
                 } else { v.as_f64().map(|n| format!("{n}pt")) }
             })
             .unwrap_or_else(|| "14pt".to_string());
-        out.push_str(&format!("#show: columns.with({columns}, gutter: {gutter})\n\n"));
+        out.push_str(&format!("#set columns(gutter: {gutter})\n\n"));
     }
 
     // 4. Table of Contents
@@ -1011,9 +1022,9 @@ title: "Config Fallback"
         // 4. Compact theme (2 columns with gutter)
         let compact_fm: Value = serde_yaml::from_str("theme: compact\ntitle: Conference Paper").unwrap();
         let doc_compact = wrap_document("= Section\nBody text", &compact_fm, &default_cfg, None, None, None, None);
-        assert!(doc_compact.contains("#show: columns.with(2, gutter: 14pt)"));
+        assert!(doc_compact.contains("columns: 2"));
+        assert!(doc_compact.contains("#set columns(gutter: 14pt)"));
         assert!(doc_compact.contains("margin: (x: 1.8cm, y: 1.8cm)"));
-        assert!(!doc_compact.contains("#place(top, float: true, scope: \"parent\")"));
 
         // 5. Minimal theme (unnumbered Swiss typography, 3cm margin)
         let minimal_fm: Value = serde_yaml::from_str("theme: minimal\ntitle: Swiss Typo").unwrap();
@@ -1034,7 +1045,8 @@ title: "Config Fallback"
         let default_cfg = DocumentConfig::defaults();
         let fm: Value = serde_yaml::from_str("columns: 3\ncolumn-gutter: 20pt\ntitle: Tri-Column").unwrap();
         let doc = wrap_document("= Section\nBody", &fm, &default_cfg, None, None, None, None);
-        assert!(doc.contains("#show: columns.with(3, gutter: 20pt)"));
+        assert!(doc.contains("columns: 3"));
+        assert!(doc.contains("#set columns(gutter: 20pt)"));
     }
 
     #[test]
@@ -1042,8 +1054,8 @@ title: "Config Fallback"
         let default_cfg = DocumentConfig::defaults();
         let fm: Value = serde_yaml::from_str("theme: compact\ntitle: Two Column").unwrap();
         let doc = wrap_document("= Col 1\n#pagebreak()\n= Col 2\n#colbreak()\n= Col 3", &fm, &default_cfg, None, None, None, None);
-        // Multi-column sanitizes pagebreak to colbreak to prevent Typst container fatal error
-        assert!(!doc.contains("#pagebreak()"));
+        // Multi-column now natively preserves both pagebreak and colbreak!
+        assert!(doc.contains("#pagebreak()"));
         assert!(doc.contains("#colbreak()"));
 
         // Single column converts colbreak to pagebreak

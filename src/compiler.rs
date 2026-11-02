@@ -480,13 +480,21 @@ fn format_compilation_error(
                                 }
                             }
                             let has_inline_math = target_line.contains('$') && !target_line.contains(r"\$");
-                            let has_latex_cmd = target_line.contains(r"\frac")
-                                || target_line.contains(r"\sqrt")
-                                || target_line.contains(r"\sum")
-                                || target_line.contains(r"\int")
-                                || target_line.contains(r"\mathbf")
-                                || target_line.contains(r"\alpha")
-                                || target_line.contains(r"\beta");
+                            let has_latex_cmd = {
+                                let mut chars = target_line.chars().peekable();
+                                let mut found = false;
+                                while let Some(c) = chars.next() {
+                                    if c == '\\' {
+                                        if let Some(&next_c) = chars.peek() {
+                                            if next_c.is_ascii_alphabetic() {
+                                                found = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                found
+                            };
                             in_math_block || has_inline_math || has_latex_cmd
                         }
                     } else {
@@ -503,6 +511,32 @@ fn format_compilation_error(
                 } else {
                     "Typst Error"
                 };
+
+                // Enhance LaTeX error messages with KaTeX / AMS context
+                if is_latex && msg.starts_with("unknown variable:") {
+                    let var_name = msg.trim_start_matches("unknown variable:").trim();
+                    let original_cmd = if let (Some(md), Some((l, _))) = (markdown_source, found_md_loc) {
+                        md.lines().nth(l).and_then(|line| {
+                            for word in line.split(|c: char| c.is_whitespace() || c == '$' || c == '{' || c == '}') {
+                                if let Some(pos) = word.find('\\') {
+                                    let cmd: String = word[pos..].chars().take_while(|c| c.is_ascii_alphabetic() || *c == '\\').collect();
+                                    if cmd.len() > 1 && (cmd.contains(var_name) || var_name.contains(&cmd[1..])) {
+                                        return Some(cmd);
+                                    }
+                                }
+                            }
+                            None
+                        })
+                    } else {
+                        None
+                    };
+
+                    if let Some(cmd) = original_cmd {
+                        msg = format!("unknown or unsupported LaTeX command '{cmd}'");
+                    } else {
+                        msg = format!("unknown or unsupported LaTeX command '\\{var_name}'");
+                    }
+                }
 
                 let fname = source_filename.unwrap_or("document.md");
                 let loc_str = if let Some((l, c)) = found_md_loc {
@@ -529,7 +563,20 @@ fn format_compilation_error(
 
                 msg = format!("[{category}] {loc_str}{msg}{snippet_suffix}");
 
-                if !d.hints.is_empty() {
+                if is_latex {
+                    let mut custom_hints = Vec::new();
+                    for h in &d.hints {
+                        let hint_str = h.v.to_string();
+                        if hint_str.contains("spaces between each letter") {
+                            custom_hints.push("check KaTeX / AMS-LaTeX spelling and syntax".to_string());
+                        } else {
+                            custom_hints.push(hint_str);
+                        }
+                    }
+                    if !custom_hints.is_empty() {
+                        msg.push_str(&format!(" (hint: {})", custom_hints.join("; ")));
+                    }
+                } else if !d.hints.is_empty() {
                     let hints: Vec<String> = d.hints.iter().map(|h| h.v.to_string()).collect();
                     msg.push_str(&format!(" (hint: {})", hints.join("; ")));
                 }
@@ -596,26 +643,24 @@ fn walk_frame_data(
                     ctx.text_out,
                     r#"<text x="{x:.2}" y="{y:.2}" font-size="{size:.2}pt" textLength="{width:.2}" lengthAdjust="spacingAndGlyphs" fill="transparent" stroke="none" style="cursor: text; user-select: text;">{escaped}</text>"#
                 );
-
-                if size >= 12.8 {
-                    let cur_ratio = (y / ctx.page_height).clamp(0.0, 1.0);
-                    if let Some(last) = ctx.headings_out.last_mut() {
-                        if last.page_index == ctx.page_idx && (last.y_ratio - cur_ratio).abs() < 0.008 {
-                            last.text.push(' ');
-                            last.text.push_str(trimmed);
-                        } else {
+            }
+            typst_library::layout::FrameItem::Tag(tag) => {
+                if let typst_library::introspection::Tag::Start(elem, _) = tag {
+                    if ctx.check_pause && elem.label().is_some_and(|l| l.resolve().as_str() == "botox-step") {
+                        *ctx.is_pause_out = true;
+                    }
+                    if let Some(heading) = elem.to_packed::<typst_library::model::HeadingElem>() {
+                        let text = heading.body.plain_text().to_string();
+                        let trimmed = text.trim();
+                        if !trimmed.is_empty() {
+                            let y = item_ts.ty.to_pt();
+                            let cur_ratio = (y / ctx.page_height).clamp(0.0, 1.0);
                             ctx.headings_out.push(BotoxHeadingInfo {
                                 page_index: ctx.page_idx,
                                 text: trimmed.to_string(),
                                 y_ratio: cur_ratio,
                             });
                         }
-                    } else {
-                        ctx.headings_out.push(BotoxHeadingInfo {
-                            page_index: ctx.page_idx,
-                            text: trimmed.to_string(),
-                            y_ratio: cur_ratio,
-                        });
                     }
                 }
             }
@@ -1717,5 +1762,31 @@ Second column body text.
             assert!(compile_typst(&full, &tmp, None).is_ok(), "Typst failed to compile tricky LaTeX expr: {}\n  Mitex: {}", expr, typst_math);
             let _ = std::fs::remove_file(tmp);
         }
+    }
+
+    #[test]
+    fn test_ast_heading_extraction() {
+        let markup = r#"
+= First Main Heading
+Some body text that happens to be #text(size: 20pt)[very large text but not a heading].
+
+== Second Level Subheading
+More body text.
+"#;
+        let tmp_json = std::env::temp_dir().join("test_botox_headings.json");
+        let res = compile_typst(markup, &tmp_json, None);
+        assert!(res.is_ok(), "Typst compile error: {:?}", res.err());
+        let json_str = std::fs::read_to_string(&tmp_json).unwrap();
+        let json_val: serde_json::Value = serde_json::from_str(&json_str).expect("Valid JSON");
+        let headings = json_val["headings"].as_array().expect("Headings array");
+
+        let heading_texts: Vec<&str> = headings.iter()
+            .map(|h| h["text"].as_str().unwrap())
+            .collect();
+
+        assert_eq!(heading_texts.len(), 2);
+        assert_eq!(heading_texts[0], "First Main Heading");
+        assert_eq!(heading_texts[1], "Second Level Subheading");
+        let _ = std::fs::remove_file(tmp_json);
     }
 }

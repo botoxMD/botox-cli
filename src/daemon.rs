@@ -187,7 +187,12 @@ fn process_daemon_request(req: &DaemonRequest, start_time: std::time::Instant) -
     let src_path = req.file.as_deref().map(Path::new)
         .or_else(|| req.source_file.as_deref().map(Path::new));
 
-    let (typst_markup, _) = crate::transpile_markdown_to_typst_markup(
+    let src_filename = src_path
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("document.md");
+
+    let (typst_markup, _) = match crate::transpile_markdown_to_typst_markup(
         &raw_content,
         doc_dir,
         &config_data,
@@ -201,12 +206,23 @@ fn process_daemon_request(req: &DaemonRequest, start_time: std::time::Instant) -
         &[],
         &[],
         src_path,
-    );
-
-    let src_filename = src_path
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-        .unwrap_or("document.md");
+    ) {
+        Ok(res) => res,
+        Err(e) => {
+            return DaemonResponse {
+                id: req.id,
+                status: "error".to_string(),
+                error: Some(format!("[YAML Frontmatter Error] {src_filename}: {e}")),
+                num_pages: None,
+                pages: None,
+                headings: None,
+                is_slides: None,
+                pause_indices: None,
+                duration_ms: Some(start_time.elapsed().as_secs_f64() * 1000.0),
+                version: None,
+            };
+        }
+    };
 
     match compiler::compile_typst_to_pages(
         &typst_markup,

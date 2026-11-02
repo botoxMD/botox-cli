@@ -69,7 +69,7 @@ pub fn process_slide_pauses(trimmed_slide: &str, out: &mut String) {
         out.push_str(&accumulated);
 
         if step_idx + 1 < total_steps {
-            out.push_str("\n#place(top + left)[#text(size: 0.001pt, fill: rgb(0, 0, 0, 0))[botox-pause-step]]\n");
+            out.push_str("\n#metadata(\"botox-pause-step\") <botox-step>\n");
         }
     }
     out.push('\n');
