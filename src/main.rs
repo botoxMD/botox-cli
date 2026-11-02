@@ -1882,13 +1882,13 @@ mod tests {
     }
 
     #[test]
-    fn test_pco_feedback_report_end_to_end_pdf_compilation() {
+    fn test_technical_document_end_to_end_pdf_compilation() {
         let md = r#"---
-title: "PCO Principles Summary"
+title: "Technical Specification Summary"
 theme: technical
 ---
 
-# Math Regression Cases
+# Math Layout Cases
 
 1. UTF-8 inside `\text{...}`: $\frac{\text{observé}}{\text{attendu}}$
 2. Thin spaces between digits: $1\,000\,000$
@@ -1926,11 +1926,11 @@ See @tbl:sync for details.
             None,
             &[],
             &[],
-            Some(Path::new("pco_principles_summary.md")),
+            Some(Path::new("technical_summary.md")),
         ).expect("transpile should succeed");
         assert!(!is_slides);
         let pdf_bytes = compiler::compile_typst_to_pdf_bytes(&typst_markup, None)
-            .expect("PCO reproduction document should compile cleanly to PDF");
+            .expect("Technical document should compile cleanly to PDF");
         assert!(pdf_bytes.starts_with(b"%PDF-"));
     }
 

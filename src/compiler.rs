@@ -327,6 +327,43 @@ fn load_needed_fonts(typst_markup: &str) -> BotoxFonts {
     }
 }
 
+fn contains_latex_command(s: &str) -> bool {
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && chars.peek().is_some_and(|next| next.is_ascii_alphabetic()) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_line_in_math_context(md: &str, target_line_idx: usize, target_line: &str) -> bool {
+    let trimmed_target = target_line.trim_start();
+    if trimmed_target.starts_with(":::") || trimmed_target.starts_with("```") || trimmed_target.starts_with(r"\ref") {
+        return false;
+    }
+
+    let mut in_math_block = false;
+    for (idx, line) in md.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed == "$$" {
+            in_math_block = !in_math_block;
+        } else if trimmed.starts_with("$$") && !trimmed.ends_with("$$") {
+            in_math_block = true;
+        } else if !trimmed.starts_with("$$") && trimmed.ends_with("$$") {
+            in_math_block = false;
+        }
+        if idx == target_line_idx {
+            break;
+        }
+    }
+
+    let has_inline_math = target_line.contains('$') && !target_line.contains(r"\$");
+    let has_latex_cmd = contains_latex_command(target_line);
+
+    in_math_block || has_inline_math || has_latex_cmd
+}
+
 fn format_compilation_error(
     diags: &[typst::diag::SourceDiagnostic],
     typst_markup: &str,
@@ -461,42 +498,7 @@ fn format_compilation_error(
                     false
                 } else if let (Some(md), Some((l, _))) = (markdown_source, found_md_loc) {
                     if let Some(target_line) = md.lines().nth(l) {
-                        let trimmed_target = target_line.trim_start();
-                        if trimmed_target.starts_with(":::") || trimmed_target.starts_with("```") || trimmed_target.starts_with(r"\ref") {
-                            false
-                        } else {
-                            let mut in_math_block = false;
-                            for (idx, line) in md.lines().enumerate() {
-                                let trimmed = line.trim();
-                                if trimmed == "$$" {
-                                    in_math_block = !in_math_block;
-                                } else if trimmed.starts_with("$$") && !trimmed.ends_with("$$") {
-                                    in_math_block = true;
-                                } else if !trimmed.starts_with("$$") && trimmed.ends_with("$$") {
-                                    in_math_block = false;
-                                }
-                                if idx == l {
-                                    break;
-                                }
-                            }
-                            let has_inline_math = target_line.contains('$') && !target_line.contains(r"\$");
-                            let has_latex_cmd = {
-                                let mut chars = target_line.chars().peekable();
-                                let mut found = false;
-                                while let Some(c) = chars.next() {
-                                    if c == '\\' {
-                                        if let Some(&next_c) = chars.peek() {
-                                            if next_c.is_ascii_alphabetic() {
-                                                found = true;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                                found
-                            };
-                            in_math_block || has_inline_math || has_latex_cmd
-                        }
+                        is_line_in_math_context(md, l, target_line)
                     } else {
                         false
                     }
