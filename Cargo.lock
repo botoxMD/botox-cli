@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "botox"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
