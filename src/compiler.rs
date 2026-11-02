@@ -1626,4 +1626,96 @@ Second column body text.
         assert!(res.is_err(), "Accessing /etc/hosts outside allowed roots must fail");
         let _ = std::fs::remove_file(tmp_pdf);
     }
+
+    #[test]
+    fn test_spt_guides_math_with_mitex() {
+        let paths = [
+            "/home/minus/Downloads/spt/te1_theory_guide.md",
+            "/home/minus/Downloads/spt/te1_exercises_and_exam_solutions.md",
+        ];
+
+        let preamble = crate::markdown::math::TYPST_MATH_PREAMBLE;
+
+        for path in paths {
+            let Ok(content) = std::fs::read_to_string(path) else { continue; };
+            println!("Testing file: {}", path);
+            let mut math_snippets = Vec::new();
+
+            // Extract display math $$ ... $$
+            let mut parts = content.split("$$");
+            let _ = parts.next();
+            while let Some(display) = parts.next() {
+                math_snippets.push((display.trim(), true));
+                let _ = parts.next();
+            }
+
+            // Extract inline math $ ... $
+            let bytes = content.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'$' && (i + 1 < bytes.len() && bytes[i + 1] != b'$') && (i == 0 || bytes[i - 1] != b'$') {
+                    if let Some(end) = content[i + 1..].find('$') {
+                        let inner = &content[i + 1..i + 1 + end];
+                        if !inner.contains('\n') && !inner.trim().is_empty() {
+                            math_snippets.push((inner.trim(), false));
+                        }
+                        i = i + 1 + end + 1;
+                        continue;
+                    }
+                }
+                i += 1;
+            }
+
+            println!("Found {} math snippets in {}", math_snippets.len(), path);
+            let mut pass_count = 0;
+            let mut fail_count = 0;
+            for (snip, _is_display) in math_snippets {
+                match mitex::convert_math(snip, None) {
+                    Ok(typst_math) => {
+                        let full = format!("{}\n\n$ {} $\n", preamble, typst_math);
+                        let tmp = std::env::temp_dir().join("test_spt_snip.pdf");
+                        match compile_typst(&full, &tmp, None) {
+                            Ok(_) => pass_count += 1,
+                            Err(e) => {
+                                fail_count += 1;
+                                println!("FAIL on [{}]:\n  Mitex: {}\n  Typst err: {}", snip, typst_math, e);
+                            }
+                        }
+                        let _ = std::fs::remove_file(tmp);
+                    }
+                    Err(e) => {
+                        fail_count += 1;
+                        println!("MITEX PARSE FAIL on [{}]: {:?}", snip, e);
+                    }
+                }
+            }
+            println!("Summary for {}: {} passed, {} failed", path, pass_count, fail_count);
+            assert_eq!(fail_count, 0, "All math snippets must compile successfully");
+        }
+
+        // Test previously failing LaTeX expressions
+        let tricky_latex = [
+            r"\implies \iff \impliedby",
+            r"\emptyset",
+            r"\stackrel{?}{=}",
+            r"\begin{aligned} a &= b \\ c &= d \end{aligned}",
+            r"\begin{pmatrix} 1 & 2 \\ 3 & 4 \end{pmatrix}",
+            r"\boxed{R \leftarrow ssn\_dept5 \cup superviseurs}",
+            r"\sigma_{fname='John' \;\wedge\; lname='Smith'}(employee)",
+            r"\frac{\{x\}}{y}",
+            r"\mathbf{Relation}(\underline{pk_1}, \dots, attr)",
+            r"1\,000\,000",
+            r"\lfloor N / K \rfloor",
+            r"\lceil N / K \rceil",
+            r"N \bmod K",
+        ];
+
+        for expr in tricky_latex {
+            let typst_math = mitex::convert_math(expr, None).expect(&format!("mitex parse failed on {}", expr));
+            let full = format!("{}\n\n$ {} $\n", preamble, typst_math);
+            let tmp = std::env::temp_dir().join("test_tricky_snip.pdf");
+            assert!(compile_typst(&full, &tmp, None).is_ok(), "Typst failed to compile tricky LaTeX expr: {}\n  Mitex: {}", expr, typst_math);
+            let _ = std::fs::remove_file(tmp);
+        }
+    }
 }

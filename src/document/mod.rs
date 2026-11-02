@@ -891,7 +891,10 @@ pub fn wrap_document(
         out.push_str(&format!("#outline(title: \"{lot_title}\", target: figure.where(kind: table))\n#v(1.5em)\n"));
     }
 
-    // 5. Body
+    // 5. Math bridge preambles and body
+    out.push_str(crate::markdown::math::TYPST_MATH_PREAMBLE);
+    out.push_str("\n");
+
     let clean_body = body_typst.replace("#botox_pause()", "");
     let processed_body = sanitize_column_pagebreaks(&clean_body, columns);
     out.push_str("// BOTOX_BODY_START\n");

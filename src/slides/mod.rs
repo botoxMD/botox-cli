@@ -144,6 +144,8 @@ pub fn wrap_slides(
     out.push_str("#let botox_slide_counter = counter(\"slide\")\n");
     out.push_str("#botox_slide_counter.step()\n\n");
     out.push_str("#let botox_pause() = {}\n\n");
+    out.push_str(crate::markdown::math::TYPST_MATH_PREAMBLE);
+    out.push_str("\n");
     out.push_str("// BOTOX_BODY_START\n");
 
     let raw_slides = split_outside_code_fences(slides_typst, "#pagebreak()");

@@ -21,6 +21,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 ureq = "3.4.2"
 sha2 = "0.11.0"
 base64 = "0.23.1"
+mitex = "0.2.4"
 [profile.release]
 opt-level = 3
 lto = "thin"

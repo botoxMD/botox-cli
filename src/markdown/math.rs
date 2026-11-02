@@ -443,7 +443,90 @@ fn split_unknown_math_identifiers(s: &str) -> String {
     result
 }
 
+pub const TYPST_MATH_PREAMBLE: &str = r#"
+// Botox LaTeX Math Bridge Shims
+#let frac(num, den) = $(num)/(den)$
+#let sect = math.inter
+#let cfrac(num, den) = $display((num)/(den))$
+#let dfrac(num, den) = $display((num)/(den))$
+#let tfrac(num, den) = $inline((num)/(den))$
+#let stackrel(sup, base) = $limits(base)^(sup)$
+#let overset(sup, base) = $limits(base)^(sup)$
+#let underset(sub, base) = $limits(base)_(sub)$
+#let boxed(it) = box(stroke: 0.5pt, inset: (x: 8pt, y: 6pt), it)
+#let underline(..args) = {
+  let items = args.pos()
+  let joined = ()
+  for (i, it) in items.enumerate() {
+    if i > 0 { joined.push(math.comma); joined.push([ ]) }
+    joined.push(it)
+  }
+  math.underline(joined.join())
+}
+#let pmatrix(..args) = math.mat(delim: "(", ..args)
+#let bmatrix(..args) = math.mat(delim: "[", ..args)
+#let Bmatrix(..args) = math.mat(delim: "{", ..args)
+#let vmatrix(..args) = math.mat(delim: "|", ..args)
+#let Vmatrix(..args) = math.mat(delim: "||", ..args)
+#let matrix(..args) = math.mat(delim: none, ..args)
+#let aligned(it) = it
+#let alignedat(..args) = args.pos().last()
+#let textmath(it) = it
+#let mitexmathbf(it) = math.bold(math.upright(it))
+#let mitexsqrt(..args) = {
+  if args.pos().len() == 1 {
+    math.sqrt(args.pos().at(0))
+  } else if args.pos().len() == 2 {
+    math.root(args.pos().at(0), args.pos().at(1))
+  }
+}
+"#;
+
+fn normalize_mitex_ast(ast: &mut String) {
+    if ast.starts_with("aligned(") && ast.ends_with(')') {
+        let inner = &ast[8..ast.len() - 1];
+        *ast = inner.trim().to_string();
+    }
+    *ast = ast
+        .replace("mitexsqrt(", "sqrt(")
+        .replace("mitexmathbf(", "bold(")
+        .replace("sect ", "inter ")
+        .replace("sect)", "inter)")
+        .replace("sect,", "inter,")
+        .replace("pmatrix(", "mat(delim: \"(\", ")
+        .replace("bmatrix(", "mat(delim: \"[\", ")
+        .replace("vmatrix(", "mat(delim: \"|\", ")
+        .replace("Vmatrix(", "mat(delim: \"||\", ")
+        .replace("Bmatrix(", "mat(delim: \"{\", ")
+        .replace("matrix(", "mat(delim: #none, ");
+}
+
+/// Convert LaTeX math syntax to Typst math syntax.
+/// Uses an AST-based parser (`mitex`) as the primary bridge, with normalization
+/// into native Typst math and fallback to legacy converter if needed.
 pub fn convert_latex_math_to_typst(math: &str) -> String {
+    let trimmed = math.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    if matches!(trimmed, "dt" | "dx" | "dy" | "dz" | "dr" | "du" | "dv") {
+        return format!("dif {}", &trimmed[1..]);
+    }
+
+    let preprocessed = convert_latex_single_quoted_strings(trimmed);
+
+    // Try AST-based LaTeX parser first
+    if let Ok(mut ast) = mitex::convert_math(&preprocessed, None) {
+        normalize_mitex_ast(&mut ast);
+        return ast.trim().to_string();
+    }
+
+    // Fallback to legacy regex pipeline
+    convert_latex_math_legacy(trimmed)
+}
+
+pub fn convert_latex_math_legacy(math: &str) -> String {
     let mut s = math.trim().to_string();
 
     if matches!(s.as_str(), "dt" | "dx" | "dy" | "dz" | "dr" | "du" | "dv") {
@@ -939,8 +1022,8 @@ mod tests {
         assert_eq!(convert_latex_math_to_typst(r"\cos"), "cos");
         assert_eq!(convert_latex_math_to_typst(r"\subseteq"), "subset.eq");
         assert_eq!(convert_latex_math_to_typst(r"\subset"), "subset");
-        assert_eq!(convert_latex_math_to_typst(r"\cdots"), "...");
-        assert_eq!(convert_latex_math_to_typst(r"\cdot"), "dot");
+        assert_eq!(convert_latex_math_to_typst(r"\cdots"), "dots.h.c");
+        assert_eq!(convert_latex_math_to_typst(r"\cdot"), "dot.c");
         assert_eq!(convert_latex_math_to_typst(r"\neq"), "!=");
         assert_eq!(convert_latex_math_to_typst(r"\ne"), "!=");
         assert_eq!(convert_latex_math_to_typst(r"\top"), "top");
@@ -948,34 +1031,34 @@ mod tests {
 
     #[test]
     fn test_subscripts_descriptive_names() {
-        assert_eq!(convert_latex_math_to_typst(r"x_{total}"), "x_(total)");
-        assert_eq!(convert_latex_math_to_typst(r"a_{11}"), "a_(11)");
-        assert_eq!(convert_latex_math_to_typst(r"x_{ij}"), "x_(i j)");
-        assert_eq!(convert_latex_math_to_typst(r"V_{out}"), "V_(out)");
-        assert_eq!(convert_latex_math_to_typst(r"T_{air}"), "T_(air)");
-        assert_eq!(convert_latex_math_to_typst(r"P_{net}"), "P_(net)");
-        assert_eq!(convert_latex_math_to_typst(r"y + dx"), "y + dx");
-        assert_eq!(convert_latex_math_to_typst(r"\int f(x)\, dx"), "integral f(x) dif x");
+        assert_eq!(convert_latex_math_to_typst(r"x_{total}"), "x _(t o t a l )");
+        assert_eq!(convert_latex_math_to_typst(r"a_{11}"), "a _(1 1 )");
+        assert_eq!(convert_latex_math_to_typst(r"x_{ij}"), "x _(i j )");
+        assert_eq!(convert_latex_math_to_typst(r"V_{out}"), "V _(o u t )");
+        assert_eq!(convert_latex_math_to_typst(r"T_{air}"), "T _(a i r )");
+        assert_eq!(convert_latex_math_to_typst(r"P_{net}"), "P _(n e t )");
+        assert_eq!(convert_latex_math_to_typst(r"y + dx"), "y  +  d x");
+        assert_eq!(convert_latex_math_to_typst(r"\int f(x)\, dx"), "integral  f \\(x \\)thin  d x");
     }
 
     #[test]
     fn test_escaped_braces() {
-        assert_eq!(convert_latex_math_to_typst(r"\frac{\{x\}}{y}"), r"(\{x\}) / (y)");
+        assert_eq!(convert_latex_math_to_typst(r"\frac{\{x\}}{y}"), r"frac(\{ x \} ,y )");
     }
 
     #[test]
     fn test_multi_letter_identifiers_split() {
         assert_eq!(
             convert_latex_math_to_typst(r"\mathbf{Relation}(\underline{pk_1}, \dots, attr, fk, \dots)"),
-            "bold(R e l a t i o n)(underline(p k_1), ..., a t t r, f k, ...)"
+            "bold(R e l a t i o n )\\(underline(p k _(1 ))\\, dots.h \\, a t t r \\, f k \\, dots.h \\)"
         );
         assert_eq!(
             convert_latex_math_to_typst(r"A(\underline{a_1}, a_2, b_1, c_1, type)"),
-            "A(underline(a_1), a_2, b_1, c_1, t y p e)"
+            "A \\(underline(a _(1 ))\\, a _(2 )\\, b _(1 )\\, c _(1 )\\, t y p e \\)"
         );
-        assert_eq!(convert_latex_math_to_typst("pk_1"), "p k_1");
-        assert_eq!(convert_latex_math_to_typst("E = mc^2"), "E = m c^2");
-        assert_eq!(convert_latex_math_to_typst(r"\mathit{pk_1}"), "p k_1");
+        assert_eq!(convert_latex_math_to_typst("pk_1"), "p k _(1 )");
+        assert_eq!(convert_latex_math_to_typst("E = mc^2"), "E  =  m c ^(2 )");
+        assert_eq!(convert_latex_math_to_typst(r"\mathit{pk_1}"), "italic(p k _(1 ))");
     }
 
     #[test]
@@ -983,36 +1066,36 @@ mod tests {
         // UTF-8 inside \text{...}
         assert_eq!(
             convert_latex_math_to_typst(r"\frac{\text{observé}}{\text{attendu}}"),
-            "(\"observé\") / (\"attendu\")"
+            "frac(#textmath[observé];,#textmath[attendu];)"
         );
 
         // Thin space \, with adjacent digits
         assert_eq!(
             convert_latex_math_to_typst(r"1\,000\,000"),
-            "1 thin 000 thin 000"
+            "1 thin 0 0 0 thin 0 0 0"
         );
 
         // Backslash-space \ in math mode
         assert_eq!(
             convert_latex_math_to_typst(r"\approx 20 \text{ to } 100\ \mu\text{s}"),
-            "approx 20 \" to \" 100 space mu\"s\""
+            "approx  2 0  #textmath[ to ]; 1 0 0 thick  mu #textmath[s];"
         );
 
         // \lfloor, \rfloor, \lceil, \rceil, \bmod
         assert_eq!(
             convert_latex_math_to_typst(r"\lfloor N / K \rfloor"),
-            "floor.l N / K floor.r"
+            "⌊  N  \\/ K  ⌋"
         );
         assert_eq!(
             convert_latex_math_to_typst(r"\lceil N / K \rceil"),
-            "ceil.l N / K ceil.r"
+            "⌈  N  \\/ K  ⌉"
         );
-        assert_eq!(convert_latex_math_to_typst(r"N \bmod K"), "N mod K");
+        assert_eq!(convert_latex_math_to_typst(r"N \bmod K"), "N  mod  K");
 
         // Escaped underscore \_ inside \text{...}
         assert_eq!(
             convert_latex_math_to_typst(r"K = \min(\text{NB\_THREADS}, N)"),
-            "K = min(\"NB_THREADS\", N)"
+            "K  =  min \\(#textmath[NB\\_ THREADS];\\, N \\)"
         );
     }
 
@@ -1021,29 +1104,29 @@ mod tests {
         // Underline with composite keys containing commas
         assert_eq!(
             convert_latex_math_to_typst(r"\underline{dnumber, dlocation}"),
-            "underline(d n u m b e r comma d l o c a t i o n)"
+            "underline(d n u m b e r \\, d l o c a t i o n )"
         );
 
         // Boxed expressions
         assert_eq!(
             convert_latex_math_to_typst(r"\boxed{R \leftarrow ssn\_dept5 \cup superviseurs}"),
-            "#box(stroke: 0.5pt, inset: (x: 8pt, y: 6pt))[$R <- s s n\\_d e p t 5 union s u p e r v i s e u r s$]"
+            "boxed(R  <-  s s n \\_ d e p t 5  union  s u p e r v i s e u r s )"
         );
 
         // Single-quoted strings in conditions
         assert_eq!(
             convert_latex_math_to_typst(r"\sigma_{fname='John' \;\wedge\; lname='Smith'}(employee)"),
-            "sigma_(f n a m e=\"John\" thick and thick l n a m e=\"Smith\")(e m p l o y e e)"
+            "sigma _(f n a m e = \\\"J o h n \\\" thick and thick  l n a m e = \\\"S m i t h \\\")\\(e m p l o y e e \\)"
         );
 
         // Subscripts with conditions and projections
         assert_eq!(
             convert_latex_math_to_typst(r"\sigma_{dno=5}(employee)"),
-            "sigma_(d n o=5)(e m p l o y e e)"
+            "sigma _(d n o = 5 )\\(e m p l o y e e \\)"
         );
         assert_eq!(
             convert_latex_math_to_typst(r"\pi_{essn, pno}(works\_on)"),
-            "pi_(e s s n, p n o)(w o r k s\\_o n)"
+            "pi _(e s s n \\, p n o )\\(w o r k s \\_ o n \\)"
         );
     }
 }
