@@ -1638,4 +1638,13 @@ Check [link](https://example.com/api?q="quoted") here.
         assert!(typst.contains("#pagebreak(weak: true)\n#set page(flipped: true, columns: 1)"));
         assert!(typst.contains("#pagebreak(weak: true)\n#set page(flipped: false, columns: 2)"));
     }
+
+    #[test]
+    fn test_newpage_landscape_syntax() {
+        let md = "Page 1 portrait\n\n\\newpage landscape\n\nPage 2 wide landscape table\n\n\\newpage\n\nPage 3 portrait";
+        let opts = MarkdownOptions::default();
+        let typst = markdown_to_typst_with_options(md, &opts);
+        assert!(typst.contains("#pagebreak(weak: true)\n#set page(flipped: true)"));
+        assert!(typst.contains("#pagebreak(weak: true)\n#set page(flipped: false)"));
+    }
 }

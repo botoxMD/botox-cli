@@ -1114,8 +1114,9 @@ pub fn export_to_normal_markdown(
         // 9. Page breaks and date macros
         let mut processed_line = line.to_string();
 
-        if processed_line.trim() == r"\pagebreak"
-            || processed_line.trim() == r"\newpage"
+        if processed_line.trim().starts_with(r"\pagebreak")
+            || processed_line.trim().starts_with(r"\newpage")
+            || processed_line.trim().starts_with(r"\clearpage")
             || processed_line.trim() == "<!-- pagebreak -->"
             || processed_line.trim() == "<!--pagebreak-->"
             || processed_line.trim() == "==="

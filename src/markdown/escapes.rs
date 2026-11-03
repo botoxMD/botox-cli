@@ -9,7 +9,19 @@ pub fn escape_typst_text(s: &str) -> String {
     let has_pause = s.contains(r"\pause");
 
     if has_newpage {
-        s = s.replace(r"\newpage", "BOTOXCMDNEWPAGEBOTOX")
+        s = s.replace(r"\newpage landscape", "<!--botox:page:landscape:start-->")
+             .replace(r"\pagebreak landscape", "<!--botox:page:landscape:start-->")
+             .replace(r"\clearpage landscape", "<!--botox:page:landscape:start-->")
+             .replace(r"\newpage{landscape}", "<!--botox:page:landscape:start-->")
+             .replace(r"\pagebreak{landscape}", "<!--botox:page:landscape:start-->")
+             .replace(r"\clearpage{landscape}", "<!--botox:page:landscape:start-->")
+             .replace(r"\newpage portrait", "<!--botox:page:landscape:end-->")
+             .replace(r"\pagebreak portrait", "<!--botox:page:landscape:end-->")
+             .replace(r"\clearpage portrait", "<!--botox:page:landscape:end-->")
+             .replace(r"\newpage{portrait}", "<!--botox:page:landscape:end-->")
+             .replace(r"\pagebreak{portrait}", "<!--botox:page:landscape:end-->")
+             .replace(r"\clearpage{portrait}", "<!--botox:page:landscape:end-->")
+             .replace(r"\newpage", "BOTOXCMDNEWPAGEBOTOX")
              .replace(r"\pagebreak", "BOTOXCMDNEWPAGEBOTOX")
              .replace(r"\clearpage", "BOTOXCMDNEWPAGEBOTOX");
     }
@@ -204,7 +216,9 @@ pub fn escape_typst_text(s: &str) -> String {
         .replace("BOTOXSUPEREND", "]");
 
     if has_newpage {
-        final_out = final_out.replace("BOTOXCMDNEWPAGEBOTOX", "\n#pagebreak()\n");
+        final_out = final_out.replace("<!--botox:page:landscape:start-->", "\n#pagebreak(weak: true)\n#set page(flipped: true)\n")
+            .replace("<!--botox:page:landscape:end-->", "\n#pagebreak(weak: true)\n#set page(flipped: false)\n")
+            .replace("BOTOXCMDNEWPAGEBOTOX", "\n#pagebreak()\n");
     }
     if has_colbreak {
         final_out = final_out.replace("BOTOXCMDCOLBREAKBOTOX", "\n#colbreak()\n");

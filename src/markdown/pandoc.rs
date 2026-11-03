@@ -246,6 +246,7 @@ pub fn preprocess_pandoc(markdown: &str) -> String {
     let mut fence_len = 0;
     let mut in_github_callout = false;
     let mut div_stack: Vec<DivKind> = Vec::new();
+    let mut in_landscape_page = false;
 
     for line in markdown.lines() {
         let trimmed = line.trim_start();
@@ -352,7 +353,12 @@ pub fn preprocess_pandoc(markdown: &str) -> String {
         }
 
         let line_trimmed_lower = line_trimmed.to_ascii_lowercase();
-        if line_trimmed == r"\begin{landscape}"
+        let words: Vec<&str> = line_trimmed_lower.split_whitespace().collect();
+
+        let is_newpage_landscape = (words.len() == 2
+            && (words[0] == r"\newpage" || words[0] == r"\pagebreak" || words[0] == r"\clearpage")
+            && (words[1] == "landscape" || words[1] == "horizontal"))
+            || line_trimmed == r"\begin{landscape}"
             || line_trimmed == r"\begin{horizontal}"
             || line_trimmed == r"\landscape"
             || line_trimmed == r"\newpage{landscape}"
@@ -365,63 +371,71 @@ pub fn preprocess_pandoc(markdown: &str) -> String {
             || line_trimmed_lower == "<!-- page: landscape -->"
             || line_trimmed_lower == "<!-- page:landscape -->"
             || line_trimmed_lower == "<!-- page: horizontal -->"
-            || line_trimmed_lower == "<!-- page:horizontal -->"
-        {
+            || line_trimmed_lower == "<!-- page:horizontal -->";
+
+        if is_newpage_landscape {
             if in_github_callout {
                 result.push_str("\n<!--botox:callout:end-->\n\n");
                 in_github_callout = false;
             }
+            in_landscape_page = true;
             result.push_str("\n<!--botox:page:landscape:start-->\n\n");
             continue;
         }
 
-        if line_trimmed == r"\end{landscape}"
-            || line_trimmed == r"\end{horizontal}"
-            || line_trimmed == r"\endlandscape"
+        let is_newpage_portrait = (words.len() == 2
+            && (words[0] == r"\newpage" || words[0] == r"\pagebreak" || words[0] == r"\clearpage")
+            && (words[1] == "portrait" || words[1] == "vertical"))
+            || line_trimmed == r"\begin{portrait}"
+            || line_trimmed == r"\portrait"
             || line_trimmed == r"\newpage{portrait}"
             || line_trimmed == r"\pagebreak{portrait}"
+            || line_trimmed == r"\end{landscape}"
+            || line_trimmed == r"\end{horizontal}"
+            || line_trimmed == r"\endlandscape"
+            || line_trimmed == r"\end{portrait}"
+            || line_trimmed == r"\endportrait"
             || line_trimmed_lower == "<!-- /landscape -->"
             || line_trimmed_lower == "<!--/landscape-->"
             || line_trimmed_lower == "<!-- /horizontal -->"
             || line_trimmed_lower == "<!-- /horizontal:end -->"
             || line_trimmed_lower == "<!-- landscape:end -->"
             || line_trimmed_lower == "<!-- endlandscape -->"
+            || line_trimmed_lower == "<!-- portrait -->"
+            || line_trimmed_lower == "<!--portrait-->"
+            || line_trimmed_lower == "<!-- /portrait -->"
+            || line_trimmed_lower == "<!--/portrait-->"
             || line_trimmed_lower == "<!-- page: portrait -->"
-            || line_trimmed_lower == "<!-- page:portrait -->"
-        {
+            || line_trimmed_lower == "<!-- page:portrait -->";
+
+        if is_newpage_portrait {
             if in_github_callout {
                 result.push_str("\n<!--botox:callout:end-->\n\n");
                 in_github_callout = false;
             }
+            in_landscape_page = false;
             result.push_str("\n<!--botox:page:landscape:end-->\n\n");
             continue;
         }
 
-        if line_trimmed == r"\begin{portrait}"
-            || line_trimmed == r"\portrait"
-            || line_trimmed_lower == "<!-- portrait -->"
-            || line_trimmed_lower == "<!--portrait-->"
-            || line_trimmed_lower == "<!-- portrait:start -->"
+        if line_trimmed == r"\newpage"
+            || line_trimmed == r"\pagebreak"
+            || line_trimmed == r"\clearpage"
+            || line_trimmed_lower == "<!-- newpage -->"
+            || line_trimmed_lower == "<!--newpage-->"
+            || line_trimmed_lower == "<!-- pagebreak -->"
+            || line_trimmed_lower == "<!--pagebreak-->"
         {
             if in_github_callout {
                 result.push_str("\n<!--botox:callout:end-->\n\n");
                 in_github_callout = false;
             }
-            result.push_str("\n<!--botox:page:portrait:start-->\n\n");
-            continue;
-        }
-
-        if line_trimmed == r"\end{portrait}"
-            || line_trimmed == r"\endportrait"
-            || line_trimmed_lower == "<!-- /portrait -->"
-            || line_trimmed_lower == "<!--/portrait-->"
-            || line_trimmed_lower == "<!-- portrait:end -->"
-        {
-            if in_github_callout {
-                result.push_str("\n<!--botox:callout:end-->\n\n");
-                in_github_callout = false;
+            if in_landscape_page {
+                in_landscape_page = false;
+                result.push_str("\n<!--botox:page:landscape:end-->\n\n");
+            } else {
+                result.push_str("\n<!--botox:pagebreak-->\n\n");
             }
-            result.push_str("\n<!--botox:page:portrait:end-->\n\n");
             continue;
         }
 
