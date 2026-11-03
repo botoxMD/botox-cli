@@ -21,7 +21,7 @@ pub use crate::diagrams::{
     parse_code_fence_file, parse_diagram_fence, resolve_file_content,
 };
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct MarkdownOptions<'a> {
     pub is_slides: bool,
     pub bibliography: bool,
@@ -33,6 +33,27 @@ pub struct MarkdownOptions<'a> {
     pub ref_include: Option<&'a [String]>,
     pub kroki_url: Option<&'a str>,
     pub resource_dir: Option<&'a std::path::Path>,
+    pub base_columns: usize,
+    pub is_landscape: bool,
+}
+
+impl<'a> Default for MarkdownOptions<'a> {
+    fn default() -> Self {
+        Self {
+            is_slides: false,
+            bibliography: false,
+            lang: "en",
+            biblio_title: None,
+            toc_title: None,
+            toc_depth: None,
+            ref_exclude: None,
+            ref_include: None,
+            kroki_url: None,
+            resource_dir: None,
+            base_columns: 1,
+            is_landscape: false,
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments, dead_code)]
@@ -60,6 +81,8 @@ pub fn markdown_to_typst(
             ref_include,
             kroki_url: None,
             resource_dir: None,
+            base_columns: 1,
+            is_landscape: false,
         },
     )
 }
@@ -910,6 +933,20 @@ pub fn markdown_to_typst_with_options(
                     }
                 } else if html.contains("<!--botox:callout:end-->") {
                     typst.push_str("\n]\n\n");
+                } else if html.contains("<!--botox:page:landscape:start-->") {
+                    let col_arg = if opts.base_columns > 1 { ", columns: 1" } else { "" };
+                    typst.push_str(&format!("\n#pagebreak(weak: true)\n#set page(flipped: true{col_arg})\n\n"));
+                } else if html.contains("<!--botox:page:landscape:end-->") {
+                    let col_arg = if opts.base_columns > 1 { format!(", columns: {}", opts.base_columns) } else { String::new() };
+                    let flipped_val = if opts.is_landscape { "true" } else { "false" };
+                    typst.push_str(&format!("\n#pagebreak(weak: true)\n#set page(flipped: {flipped_val}{col_arg})\n\n"));
+                } else if html.contains("<!--botox:page:portrait:start-->") {
+                    let col_arg = if opts.base_columns > 1 { format!(", columns: {}", opts.base_columns) } else { String::new() };
+                    typst.push_str(&format!("\n#pagebreak(weak: true)\n#set page(flipped: false{col_arg})\n\n"));
+                } else if html.contains("<!--botox:page:portrait:end-->") {
+                    let col_arg = if opts.base_columns > 1 { ", columns: 1" } else { "" };
+                    let flipped_val = if opts.is_landscape { "true" } else { "false" };
+                    typst.push_str(&format!("\n#pagebreak(weak: true)\n#set page(flipped: {flipped_val}{col_arg})\n\n"));
                 } else if html.contains("<!--botox:pause-->")
                     || html.trim() == "<!-- pause -->"
                     || html.trim() == "<!--pause-->"
@@ -1572,5 +1609,33 @@ Check [link](https://example.com/api?q="quoted") here.
             typst.contains("Diagram rendering requires Kroki configuration"),
             "Expected {{mermaid, ...}} fence to be parsed as a diagram: {typst}"
         );
+    }
+
+    #[test]
+    fn test_landscape_page_fenced_div() {
+        let md = "Page 1 portrait\n\n::: landscape\nPage 2 wide landscape table\n:::\n\nPage 3 portrait";
+        let opts = MarkdownOptions::default();
+        let typst = markdown_to_typst_with_options(md, &opts);
+        assert!(typst.contains("#pagebreak(weak: true)\n#set page(flipped: true)"));
+        assert!(typst.contains("#pagebreak(weak: true)\n#set page(flipped: false)"));
+    }
+
+    #[test]
+    fn test_landscape_page_latex_environment() {
+        let md = "Page 1 portrait\n\n\\begin{landscape}\nPage 2 wide diagram\n\\end{landscape}\n\nPage 3 portrait";
+        let opts = MarkdownOptions::default();
+        let typst = markdown_to_typst_with_options(md, &opts);
+        assert!(typst.contains("#pagebreak(weak: true)\n#set page(flipped: true)"));
+        assert!(typst.contains("#pagebreak(weak: true)\n#set page(flipped: false)"));
+    }
+
+    #[test]
+    fn test_landscape_with_two_columns() {
+        let md = "Page 1 in 2 columns\n\n::: landscape\nPage 2 single column wide table\n:::\n\nPage 3 back to 2 columns";
+        let mut opts = MarkdownOptions::default();
+        opts.base_columns = 2;
+        let typst = markdown_to_typst_with_options(md, &opts);
+        assert!(typst.contains("#pagebreak(weak: true)\n#set page(flipped: true, columns: 1)"));
+        assert!(typst.contains("#pagebreak(weak: true)\n#set page(flipped: false, columns: 2)"));
     }
 }

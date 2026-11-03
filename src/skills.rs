@@ -116,6 +116,8 @@ abstract: >
 keywords: "distributed systems, agentic coding, typst, rust"
 lang: en
 papersize: a4                        # a4, us-letter, a5
+orientation: portrait                # portrait (default) or landscape
+landscape: false                     # true for full-document horizontal orientation
 fontsize: 11pt                       # 9pt, 10pt, 11pt, 12pt
 mainfont: "New Computer Modern"      # Any system font or embedded font
 mathfont: "New Computer Modern Math"
@@ -675,11 +677,34 @@ See the comparative results in @tbl:perf.
 * **Unnumbered Headings**: `# Preface {-}` or `# Preface {.unnumbered}`
 * **Referencing Sections**: `As discussed in @sec:background...`
 
-### Page Breaks
+### Page Breaks & Page Orientation (Landscape / Horizontal Pages)
 Force page breaks in documents using any of the following:
 * `\newpage`
 * `\pagebreak`
+* `\columnbreak` (breaks to the next column in multi-column layouts)
 * `<div style="page-break-after: always"></div>`
+
+#### Individual Landscape / Flipped Pages
+Rotate individual pages (for wide tables, large architectural diagrams, or multi-column data matrices) while keeping the rest of the document in portrait:
+* **Pandoc Fenced Div**:
+  ```markdown
+  ::: landscape
+  | Long Table | Column 2 | Column 3 | Column 4 |
+  |---|---|---|---|
+  :::
+  ```
+* **LaTeX Environment**:
+  ```latex
+  \begin{landscape}
+  ...
+  \end{landscape}
+  ```
+* **HTML Directives**:
+  ```html
+  <!-- landscape -->
+  ...
+  <!-- /landscape -->
+  ```
 
 ### Footnotes
 ```markdown

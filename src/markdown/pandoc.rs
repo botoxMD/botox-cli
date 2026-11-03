@@ -217,12 +217,35 @@ pub fn convert_cross_references(s: &str) -> String {
     out
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DivKind {
+    Callout,
+    Landscape,
+    Portrait,
+}
+
+fn classify_div_header(rest: &str) -> (DivKind, String, String) {
+    let clean = rest.trim_start_matches('{').trim_end_matches('}').trim();
+    let lower = clean.to_ascii_lowercase();
+    let lower_ident = lower.strip_prefix('.').unwrap_or(&lower).trim();
+
+    if lower_ident == "landscape" || lower_ident == "horizontal" {
+        (DivKind::Landscape, String::new(), String::new())
+    } else if lower_ident == "portrait" || lower_ident == "vertical" {
+        (DivKind::Portrait, String::new(), String::new())
+    } else {
+        let (kind, title) = super::callouts::parse_callout_header(rest);
+        (DivKind::Callout, kind, title)
+    }
+}
+
 pub fn preprocess_pandoc(markdown: &str) -> String {
     let mut result = String::with_capacity(markdown.len());
     let mut in_code_fence = false;
     let mut fence_char = '`';
     let mut fence_len = 0;
     let mut in_github_callout = false;
+    let mut div_stack: Vec<DivKind> = Vec::new();
 
     for line in markdown.lines() {
         let trimmed = line.trim_start();
@@ -328,13 +351,98 @@ pub fn preprocess_pandoc(markdown: &str) -> String {
             continue;
         }
 
+        let line_trimmed_lower = line_trimmed.to_ascii_lowercase();
+        if line_trimmed == r"\begin{landscape}"
+            || line_trimmed == r"\begin{horizontal}"
+            || line_trimmed == r"\landscape"
+            || line_trimmed == r"\newpage{landscape}"
+            || line_trimmed == r"\pagebreak{landscape}"
+            || line_trimmed_lower == "<!-- landscape -->"
+            || line_trimmed_lower == "<!--landscape-->"
+            || line_trimmed_lower == "<!-- horizontal -->"
+            || line_trimmed_lower == "<!-- horizontal:start -->"
+            || line_trimmed_lower == "<!-- landscape:start -->"
+            || line_trimmed_lower == "<!-- page: landscape -->"
+            || line_trimmed_lower == "<!-- page:landscape -->"
+            || line_trimmed_lower == "<!-- page: horizontal -->"
+            || line_trimmed_lower == "<!-- page:horizontal -->"
+        {
+            if in_github_callout {
+                result.push_str("\n<!--botox:callout:end-->\n\n");
+                in_github_callout = false;
+            }
+            result.push_str("\n<!--botox:page:landscape:start-->\n\n");
+            continue;
+        }
+
+        if line_trimmed == r"\end{landscape}"
+            || line_trimmed == r"\end{horizontal}"
+            || line_trimmed == r"\endlandscape"
+            || line_trimmed == r"\newpage{portrait}"
+            || line_trimmed == r"\pagebreak{portrait}"
+            || line_trimmed_lower == "<!-- /landscape -->"
+            || line_trimmed_lower == "<!--/landscape-->"
+            || line_trimmed_lower == "<!-- /horizontal -->"
+            || line_trimmed_lower == "<!-- /horizontal:end -->"
+            || line_trimmed_lower == "<!-- landscape:end -->"
+            || line_trimmed_lower == "<!-- endlandscape -->"
+            || line_trimmed_lower == "<!-- page: portrait -->"
+            || line_trimmed_lower == "<!-- page:portrait -->"
+        {
+            if in_github_callout {
+                result.push_str("\n<!--botox:callout:end-->\n\n");
+                in_github_callout = false;
+            }
+            result.push_str("\n<!--botox:page:landscape:end-->\n\n");
+            continue;
+        }
+
+        if line_trimmed == r"\begin{portrait}"
+            || line_trimmed == r"\portrait"
+            || line_trimmed_lower == "<!-- portrait -->"
+            || line_trimmed_lower == "<!--portrait-->"
+            || line_trimmed_lower == "<!-- portrait:start -->"
+        {
+            if in_github_callout {
+                result.push_str("\n<!--botox:callout:end-->\n\n");
+                in_github_callout = false;
+            }
+            result.push_str("\n<!--botox:page:portrait:start-->\n\n");
+            continue;
+        }
+
+        if line_trimmed == r"\end{portrait}"
+            || line_trimmed == r"\endportrait"
+            || line_trimmed_lower == "<!-- /portrait -->"
+            || line_trimmed_lower == "<!--/portrait-->"
+            || line_trimmed_lower == "<!-- portrait:end -->"
+        {
+            if in_github_callout {
+                result.push_str("\n<!--botox:callout:end-->\n\n");
+                in_github_callout = false;
+            }
+            result.push_str("\n<!--botox:page:portrait:end-->\n\n");
+            continue;
+        }
+
         if trimmed.starts_with(":::") {
             let rest = trimmed.trim_start_matches(':').trim();
             if rest.is_empty() {
-                result.push_str("\n<!--botox:callout:end-->\n\n");
+                match div_stack.pop().unwrap_or(DivKind::Callout) {
+                    DivKind::Landscape => result.push_str("\n<!--botox:page:landscape:end-->\n\n"),
+                    DivKind::Portrait => result.push_str("\n<!--botox:page:portrait:end-->\n\n"),
+                    DivKind::Callout => result.push_str("\n<!--botox:callout:end-->\n\n"),
+                }
             } else {
-                let (kind, title) = super::callouts::parse_callout_header(rest);
-                result.push_str(&format!("\n<!--botox:callout:start:{kind}:{title}-->\n"));
+                let (kind, callout_kind, callout_title) = classify_div_header(rest);
+                div_stack.push(kind);
+                match kind {
+                    DivKind::Landscape => result.push_str("\n<!--botox:page:landscape:start-->\n\n"),
+                    DivKind::Portrait => result.push_str("\n<!--botox:page:portrait:start-->\n\n"),
+                    DivKind::Callout => {
+                        result.push_str(&format!("\n<!--botox:callout:start:{callout_kind}:{callout_title}-->\n"));
+                    }
+                }
             }
             continue;
         }
@@ -357,6 +465,14 @@ pub fn preprocess_pandoc(markdown: &str) -> String {
 
     if in_github_callout {
         result.push_str("\n<!--botox:callout:end-->\n\n");
+    }
+
+    while let Some(top) = div_stack.pop() {
+        match top {
+            DivKind::Landscape => result.push_str("\n<!--botox:page:landscape:end-->\n\n"),
+            DivKind::Portrait => result.push_str("\n<!--botox:page:portrait:end-->\n\n"),
+            DivKind::Callout => result.push_str("\n<!--botox:callout:end-->\n\n"),
+        }
     }
 
     result

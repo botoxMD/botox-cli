@@ -888,12 +888,27 @@ pub fn export_to_normal_markdown(
             continue;
         }
 
-        // 2. Pandoc ::: callouts
+        // 2. Pandoc ::: callouts & orientation divs
         if trimmed.starts_with(":::") {
             let rest = trimmed.trim_start_matches(':').trim();
-            if rest.is_empty() {
-                in_callout = false;
+            let clean = rest.trim_start_matches('{').trim_end_matches('}').trim();
+            let lower = clean.to_ascii_lowercase();
+            let lower_ident = lower.strip_prefix('.').unwrap_or(&lower).trim();
+
+            if lower_ident == "landscape" || lower_ident == "horizontal" || lower_ident == "portrait" || lower_ident == "vertical" {
+                out.push_str(line);
                 out.push('\n');
+                line_idx += 1;
+                continue;
+            }
+
+            if rest.is_empty() {
+                if in_callout {
+                    in_callout = false;
+                    out.push('\n');
+                } else {
+                    out.push_str(":::\n\n");
+                }
             } else {
                 in_callout = true;
                 let (kind, title) = super::callouts::parse_callout_header(rest);

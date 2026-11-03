@@ -872,6 +872,41 @@ pub fn transpile_markdown_to_typst_markup(
         .and_then(|v| v.as_str())
         .or(doc_config.kroki_url.as_deref());
 
+    let classoption = fm.get("classoption").and_then(|v| {
+        if let Some(s) = v.as_str() {
+            Some(s.to_string())
+        } else if let Some(arr) = v.as_sequence() {
+            Some(arr.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" "))
+        } else {
+            None
+        }
+    }).unwrap_or_default();
+
+    let is_landscape = fm.get("landscape").and_then(|v| v.as_bool())
+        .or_else(|| fm.get("flipped").and_then(|v| v.as_bool()))
+        .or_else(|| fm.get("orientation").and_then(|v| v.as_str()).map(|s| s.eq_ignore_ascii_case("landscape") || s.eq_ignore_ascii_case("horizontal")))
+        .unwrap_or_else(|| classoption.contains("landscape"));
+
+    let theme_explicit = cli_theme.is_some() || fm.get("theme").is_some();
+    let theme_raw = cli_theme
+        .as_deref()
+        .or_else(|| fm.get("theme").and_then(|v| v.as_str()))
+        .or(doc_config.theme.as_deref())
+        .unwrap_or("academic");
+    let doc_theme = document::DocumentTheme::parse(theme_raw);
+    let columns = fm.get("columns")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize)
+        .or_else(|| if classoption.contains("twocolumn") { Some(2) } else { None })
+        .or_else(|| {
+            if theme_explicit {
+                Some(doc_theme.default_columns())
+            } else {
+                doc_config.columns.or_else(|| Some(doc_theme.default_columns()))
+            }
+        })
+        .unwrap_or_else(|| doc_theme.default_columns());
+
     let md_opts = markdown::MarkdownOptions {
         is_slides,
         bibliography: should_enable_bib,
@@ -883,6 +918,8 @@ pub fn transpile_markdown_to_typst_markup(
         ref_include: include_opt.as_deref(),
         kroki_url,
         resource_dir: doc_dir,
+        base_columns: columns,
+        is_landscape,
     };
     let body_typst = markdown::markdown_to_typst_with_options(body_md, &md_opts);
 
@@ -1959,6 +1996,48 @@ See @tbl:sync for details.
             eprintln!("EX-C COMPILATION ERROR:\n{e}");
         }
         assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_individual_flipped_pages_end_to_end() {
+        let content = r#"---
+title: Flipped Test
+papersize: a4
+---
+
+# Page 1 Portrait
+Standard portrait introduction text.
+
+::: landscape
+# Page 2 Landscape
+Wide data table across landscape canvas.
+:::
+
+# Page 3 Portrait
+Standard portrait conclusion text.
+"#;
+        let cfg = config::BotoxConfig::default();
+        let (typst_markup, is_slides) = transpile_markdown_to_typst_markup(
+            content,
+            None,
+            &cfg,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+        ).expect("transpile should succeed");
+        assert!(!is_slides);
+        assert!(typst_markup.contains("#pagebreak(weak: true)\n#set page(flipped: true)"));
+        assert!(typst_markup.contains("#pagebreak(weak: true)\n#set page(flipped: false)"));
+        let pdf_bytes = compiler::compile_typst_to_pdf_bytes(&typst_markup, None)
+            .expect("Should compile cleanly to PDF with flipped pages");
+        assert!(pdf_bytes.starts_with(b"%PDF-"));
     }
 }
 

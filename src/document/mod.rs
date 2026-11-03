@@ -374,8 +374,19 @@ pub fn wrap_document(
         String::new()
     };
 
+    let is_landscape = fm.get("landscape").and_then(|v| v.as_bool())
+        .or_else(|| fm.get("flipped").and_then(|v| v.as_bool()))
+        .or_else(|| fm.get("orientation").and_then(|v| v.as_str()).map(|s| s.eq_ignore_ascii_case("landscape") || s.eq_ignore_ascii_case("horizontal")))
+        .unwrap_or_else(|| classoption.contains("landscape"));
+
+    let flipped_arg = if is_landscape && !papersize.starts_with("presentation-") {
+        ",\n  flipped: true"
+    } else {
+        ""
+    };
+
     out.push_str(&format!(
-        "#set page(\n  paper: \"{papersize}\",\n  margin: (x: {margin_x}, y: {margin_y}),\n  numbering: \"1\"{col_page_arg}\n)\n"
+        "#set page(\n  paper: \"{papersize}\",\n  margin: (x: {margin_x}, y: {margin_y}),\n  numbering: \"1\"{col_page_arg}{flipped_arg}\n)\n"
     ));
 
     // 2. Typography
@@ -1047,6 +1058,31 @@ title: "Config Fallback"
         let doc = wrap_document("= Section\nBody", &fm, &default_cfg, None, None, None, None);
         assert!(doc.contains("columns: 3"));
         assert!(doc.contains("#set columns(gutter: 20pt)"));
+    }
+
+    #[test]
+    fn test_document_landscape_options() {
+        let default_cfg = DocumentConfig::defaults();
+
+        // 1. orientation: landscape
+        let fm_orient: Value = serde_yaml::from_str("title: Landscape Doc\norientation: landscape").unwrap();
+        let doc_orient = wrap_document("= Heading\nBody", &fm_orient, &default_cfg, None, None, None, None);
+        assert!(doc_orient.contains("flipped: true"));
+
+        // 2. landscape: true
+        let fm_land: Value = serde_yaml::from_str("title: Landscape Doc\nlandscape: true").unwrap();
+        let doc_land = wrap_document("= Heading\nBody", &fm_land, &default_cfg, None, None, None, None);
+        assert!(doc_land.contains("flipped: true"));
+
+        // 3. classoption: landscape
+        let fm_class: Value = serde_yaml::from_str("title: Landscape Doc\nclassoption: [a4paper, landscape]").unwrap();
+        let doc_class = wrap_document("= Heading\nBody", &fm_class, &default_cfg, None, None, None, None);
+        assert!(doc_class.contains("flipped: true"));
+
+        // 4. default portrait
+        let fm_portrait: Value = serde_yaml::from_str("title: Portrait Doc").unwrap();
+        let doc_portrait = wrap_document("= Heading\nBody", &fm_portrait, &default_cfg, None, None, None, None);
+        assert!(!doc_portrait.contains("flipped: true"));
     }
 
     #[test]
