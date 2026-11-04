@@ -22,9 +22,34 @@ It embeds the Typst typesetting engine directly inside the binary, so you don't 
 
 ## Installation
 
-Until Botox is published to package managers (Homebrew, crates.io, etc.), you can install it using one of the methods below.
+### 1. Quick Install & Update (Recommended)
 
-### 1. Build from Source (Cargo)
+#### Linux & macOS (Bash / Zsh / Sh)
+Run this single command in your terminal to install the latest release or update an existing installation:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/botoxMD/botox-cli/main/install.sh | bash
+```
+
+To install a specific version or into a custom directory:
+```bash
+# Specific version
+curl -fsSL https://raw.githubusercontent.com/botoxMD/botox-cli/main/install.sh | bash -s -- --version v0.2.0
+
+# Custom directory (e.g. /usr/local/bin)
+curl -fsSL https://raw.githubusercontent.com/botoxMD/botox-cli/main/install.sh | bash -s -- --dir /usr/local/bin
+```
+
+#### Windows (PowerShell)
+Run this command in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/botoxMD/botox-cli/main/install.ps1 | iex
+```
+
+---
+
+### 2. Build from Source (Cargo)
 
 If you have Rust and Cargo installed:
 
@@ -48,7 +73,9 @@ Make sure `~/.local/bin` is in your `PATH` (e.g. in your `~/.bashrc` or `~/.zshr
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-### 2. Prebuilt Binaries (GitHub Releases)
+---
+
+### 3. Manual Prebuilt Binaries (GitHub Releases)
 
 Precompiled standalone binaries for Linux, macOS, and Windows are available on the [Releases page](https://github.com/botoxMD/botox-cli/releases).
 
