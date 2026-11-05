@@ -92,6 +92,9 @@ impl<'a> DocumentEmitter for SlideEmitter<'a> {
             "#set text(\n  font: {font_family},\n  size: 20pt,\n  fill: rgb(\"{text_color}\"),\n)\n"
         ));
 
+        // Ensure embedded SVGs and vector graphics fall back to proportional sans-serif fonts
+        out.push_str("#show image: set text(font: (\"Liberation Sans\", \"DejaVu Sans\", \"Arial\", \"Helvetica\", \"Nimbus Sans\", \"New Computer Modern\"))\n\n");
+
     out.push_str("#set par(justify: false, leading: 0.75em)\n");
     out.push_str("#set list(spacing: 1.1em, marker: [•])\n");
     out.push_str("#set enum(spacing: 1.1em)\n\n");

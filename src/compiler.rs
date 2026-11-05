@@ -232,6 +232,17 @@ fn load_needed_fonts(typst_markup: &str) -> BotoxFonts {
     // Check if custom fonts are referenced in typst_markup:
     // e.g. `font: "..."` or `font: ("...", "...")`
     let mut custom_fonts: Vec<String> = Vec::new();
+
+    // If markup contains embedded images or SVGs, guarantee sans-serif system fallbacks
+    // are registered so vector graphics never fall back to serif New Computer Modern.
+    if lower_markup.contains("#image(") || lower_markup.contains(".svg") {
+        for fallback in &["Liberation Sans", "DejaVu Sans", "Arial", "Helvetica", "Nimbus Sans"] {
+            if !custom_fonts.iter().any(|f| f.eq_ignore_ascii_case(fallback)) {
+                custom_fonts.push(fallback.to_string());
+            }
+        }
+    }
+
     let mut idx = 0;
     while idx < typst_markup.len() && let Some(pos) = typst_markup[idx..].find("font:") {
         let start = idx + pos + 5;
@@ -345,9 +356,29 @@ fn load_needed_fonts(typst_markup: &str) -> BotoxFonts {
     }
 
     let mut book = typst::text::FontBook::new();
+    let mut alias_fonts = Vec::new();
+    let mut sans_serif_registered = false;
+
     for f in &fonts {
         book.push(f.info().clone());
+        if !sans_serif_registered {
+            let fam_lower = f.info().family.to_lowercase();
+            if (fam_lower.contains("sans") || fam_lower.contains("arial") || fam_lower.contains("helvetica"))
+                && !fam_lower.contains("mono")
+            {
+                let mut alias_info = f.info().clone();
+                alias_info.family = "sans-serif".to_string();
+                alias_fonts.push((alias_info, f.clone()));
+                sans_serif_registered = true;
+            }
+        }
     }
+
+    for (alias_info, alias_font) in alias_fonts {
+        fonts.push(alias_font);
+        book.push(alias_info);
+    }
+
     BotoxFonts::Custom {
         fonts,
         book: typst::utils::LazyHash::new(book),
@@ -1632,6 +1663,68 @@ Second column body text.
         "#;
         let lib_fonts = load_needed_fonts(libertine_markup);
         assert!(lib_fonts.len() > fonts.len(), "Libertine markup should load additional Libertinus fonts");
+    }
+
+    #[test]
+    fn test_academic_mode_svg_sans_font_resolution() {
+        let svg_content = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="50">
+            <text x="10" y="30" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="14">Hello Sans</text>
+        </svg>"#;
+        let tmp_svg = std::env::temp_dir().join("test_academic_sans.svg");
+        std::fs::write(&tmp_svg, svg_content).unwrap();
+
+        let fm = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let config = crate::config::DocumentConfig::defaults();
+        let body = format!("#image(\"{}\")", tmp_svg.display().to_string().replace('\\', "/"));
+        let typst_markup = crate::document::wrap_document(&body, &fm, &config, None, None, None, None);
+
+        // Verify that academic mode preamble includes sans-serif fallback in font stack
+        assert!(typst_markup.contains("New Computer Modern"));
+        assert!(typst_markup.contains("Liberation Sans"));
+
+        let tmp_pdf = std::env::temp_dir().join("test_academic_sans.pdf");
+        let res = compile_typst(&typst_markup, &tmp_pdf, None);
+        assert!(res.is_ok(), "Typst compile error: {:?}", res.err());
+
+        // Verify that PDF embedded a sans-serif font for the SVG text
+        let pdf_bytes = std::fs::read(&tmp_pdf).unwrap();
+        let pdf_str = String::from_utf8_lossy(&pdf_bytes);
+        assert!(
+            pdf_str.contains("LiberationSans")
+                || pdf_str.contains("DejaVuSans")
+                || pdf_str.contains("Arial")
+                || pdf_str.contains("Helvetica")
+                || pdf_str.contains("NimbusSans"),
+            "PDF must embed a sans-serif font for SVG text, got PDF: {}",
+            &pdf_str[..1000.min(pdf_str.len())]
+        );
+
+        let _ = std::fs::remove_file(&tmp_svg);
+        let _ = std::fs::remove_file(&tmp_pdf);
+
+        // Also test generic font-family="sans-serif"
+        let svg_generic = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="50">
+            <text x="10" y="30" font-family="sans-serif" font-size="14">Generic Sans Text</text>
+        </svg>"#;
+        let tmp_svg_gen = std::env::temp_dir().join("test_academic_generic_sans.svg");
+        std::fs::write(&tmp_svg_gen, svg_generic).unwrap();
+        let body_gen = format!("#image(\"{}\")", tmp_svg_gen.display().to_string().replace('\\', "/"));
+        let typst_markup_gen = crate::document::wrap_document(&body_gen, &fm, &config, None, None, None, None);
+        let tmp_pdf_gen = std::env::temp_dir().join("test_academic_generic_sans.pdf");
+        let res_gen = compile_typst(&typst_markup_gen, &tmp_pdf_gen, None);
+        assert!(res_gen.is_ok(), "Typst compile error: {:?}", res_gen.err());
+        let pdf_gen_bytes = std::fs::read(&tmp_pdf_gen).unwrap();
+        let pdf_gen_str = String::from_utf8_lossy(&pdf_gen_bytes);
+        assert!(
+            pdf_gen_str.contains("LiberationSans")
+                || pdf_gen_str.contains("DejaVuSans")
+                || pdf_gen_str.contains("Arial")
+                || pdf_gen_str.contains("Helvetica")
+                || pdf_gen_str.contains("NimbusSans"),
+            "PDF must embed a sans-serif font for generic font-family=\"sans-serif\""
+        );
+        let _ = std::fs::remove_file(&tmp_svg_gen);
+        let _ = std::fs::remove_file(&tmp_pdf_gen);
     }
 
     #[test]

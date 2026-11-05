@@ -221,6 +221,10 @@ impl<'a> DocumentEmitter for ArticleEmitter<'a> {
         ));
     }
 
+    // Ensure embedded SVGs and vector graphics fall back to proportional sans-serif fonts
+    // rather than serif New Computer Modern, preventing text overflow and truncation in diagram boxes.
+    out.push_str("#show image: set text(font: (\"Liberation Sans\", \"DejaVu Sans\", \"Arial\", \"Helvetica\", \"Nimbus Sans\", \"New Computer Modern\"))\n\n");
+
     // Math font & equations
     let mathfont = fm.get("mathfont")
         .and_then(|v| v.as_str())

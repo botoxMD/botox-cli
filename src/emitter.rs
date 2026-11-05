@@ -11,12 +11,16 @@ pub trait DocumentEmitter {
     fn emit(&self, body_typst: &str) -> String;
 }
 
+/// Standard cross-platform sans-serif fallbacks to ensure vector graphics,
+/// embedded SVGs, and diagram text render with proportional sans-serif glyph metrics.
+pub const SANS_SERIF_FALLBACK_STACK: &str = "\"Liberation Sans\", \"DejaVu Sans\", \"Arial\", \"Helvetica\", \"Nimbus Sans\"";
+
 /// Formats a font name into a Typst font stack with reliable cross-platform fallbacks.
 pub fn format_font_stack(font_raw: &str) -> String {
     if font_raw.eq_ignore_ascii_case("Times New Roman") || font_raw.eq_ignore_ascii_case("Times") {
-        "(\"Times New Roman\", \"Nimbus Roman\", \"Liberation Serif\", \"New Computer Modern\")".to_string()
+        format!("(\"Times New Roman\", \"Nimbus Roman\", \"Liberation Serif\", \"New Computer Modern\", {SANS_SERIF_FALLBACK_STACK})")
     } else if font_raw.eq_ignore_ascii_case("New Computer Modern") {
-        "(\"New Computer Modern\",)".to_string()
+        format!("(\"New Computer Modern\", {SANS_SERIF_FALLBACK_STACK})")
     } else if font_raw.eq_ignore_ascii_case("Liberation Sans")
         || font_raw.eq_ignore_ascii_case("Helvetica")
         || font_raw.eq_ignore_ascii_case("Arial")
@@ -24,9 +28,9 @@ pub fn format_font_stack(font_raw: &str) -> String {
     {
         "(\"Liberation Sans\", \"Adwaita Sans\", \"DejaVu Sans\", \"Helvetica Neue\", \"Arial\", \"New Computer Modern\")".to_string()
     } else if font_raw.eq_ignore_ascii_case("Linux Libertine") || font_raw.eq_ignore_ascii_case("Libertinus Serif") {
-        "(\"Linux Libertine\", \"Libertinus Serif\", \"Nimbus Roman\", \"Times New Roman\", \"New Computer Modern\")".to_string()
+        format!("(\"Linux Libertine\", \"Libertinus Serif\", \"Nimbus Roman\", \"Times New Roman\", \"New Computer Modern\", {SANS_SERIF_FALLBACK_STACK})")
     } else {
-        format!("(\"{font_raw}\", \"New Computer Modern\")")
+        format!("(\"{font_raw}\", \"New Computer Modern\", {SANS_SERIF_FALLBACK_STACK})")
     }
 }
 
@@ -49,7 +53,9 @@ mod tests {
         assert!(format_font_stack("Times New Roman").contains("Nimbus Roman"));
         assert!(format_font_stack("Helvetica").contains("Liberation Sans"));
         assert!(format_font_stack("New Computer Modern").contains("New Computer Modern"));
+        assert!(format_font_stack("New Computer Modern").contains("Liberation Sans"));
         assert!(format_font_stack("Custom Font").contains("Custom Font"));
+        assert!(format_font_stack("Custom Font").contains("Liberation Sans"));
     }
 
     #[test]
