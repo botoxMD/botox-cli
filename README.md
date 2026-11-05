@@ -11,12 +11,14 @@ It embeds the Typst typesetting engine directly inside the binary, so you don't 
 
 ## Features
 
-- **Documents**: Compiles Markdown to PDFs with Computer Modern typography.
+- **Documents**: Compiles Markdown and `.btx` to publication-grade PDFs with Computer Modern typography.
 - **Slides**: Compiles Markdown to standalone HTML presentation decks with keyboard navigation and incremental steps.
+- **Markdown Export**: Transpiles extended Markdown (`.btx`) into clean, portable standard CommonMark with rendered diagram assets and resolved bibliographies (`botox markdown`).
 - **Math**: Inline and display LaTeX-style math (`$...$` and `$$...$$`), matrices, and piecewise cases.
 - **Diagrams**: Mermaid, PlantUML, UMLet (`.uxf`), and Graphviz diagrams compiled via Kroki with automatic fallbacks and local caching.
 - **File Referencing**: Reference external diagram files (`.uxf`, `.puml`, `.mmd`) or code files directly instead of copying their contents into Markdown.
 - **Structure**: Tables with alignment and captions, callout boxes, table of contents, and automatic bibliography generation for links.
+- **Daemon Mode**: Background compilation daemon (`botox daemon`) for instant editor preview integration.
 - **Watch Mode**: `--watch` / `-w` automatically recompiles when you save changes.
 - **Piping**: Supports reading from stdin and streaming output to stdout (`-o -`).
 
@@ -104,29 +106,38 @@ If you are installing from a `.vsix` package:
 ### Compiling a Document
 
 ```bash
-botox document.md
+botox document.md                    # Compiles to document.pdf
+botox pdf document.md -o custom.pdf  # Explicit PDF subcommand
 ```
-
-This generates `document.pdf`.
 
 ### Compiling Slides
 
 ```bash
-botox slides.md
+botox slides.md                      # Auto-detects slides (defaults to slides.html)
+botox slides presentation.md -o presentation.html
+botox slides presentation.md -o deck.pdf  # Export presentation directly to PDF
 ```
 
-If the frontmatter contains `type: slides`, Botox outputs `slides.html`. You can also force slides mode:
+### Exporting Clean Standard Markdown
+
+Convert extended Botox Markdown with embedded diagrams and LaTeX callouts into clean standard CommonMark with local images and resolved IEEE bibliographies:
 
 ```bash
-botox --slides presentation.md -o presentation.html
+botox markdown document.md -o portable.md
 ```
 
-### Watch Mode
+### Watch Mode & Daemon
 
 Automatically rebuild on file changes:
 
 ```bash
 botox -w document.md
+```
+
+Or start the low-latency background daemon for editor integration:
+
+```bash
+botox daemon
 ```
 
 ### Setup Wizard
@@ -150,27 +161,34 @@ For complete, working samples that demonstrate how to write documents and presen
 ## CLI Usage
 
 ```text
-Usage: botox <input.md> [options]
-       botox <pdf|slides> <input.md> [options]
+Usage: botox <input.md|input.btx|input.btx.md> [options]
+       botox <pdf|slides|markdown> <input> [options]
        botox init <filename> [options]
        botox config
        botox setup [options]
-       botox --skills [options]
+       botox skills [options]
+       botox daemon [options]
 
 Commands:
+  pdf <input>             Compile document to PDF
+  slides <input>          Compile presentation to interactive HTML or PDF
+  markdown <input>        Export to portable standard Markdown with assets
   init <filename>         Initialize a new Markdown document or presentation
   config                  Display currently active configuration
   setup                   Interactive configuration wizard
   skills, --skills        Generate agent skill definition for AI coding agents
+  daemon                  Run persistent background compiler daemon
 
 Options:
-  -o, --output <file>     Output path (.pdf, .html, or '-' for stdout)
+  -o, --output <file>     Output path (.pdf, .html, .md, or '-' for stdout)
   -w, --watch             Watch input file and directory for changes
   --config <file>         Custom configuration YAML path
   --pdf                   Force PDF document mode
   --slides                Force presentation slide deck mode
+  --markdown, --md        Export to clean standard CommonMark
+  --assets-dir <dir>      Assets directory for exported diagrams (default: 'assets')
   --theme <theme>         Document theme (academic, modern, elegant, technical, compact, minimal)
-                          or slide theme (default, academic, dark, nord)
+                          or slide theme (default, academic, dark, nord, gaia, uncover)
   --toc                   Generate Table of Contents
   --no-toc                Disable Table of Contents
   --author <name>         Author name

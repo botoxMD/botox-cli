@@ -10,102 +10,105 @@ Botox replaces legacy LaTeX/Pandoc/Node toolchains by embedding an in-process Ty
 
 ```mermaid
 flowchart TD
-    subgraph VSCodeExt["VS Code Extension (botox-vsc-ext)"]
-        Editor["Markdown Editor / Buffer"]
-        ExtEvents["Keystroke Debouncer (120ms)"]
-        CompilerTS["src/compiler.ts\n(resolveBotoxBinary)"]
-        PreviewTS["src/preview.ts\n(Webview Host Panel)"]
-        WebviewDOM["Live Preview Webview\n(CSP Gated, SVG Vector Renderer, Follow-Cursor)"]
-
-        Editor -->|On Edit / Save| ExtEvents
-        ExtEvents -->|Triggers Preview| CompilerTS
-        CompilerTS -->|Spawns CLI with temp JSON path| CLIProcess
-        CompilerTS -->|Parses JSON Pages Output| PreviewTS
-        PreviewTS -->|PostMessage SVG Pages & Headings| WebviewDOM
+    subgraph Clients["Entrypoints & Clients"]
+        CLI["CLI Commands\n(botox pdf | slides | markdown)"]
+        Daemon["Compiler Daemon\n(src/daemon.rs / IPC)"]
+        VSCode["VS Code Extension\n(botox-vsc-ext)"]
     end
 
-    subgraph CLIProcess["Botox CLI Engine (Rust)"]
-        MainEntry["src/main.rs\n(CLI Args & Config Resolution)"]
-        ConfigLayer["src/config/\n(botox.yaml Cascading Merge)"]
-
-        subgraph MarkdownPipeline["Markdown Preprocessing & Transpilation (src/markdown/)"]
-            PandocMod["pandoc.rs\n- Fenced Divs (:::) \n- Attributes (#id, width)\n- Cross-refs (@fig-, @tbl-)"]
-            CalloutMod["callouts.rs\n- GitHub [!NOTE]\n- Pandoc Callouts"]
-            MathMod["math.rs\n- LaTeX to Typst Math\n- In-place Token Boundary Checks\n- Matrix & Accent Conversion"]
-            EscapeMod["escapes.rs\n- Typst Syntax Escaping\n- Sub/Super/Strike Brackets"]
-            RefMod["references.rs\n- URL Glob Filtering\n- Auto-Bibliography [1..N]"]
-            TableMod["tables.rs\n- Captions & Cross-ref Labels"]
-        end
-
-        subgraph DiagramPipeline["Diagram Engine (src/diagrams/)"]
-            HashCache["cache.rs\n- Canonicalize Code\n- SHA-256 Hash Lookup"]
-            DiskCache[("Cache Dir (~/.cache/botox)\n<hash>.svg")]
-            KrokiNet["kroki.rs\n- VPS Endpoint\n- kroki.io Fallback\n- mermaid.ink Fallback"]
-            Sanitizer["cache.rs\n- ForeignObject to SVG Text/Tspan"]
-        end
-
-        subgraph TypstWrapper["Document / Slide Assembly"]
-            DocWrap["src/document/\n- Theme Cascades\n- Page Geometry, Margins\n- Preambles & Typography"]
-            SlideWrap["src/slides/\n- 16:9 / 4:3 Slides\n- Incremental Pauses (#botox_pause)"]
-        end
-
-        subgraph TypstCore["In-Process Typst Engine (src/compiler.rs)"]
-            FontCache["OnceLock<fontdb::Database>\n(Embedded + Cached System Fonts)"]
-            TypstLib["typst-as-lib Engine\n(PagedDocument AST Compilation)"]
-            ErrorMapper["format_compilation_error\n(Typst to Markdown Source Mapping)"]
-        end
-
-        subgraph Outputs["Target Outputs"]
-            PDFOut["PDF Document (via typst-pdf)"]
-            JSONVector["JSON Vector Bundle\n- num_pages\n- pages: [SVG String]\n- headings & pause steps"]
-            SlideHTML["HTML Interactive Presentation\n(Embedded Vector Slides)"]
-        end
-
-        MainEntry --> ConfigLayer
-        MainEntry --> PandocMod
-        PandocMod --> CalloutMod
-        CalloutMod --> MathMod
-        MathMod --> TableMod
-        TableMod --> RefMod
-        RefMod --> EscapeMod
-
-        EscapeMod -->|Encounter Diagram Fence| HashCache
-        HashCache -->|Cache Hit| DiskCache
-        HashCache -->|Cache Miss| KrokiNet
-        KrokiNet --> Sanitizer
-        Sanitizer --> DiskCache
-        DiskCache --> DocWrap
-
-        EscapeMod -->|Document Mode| DocWrap
-        EscapeMod -->|Slides Mode| SlideWrap
-
-        DocWrap --> TypstCore
-        SlideWrap --> TypstCore
-        FontCache --> TypstLib
-        TypstLib -->|Compilation Error| ErrorMapper
-        ErrorMapper --> MainEntry
-
-        TypstLib -->|Default Compile| PDFOut
-        TypstLib -->|--json-pages / VS Code| JSONVector
-        TypstLib -->|Slides Output| SlideHTML
+    subgraph PublishingEngineModule["Publishing Engine (src/engine.rs)"]
+        Engine["engine::publish / publish_to_pages\n(DocumentSource & PublishOptions)"]
+        Frontmatter["Frontmatter & YAML Resolution\n(botox.yaml Cascade)"]
+        Transpile["transpile_markdown_to_typst_markup"]
     end
+
+    subgraph MarkdownPipeline["Markdown Event Transformation (src/markdown/)"]
+        Pandoc["pandoc.rs\n- Fast-path Directive Scan\n- Attributes & Dimensions\n- Fenced Divs (:::)"]
+        Callouts["callouts.rs\n- GitHub [!NOTE] & Pandoc Callouts"]
+        Math["math.rs\n- In-place LaTeX to Typst Math\n- Matrices & Environments"]
+        References["references.rs\n- Pass 1: Link & Citation Indexing\n- Pass 2: In-place Bibliography"]
+        Escapes["escapes.rs\n- Single-pass In-place Escapes\n- LATEX_COMMANDS Table\n- Prose Fast-path Bypass"]
+        Diagrams["src/diagrams/\n- SHA-256 Vector Cache\n- Multi-endpoint Kroki\n- foreignObject Sanitizer"]
+    end
+
+    subgraph EmitterSeam["Layout & Emitter Seam (src/emitter.rs)"]
+        DocEmitter["trait DocumentEmitter\n(fn emit(&self, body) -> String)"]
+        ArticleEmitter["src/document/mod.rs\n(ArticleEmitter)"]
+        SlideEmitter["src/slides/mod.rs\n(SlideEmitter)"]
+        DocLayout["src/document/layout.rs\n(DocumentLayout)"]
+        SlideLayout["src/slides/layout.rs\n(SlideDeckLayout)"]
+    end
+
+    subgraph TypstCore["In-Process Typst Engine (src/compiler.rs)"]
+        FontCache["Static Font Cache\n(Embedded + Cached System Fonts)"]
+        TypstLib["typst-as-lib Engine\n(PagedDocument AST Compilation)"]
+        ErrorMapper["format_compilation_error\n(Typst to Markdown Source Mapping)"]
+    end
+
+    subgraph Targets["Published Artifacts"]
+        PDFOut["PDF Document (typst-pdf)"]
+        JSONVector["JSON Vector Bundle (typst-svg)\n(num_pages, SVGs, headings)"]
+        SlideHTML["Interactive HTML Presentation\n(Embedded Vector Slides)"]
+        CleanMD["Clean Standard CommonMark\n(Local Assets & Citations)"]
+    end
+
+    CLI --> Engine
+    Daemon --> Engine
+    VSCode --> Daemon
+
+    Engine --> Frontmatter
+    Frontmatter --> Transpile
+    Transpile --> Pandoc
+    Pandoc --> Callouts
+    Callouts --> Math
+    Math --> References
+    References --> Escapes
+    Escapes --> Diagrams
+    Diagrams --> DocEmitter
+
+    DocEmitter --> ArticleEmitter
+    DocEmitter --> SlideEmitter
+    ArticleEmitter --> DocLayout
+    SlideEmitter --> SlideLayout
+
+    DocLayout --> TypstCore
+    SlideLayout --> TypstCore
+    FontCache --> TypstLib
+
+    TypstLib -->|Compilation Error| ErrorMapper
+    TypstLib -->|PDF Output| PDFOut
+    TypstLib -->|Pages Output| JSONVector
+    TypstLib -->|Slides Output| SlideHTML
+    Transpile -->|Markdown Export| CleanMD
 ```
 
 ---
 
 ## 2. Core Subsystems
 
-### 2.1 Configuration Hierarchy (`src/config/`)
-Configuration cascades across three layers:
-1. **User Global Config:** `~/.config/botox/config.yaml` (or Windows `%APPDATA%\botox\config.yaml`)
-2. **Project Working Directory:** `./botox.yaml`
-3. **Document Frontmatter:** YAML header block (`--- ... ---`) inside the Markdown file.
+### 2.1 Publishing Engine (`src/engine.rs`)
 
-Settings like fonts, paper size, margins, themes, line spacing, and bibliography exclusion rules merge hierarchically, with the document frontmatter taking highest precedence.
+The `PublishingEngine` acts as the deep coordinator for all document and presentation compilation workflows:
+- **`DocumentSource`**: Abstracts inputs (`File(path)`, `Stdin(string)`, `Memory(string)`), decoupling file system access from pipeline execution.
+- **`PublishOptions`**: Unified configuration bundle (output destination, target format, watch mode, custom fonts/themes, bibliography filters).
+- **`PublishResult`**: Type-safe output summary (`Pdf`, `PdfBytes`, `Markdown`, `Pages`), providing execution timing and output paths.
+- **Entrypoints**: `engine::publish`, `engine::publish_to_pages`, and `engine::publish_to_pdf_bytes`. Eliminates duplicate YAML frontmatter parsing and CLI orchestration between the CLI and persistent daemon.
 
 ---
 
-### 2.2 Modular Markdown Pipeline (`src/markdown/`)
+### 2.2 Layout & Emitter Seam (`src/emitter.rs`)
+
+Botox decouples transpiled markup from final layout generation through a clean emitter seam:
+- **`trait DocumentEmitter`**: Core interface `fn emit(&self, body_typst: &str) -> String`.
+- **`ArticleEmitter` (`src/document/mod.rs`)**: Layout adapter for academic papers and technical specifications. Coordinates margins, columns, abstract styling, and table of contents.
+- **`SlideEmitter` (`src/slides/mod.rs`)**: Layout adapter for 16:9 interactive presentation decks. Coordinates slide counters, header styles, and quote blocks.
+- **`DocumentLayout` (`src/document/layout.rs`)**: Theme-driven title/abstract header layout, multi-column flow, and gutter configuration.
+- **`SlideDeckLayout` (`src/slides/layout.rs`)**: Slide deck segmentation outside code fences, hero title placement, and progressive pause reveals (`#botox_pause`).
+- **Shared Preamble Utilities**: Unified cross-platform font fallbacks (`format_font_stack`) and dynamic date rendering (`render_date_value`).
+
+---
+
+### 2.3 Modular Markdown Pipeline (`src/markdown/`)
 
 Instead of invoking an external Pandoc binary, Botox translates extended Markdown into Typst syntax in memory:
 
@@ -113,32 +116,36 @@ Instead of invoking an external Pandoc binary, Botox translates extended Markdow
 sequenceDiagram
     autonumber
     actor Author
+    participant Engine as src/engine.rs
     participant Pandoc as pandoc.rs
     participant Callouts as callouts.rs
     participant Math as math.rs
     participant References as references.rs
     participant Escapes as escapes.rs
+    participant Emitter as src/emitter.rs
     participant Typst as Typst Engine
 
-    Author->>Pandoc: Raw Markdown input
-    Pandoc->>Callouts: Normalize fenced divs (:::), image sizing, heading IDs
-    Callouts->>Math: Transform GitHub [!NOTE] and Pandoc callouts
-    Math->>References: Transpile LaTeX equations ($$...$$) to Typst math
-    References->>Escapes: Extract links, filter exclude/include globs, format biblio
-    Escapes->>Typst: Escape Typst syntax (#, [, ]), preserve Botox commands
-    Typst-->>Author: Compiled Typst Markup
+    Author->>Engine: Raw Markdown input
+    Engine->>Pandoc: Normalize fenced divs (:::), attributes, fast-path directive scan
+    Pandoc->>Callouts: Transform GitHub [!NOTE] and Pandoc callouts
+    Callouts->>Math: Transpile LaTeX equations ($$...$$) to Typst math
+    Math->>References: Pass 1: Index citation links and footnotes
+    References->>Escapes: Single-pass text escaping (LATEX_COMMANDS table, prose fast-path)
+    Escapes->>Emitter: Pass 2: Stream markup and inline bibliographies to DocumentEmitter
+    Emitter->>Typst: Emitted Typst markup with preambles and layout
+    Typst-->>Author: Compiled Typst Document / Slides
 ```
 
-* **`pandoc.rs`**: Normalizes attributes like `{#fig:arch width=80% height=300pt}`, converting dimensions (`px` $\rightarrow$ `pt`, `\linewidth` $\rightarrow$ `%`), cross-references (`@fig:`, `@tbl:`, `@sec:`), and fenced divs (`::: {.warning}`).
+* **`pandoc.rs`**: Fast-path scans lines for directives; normalizes attributes like `{#fig:arch width=80% height=300pt}`, converting dimensions (`px` $\rightarrow$ `pt`, `\linewidth` $\rightarrow$ `%`), cross-references (`@fig:`, `@tbl:`, `@sec:`), and fenced divs (`::: {.warning}`).
 * **`callouts.rs`**: Converts GitHub-style callouts (`> [!NOTE] Title`) and Pandoc divs into `#botox_callout("type", "title")[...]`. Safely handles empty titles.
 * **`math.rs`**: Transpiles LaTeX syntax to Typst math. Operates in-place with token boundary matching and descending length sorting to prevent command collisions (e.g., `\tanh` vs `\tan`, `\leftarrow` vs `\le`).
-* **`references.rs`**: Scans hyperlinks in the text, applies exclusion/inclusion patterns via wildcard glob matching, assigns sequential citation numbers `[1]`, and emits an IEEE-style reference bibliography.
-* **`escapes.rs`**: Escapes raw Typst characters (`#`, `[`, `]`) while tracking bracket nesting depths for Botox-generated formatting macros (`#sub[...]`, `#super[...]`, `#strike[...]`).
+* **`references.rs`**: Two-pass citation engine. Pass 1 indexes external URLs and footnotes; Pass 2 directly emits IEEE-numbered citations `[1]` and references blocks without intermediate placeholder string searching.
+* **`escapes.rs`**: Vectorized prose fast-path bypassing string copies on plain text; single-pass character traversal matching `LATEX_COMMANDS` table (`\newpage`, `\today`, etc.) and `#sub[...]` / `#super[...]` brackets without synthetic sentinel tokens.
 * **`tables.rs`**: Extracts `Table: Caption {#tbl:id}` blocks and pairs them with markdown tables into Typst `#figure(...)` blocks.
 
 ---
 
-### 2.3 Vector Diagram Pipeline (`src/diagrams/`)
+### 2.4 Vector Diagram Pipeline (`src/diagrams/`)
 
 Botox features built-in vector rendering for **Mermaid**, **PlantUML**, **UMLet**, **Graphviz**, and **D2**:
 
@@ -164,22 +171,22 @@ flowchart LR
 
 ---
 
-### 2.4 Compilation & Vector Layout (`src/compiler.rs`)
+### 2.5 Compilation & Vector Layout (`src/compiler.rs`)
 
 1. **In-Process Typst Compilation:** Uses `typst-as-lib` directly inside the Rust binary, bypassing disk serialization and external process overhead.
-2. **Font System (`OnceLock` Caching):**
-   - Embedded fonts (`New Computer Modern`, `DejaVu Sans Mono`, math symbols) are always available.
-   - System fonts are loaded via `fontdb::Database` cached inside a static `std::sync::OnceLock`. Custom font discovery occurs once across the process lifecycle rather than scanning disk on every keystroke.
+2. **Multi-Tier Font Cache (`LOADED_CUSTOM_FONTS`):**
+   - Embedded fonts (`New Computer Modern`, `DejaVu Sans Mono`, math symbols) are statically baked into the binary.
+   - System fonts discovered via `fontdb::Database` are cached in memory (`RwLock<HashMap<String, Vec<Font>>>`), avoiding redundant disk reads and font table parsing on successive compilations.
 3. **Source-Mapped Diagnostic Reporting:** When Typst errors occur, Botox maps bytecode spans back to Markdown source lines, reporting accurate line and column numbers.
 
 ---
 
-### 2.5 VS Code Extension Bridge (`botox-vsc-ext`)
+### 2.6 VS Code Extension Bridge (`botox-vsc-ext`)
 
 1. **Binary Resolution:** Resolves the compiler via:
    - User-configured setting `botox.executablePath`
    - `~/.local/bin/botox`
    - `~/.cargo/bin/botox` (ensuring Cargo installs are detected in desktop GUI environments)
    - System `$PATH`
-2. **JSON Vector IPC:** The extension calls `botox compile <input.md> -o <temp.json> --json-pages`. The binary outputs page count, per-page SVG vector markup, and heading metadata.
+2. **JSON Vector IPC / Persistent Daemon:** The extension calls `botox compile <input.md> -o <temp.json> --json-pages` or communicates via the background daemon (`botox daemon`). The binary outputs page count, per-page SVG vector markup, and heading metadata.
 3. **Secure Webview:** Renders vector pages in a dedicated panel with strict Content Security Policy (`default-src 'none'`), synchronizing scroll positions via heading interpolation and tracking live document edits.
