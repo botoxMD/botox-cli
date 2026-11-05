@@ -8,7 +8,16 @@ pub fn clean_command_title(mut rest: &str) -> Option<String> {
         || (rest.starts_with('\'') && rest.ends_with('\''))
         || (rest.starts_with('{') && rest.ends_with('}'))
     {
-        rest = rest[1..rest.len() - 1].trim();
+        if rest.len() >= 2 {
+            rest = rest[1..rest.len() - 1].trim();
+        } else {
+            rest = "";
+        }
+    } else if (rest.starts_with('{') && !rest.contains('}'))
+        || (rest.starts_with('"') && !rest[1..].contains('"'))
+        || (rest.starts_with('\'') && !rest[1..].contains('\''))
+    {
+        rest = rest[1..].trim();
     }
     if rest.is_empty() {
         None
@@ -200,6 +209,9 @@ pub fn parse_heading_attributes(s: &str) -> (String, bool, Option<String>) {
 }
 
 pub fn convert_cross_references(s: &str) -> String {
+    if !s.contains('@') {
+        return s.to_string();
+    }
     let mut out = s.to_string();
     for prefix in &["@fig:", "@tbl:", "@sec:", "@eq:", "@lst:"] {
         if out.contains(prefix) {
@@ -352,91 +364,93 @@ pub fn preprocess_pandoc(markdown: &str) -> String {
             continue;
         }
 
-        let line_trimmed_lower = line_trimmed.to_ascii_lowercase();
-        let words: Vec<&str> = line_trimmed_lower.split_whitespace().collect();
+        if line_trimmed.starts_with('\\') || line_trimmed.starts_with("<!--") {
+            let line_trimmed_lower = line_trimmed.to_ascii_lowercase();
+            let words: Vec<&str> = line_trimmed_lower.split_whitespace().collect();
 
-        let is_newpage_landscape = (words.len() == 2
-            && (words[0] == r"\newpage" || words[0] == r"\pagebreak" || words[0] == r"\clearpage")
-            && (words[1] == "landscape" || words[1] == "horizontal"))
-            || line_trimmed == r"\begin{landscape}"
-            || line_trimmed == r"\begin{horizontal}"
-            || line_trimmed == r"\landscape"
-            || line_trimmed == r"\newpage{landscape}"
-            || line_trimmed == r"\pagebreak{landscape}"
-            || line_trimmed_lower == "<!-- landscape -->"
-            || line_trimmed_lower == "<!--landscape-->"
-            || line_trimmed_lower == "<!-- horizontal -->"
-            || line_trimmed_lower == "<!-- horizontal:start -->"
-            || line_trimmed_lower == "<!-- landscape:start -->"
-            || line_trimmed_lower == "<!-- page: landscape -->"
-            || line_trimmed_lower == "<!-- page:landscape -->"
-            || line_trimmed_lower == "<!-- page: horizontal -->"
-            || line_trimmed_lower == "<!-- page:horizontal -->";
+            let is_newpage_landscape = (words.len() == 2
+                && (words[0] == r"\newpage" || words[0] == r"\pagebreak" || words[0] == r"\clearpage")
+                && (words[1] == "landscape" || words[1] == "horizontal"))
+                || line_trimmed == r"\begin{landscape}"
+                || line_trimmed == r"\begin{horizontal}"
+                || line_trimmed == r"\landscape"
+                || line_trimmed == r"\newpage{landscape}"
+                || line_trimmed == r"\pagebreak{landscape}"
+                || line_trimmed_lower == "<!-- landscape -->"
+                || line_trimmed_lower == "<!--landscape-->"
+                || line_trimmed_lower == "<!-- horizontal -->"
+                || line_trimmed_lower == "<!-- horizontal:start -->"
+                || line_trimmed_lower == "<!-- landscape:start -->"
+                || line_trimmed_lower == "<!-- page: landscape -->"
+                || line_trimmed_lower == "<!-- page:landscape -->"
+                || line_trimmed_lower == "<!-- page: horizontal -->"
+                || line_trimmed_lower == "<!-- page:horizontal -->";
 
-        if is_newpage_landscape {
-            if in_github_callout {
-                result.push_str("\n<!--botox:callout:end-->\n\n");
-                in_github_callout = false;
+            if is_newpage_landscape {
+                if in_github_callout {
+                    result.push_str("\n<!--botox:callout:end-->\n\n");
+                    in_github_callout = false;
+                }
+                in_landscape_page = true;
+                result.push_str("\n<!--botox:page:landscape:start-->\n\n");
+                continue;
             }
-            in_landscape_page = true;
-            result.push_str("\n<!--botox:page:landscape:start-->\n\n");
-            continue;
-        }
 
-        let is_newpage_portrait = (words.len() == 2
-            && (words[0] == r"\newpage" || words[0] == r"\pagebreak" || words[0] == r"\clearpage")
-            && (words[1] == "portrait" || words[1] == "vertical"))
-            || line_trimmed == r"\begin{portrait}"
-            || line_trimmed == r"\portrait"
-            || line_trimmed == r"\newpage{portrait}"
-            || line_trimmed == r"\pagebreak{portrait}"
-            || line_trimmed == r"\end{landscape}"
-            || line_trimmed == r"\end{horizontal}"
-            || line_trimmed == r"\endlandscape"
-            || line_trimmed == r"\end{portrait}"
-            || line_trimmed == r"\endportrait"
-            || line_trimmed_lower == "<!-- /landscape -->"
-            || line_trimmed_lower == "<!--/landscape-->"
-            || line_trimmed_lower == "<!-- /horizontal -->"
-            || line_trimmed_lower == "<!-- /horizontal:end -->"
-            || line_trimmed_lower == "<!-- landscape:end -->"
-            || line_trimmed_lower == "<!-- endlandscape -->"
-            || line_trimmed_lower == "<!-- portrait -->"
-            || line_trimmed_lower == "<!--portrait-->"
-            || line_trimmed_lower == "<!-- /portrait -->"
-            || line_trimmed_lower == "<!--/portrait-->"
-            || line_trimmed_lower == "<!-- page: portrait -->"
-            || line_trimmed_lower == "<!-- page:portrait -->";
+            let is_newpage_portrait = (words.len() == 2
+                && (words[0] == r"\newpage" || words[0] == r"\pagebreak" || words[0] == r"\clearpage")
+                && (words[1] == "portrait" || words[1] == "vertical"))
+                || line_trimmed == r"\begin{portrait}"
+                || line_trimmed == r"\portrait"
+                || line_trimmed == r"\newpage{portrait}"
+                || line_trimmed == r"\pagebreak{portrait}"
+                || line_trimmed == r"\end{landscape}"
+                || line_trimmed == r"\end{horizontal}"
+                || line_trimmed == r"\endlandscape"
+                || line_trimmed == r"\end{portrait}"
+                || line_trimmed == r"\endportrait"
+                || line_trimmed_lower == "<!-- /landscape -->"
+                || line_trimmed_lower == "<!--/landscape-->"
+                || line_trimmed_lower == "<!-- /horizontal -->"
+                || line_trimmed_lower == "<!-- /horizontal:end -->"
+                || line_trimmed_lower == "<!-- landscape:end -->"
+                || line_trimmed_lower == "<!-- endlandscape -->"
+                || line_trimmed_lower == "<!-- portrait -->"
+                || line_trimmed_lower == "<!--portrait-->"
+                || line_trimmed_lower == "<!-- /portrait -->"
+                || line_trimmed_lower == "<!--/portrait-->"
+                || line_trimmed_lower == "<!-- page: portrait -->"
+                || line_trimmed_lower == "<!-- page:portrait -->";
 
-        if is_newpage_portrait {
-            if in_github_callout {
-                result.push_str("\n<!--botox:callout:end-->\n\n");
-                in_github_callout = false;
-            }
-            in_landscape_page = false;
-            result.push_str("\n<!--botox:page:landscape:end-->\n\n");
-            continue;
-        }
-
-        if line_trimmed == r"\newpage"
-            || line_trimmed == r"\pagebreak"
-            || line_trimmed == r"\clearpage"
-            || line_trimmed_lower == "<!-- newpage -->"
-            || line_trimmed_lower == "<!--newpage-->"
-            || line_trimmed_lower == "<!-- pagebreak -->"
-            || line_trimmed_lower == "<!--pagebreak-->"
-        {
-            if in_github_callout {
-                result.push_str("\n<!--botox:callout:end-->\n\n");
-                in_github_callout = false;
-            }
-            if in_landscape_page {
+            if is_newpage_portrait {
+                if in_github_callout {
+                    result.push_str("\n<!--botox:callout:end-->\n\n");
+                    in_github_callout = false;
+                }
                 in_landscape_page = false;
                 result.push_str("\n<!--botox:page:landscape:end-->\n\n");
-            } else {
-                result.push_str("\n<!--botox:pagebreak-->\n\n");
+                continue;
             }
-            continue;
+
+            if line_trimmed == r"\newpage"
+                || line_trimmed == r"\pagebreak"
+                || line_trimmed == r"\clearpage"
+                || line_trimmed_lower == "<!-- newpage -->"
+                || line_trimmed_lower == "<!--newpage-->"
+                || line_trimmed_lower == "<!-- pagebreak -->"
+                || line_trimmed_lower == "<!--pagebreak-->"
+            {
+                if in_github_callout {
+                    result.push_str("\n<!--botox:callout:end-->\n\n");
+                    in_github_callout = false;
+                }
+                if in_landscape_page {
+                    in_landscape_page = false;
+                    result.push_str("\n<!--botox:page:landscape:end-->\n\n");
+                } else {
+                    result.push_str("\n<!--botox:pagebreak-->\n\n");
+                }
+                continue;
+            }
         }
 
         if trimmed.starts_with(":::") {
@@ -490,4 +504,155 @@ pub fn preprocess_pandoc(markdown: &str) -> String {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clean_command_title() {
+        assert_eq!(clean_command_title(""), None);
+        assert_eq!(clean_command_title("   "), None);
+        assert_eq!(clean_command_title(r#""""#), None);
+        assert_eq!(clean_command_title("''"), None);
+        assert_eq!(clean_command_title("{}"), None);
+        assert_eq!(clean_command_title(":"), None);
+
+        assert_eq!(clean_command_title("Table of Contents").as_deref(), Some("Table of Contents"));
+        assert_eq!(clean_command_title(r#""Detailed Overview""#).as_deref(), Some("Detailed Overview"));
+        assert_eq!(clean_command_title("'Quick Links'").as_deref(), Some("Quick Links"));
+        assert_eq!(clean_command_title("{Chapter Index}").as_deref(), Some("Chapter Index"));
+        assert_eq!(clean_command_title(r#": "Prefixed Title""#).as_deref(), Some("Prefixed Title"));
+        assert_eq!(clean_command_title(": Simple Title").as_deref(), Some("Simple Title"));
+    }
+
+    #[test]
+    fn test_parse_toc_line() {
+        assert_eq!(parse_toc_line("<!-- toc -->"), Some(None));
+        assert_eq!(parse_toc_line("<!-- tableofcontents -->"), Some(None));
+        assert_eq!(parse_toc_line("<!-- toc: Quick Nav -->"), Some(Some("Quick Nav".to_string())));
+        assert_eq!(parse_toc_line(r#"<!-- tableofcontents "Custom Index" -->"#), Some(Some("Custom Index".to_string())));
+
+        assert_eq!(parse_toc_line(r"\toc"), Some(None));
+        assert_eq!(parse_toc_line(r"\tableofcontents"), Some(None));
+        assert_eq!(parse_toc_line(r"\toc Summary"), Some(Some("Summary".to_string())));
+        assert_eq!(parse_toc_line(r"\toc: Summary"), Some(Some("Summary".to_string())));
+        assert_eq!(parse_toc_line(r"\toc{Summary}"), Some(Some("Summary".to_string())));
+        assert_eq!(parse_toc_line(r"\tableofcontents Detailed"), Some(Some("Detailed".to_string())));
+        assert_eq!(parse_toc_line(r"\tableofcontents: Detailed"), Some(Some("Detailed".to_string())));
+        assert_eq!(parse_toc_line(r"\tableofcontents{Detailed}"), Some(Some("Detailed".to_string())));
+
+        assert_eq!(parse_toc_line("Just normal text"), None);
+        assert_eq!(parse_toc_line("<!-- other comment -->"), None);
+    }
+
+    #[test]
+    fn test_parse_ref_line() {
+        assert_eq!(parse_ref_line("<!-- ref -->"), Some(None));
+        assert_eq!(parse_ref_line("<!-- references -->"), Some(None));
+        assert_eq!(parse_ref_line("<!-- bibliography -->"), Some(None));
+        assert_eq!(parse_ref_line("<!-- ref: Works Cited -->"), Some(Some("Works Cited".to_string())));
+        assert_eq!(parse_ref_line(r#"<!-- bibliography "Sources" -->"#), Some(Some("Sources".to_string())));
+
+        assert_eq!(parse_ref_line(r"\ref"), Some(None));
+        assert_eq!(parse_ref_line(r"\references"), Some(None));
+        assert_eq!(parse_ref_line(r"\bibliography"), Some(None));
+        assert_eq!(parse_ref_line(r"\ref Sources"), Some(Some("Sources".to_string())));
+        assert_eq!(parse_ref_line(r"\ref: Sources"), Some(Some("Sources".to_string())));
+        assert_eq!(parse_ref_line(r"\ref{Sources}"), Some(Some("Sources".to_string())));
+        assert_eq!(parse_ref_line(r"\references Custom Ref"), Some(Some("Custom Ref".to_string())));
+        assert_eq!(parse_ref_line(r"\bibliography{Custom Bib}"), Some(Some("Custom Bib".to_string())));
+
+        // Cross-reference label should be ignored by parse_ref_line
+        assert_eq!(parse_ref_line(r"\ref{sec:intro}"), None);
+        assert_eq!(parse_ref_line("Regular line of text"), None);
+    }
+
+    #[test]
+    fn test_normalize_dimension() {
+        assert_eq!(normalize_dimension(""), None);
+        assert_eq!(normalize_dimension(r"\linewidth").as_deref(), Some("100%"));
+        assert_eq!(normalize_dimension(r"\textwidth").as_deref(), Some("100%"));
+        assert_eq!(normalize_dimension(r"0.75\linewidth").as_deref(), Some("75%"));
+        assert_eq!(normalize_dimension(r"0.5\textwidth").as_deref(), Some("50%"));
+        assert_eq!(normalize_dimension("400px").as_deref(), Some("300pt"));
+        assert_eq!(normalize_dimension("80%").as_deref(), Some("80%"));
+        assert_eq!(normalize_dimension("15cm").as_deref(), Some("15cm"));
+        assert_eq!(normalize_dimension("20mm").as_deref(), Some("20mm"));
+        assert_eq!(normalize_dimension("3in").as_deref(), Some("3in"));
+        assert_eq!(normalize_dimension("250pt").as_deref(), Some("250pt"));
+        assert_eq!(normalize_dimension("2em").as_deref(), Some("2em"));
+        assert_eq!(normalize_dimension("0.65").as_deref(), Some("65%"));
+        assert_eq!(normalize_dimension("350").as_deref(), Some("350pt"));
+    }
+
+    #[test]
+    fn test_parse_image_attributes() {
+        let (w, h, id) = parse_image_attributes("{#fig:arch width=80% height=200px}");
+        assert_eq!(w.as_deref(), Some("80%"));
+        assert_eq!(h.as_deref(), Some("150pt"));
+        assert_eq!(id.as_deref(), Some("fig-arch"));
+
+        let (w2, h2, id2) = parse_image_attributes(r#"id="fig:diagram" width=0.5\linewidth"#);
+        assert_eq!(w2.as_deref(), Some("50%"));
+        assert_eq!(h2, None);
+        assert_eq!(id2.as_deref(), Some("fig-diagram"));
+    }
+
+    #[test]
+    fn test_parse_heading_attributes() {
+        let (title, unnumbered, id) = parse_heading_attributes("Introduction {#sec:intro .unnumbered}");
+        assert_eq!(title, "Introduction");
+        assert!(unnumbered);
+        assert_eq!(id.as_deref(), Some("sec-intro"));
+
+        let (title2, unnumbered2, id2) = parse_heading_attributes("Methodology {-}");
+        assert_eq!(title2, "Methodology");
+        assert!(unnumbered2);
+        assert_eq!(id2, None);
+
+        let (title3, unnumbered3, id3) = parse_heading_attributes("Results {#sec:results}");
+        assert_eq!(title3, "Results");
+        assert!(!unnumbered3);
+        assert_eq!(id3.as_deref(), Some("sec-results"));
+
+        let (title4, unnumbered4, id4) = parse_heading_attributes("Normal Heading Without Attributes");
+        assert_eq!(title4, "Normal Heading Without Attributes");
+        assert!(!unnumbered4);
+        assert_eq!(id4, None);
+    }
+
+    #[test]
+    fn test_convert_cross_references() {
+        assert_eq!(convert_cross_references("See @fig:1 and @tbl:2"), "See @fig-1 and @tbl-2");
+        assert_eq!(convert_cross_references("In @sec:intro and @eq:euler and @lst:main"), "In @sec-intro and @eq-euler and @lst-main");
+    }
+
+    #[test]
+    fn test_preprocess_pandoc_fenced_divs() {
+        let md = "::: horizontal\nContent in landscape\n:::\n\n::: {.note title=\"Important\"}\nTake note\n:::";
+        let res = preprocess_pandoc(md);
+        assert!(res.contains("<!--botox:page:landscape:start-->"));
+        assert!(res.contains("<!--botox:page:landscape:end-->"));
+        assert!(res.contains("<!--botox:callout:start:note:Important-->"));
+        assert!(res.contains("<!--botox:callout:end-->"));
+    }
+
+    #[test]
+    fn test_preprocess_pandoc_latex_landscape() {
+        let md = "\\begin{landscape}\nWide table\n\\end{landscape}";
+        let res = preprocess_pandoc(md);
+        assert!(res.contains("<!--botox:page:landscape:start-->"));
+        assert!(res.contains("<!--botox:page:landscape:end-->"));
+    }
+
+    #[test]
+    fn test_clean_command_title_malformed_no_panic() {
+        assert_eq!(clean_command_title("\""), None);
+        assert_eq!(clean_command_title("'"), None);
+        assert_eq!(clean_command_title("{"), None);
+        assert_eq!(clean_command_title("\"\""), None);
+        assert_eq!(clean_command_title("\"Valid Title\""), Some("Valid Title".to_string()));
+    }
 }

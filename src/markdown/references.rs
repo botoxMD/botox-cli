@@ -96,6 +96,26 @@ pub fn url_matches_pattern(url: &str, pattern: &str) -> bool {
     false
 }
 
+pub fn get_default_references_heading(lang: &str) -> &'static str {
+    match lang {
+        "fr" => "Références",
+        "de" => "Literaturverzeichnis",
+        "es" => "Referencias",
+        "it" => "Riferimenti bibliografici",
+        _ => "References",
+    }
+}
+
+pub fn get_reference_labels(lang: &str) -> (&'static str, &'static str) {
+    match lang {
+        "fr" => ("[En ligne]", "Disponible sur :"),
+        "de" => ("[Online]", "Verfügbar unter:"),
+        "es" => ("[En línea]", "Disponible en:"),
+        "it" => ("[Online]", "Disponibile su:"),
+        _ => ("[Online]", "Available:"),
+    }
+}
+
 pub fn format_references_block(
     custom_heading: Option<&str>,
     refs: &[(String, String)],
@@ -105,22 +125,9 @@ pub fn format_references_block(
     biblio_title: Option<&str>,
     include_labels: bool,
 ) -> String {
-    let default_heading = match lang {
-        "fr" => "Références",
-        "de" => "Literaturverzeichnis",
-        "es" => "Referencias",
-        "it" => "Riferimenti bibliografici",
-        _ => "References",
-    };
+    let default_heading = get_default_references_heading(lang);
     let heading = custom_heading.unwrap_or_else(|| biblio_title.unwrap_or(default_heading));
-
-    let (online_label, available_label) = match lang {
-        "fr" => ("[En ligne]", "Disponible sur :"),
-        "de" => ("[Online]", "Verfügbar unter:"),
-        "es" => ("[En línea]", "Disponible en:"),
-        "it" => ("[Online]", "Disponibile su:"),
-        _ => ("[Online]", "Available:"),
-    };
+    let (online_label, available_label) = get_reference_labels(lang);
 
     let mut block = String::new();
     if is_slides {
@@ -152,11 +159,95 @@ pub fn format_references_block(
             String::new()
         };
 
+        let safe_url = url.replace('\\', "/").replace('"', "\\\"");
         if is_url_label {
-            block.push_str(&format!("#block[\\[{idx}\\] {online_label}. {available_label} #link(\"{url}\").]{label_suffix}\n\n"));
+            block.push_str(&format!("#block[\\[{idx}\\] {online_label}. {available_label} #link(\"{safe_url}\").]{label_suffix}\n\n"));
         } else {
-            block.push_str(&format!("#block[\\[{idx}\\] \"{label}\", {online_label}. {available_label} #link(\"{url}\").]{label_suffix}\n\n"));
+            let safe_label = crate::markdown::escapes::escape_typst_text(label).replace('"', "\\\"");
+            block.push_str(&format!("#block[\\[{idx}\\] \"{safe_label}\", {online_label}. {available_label} #link(\"{safe_url}\").]{label_suffix}\n\n"));
         }
     }
     block
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_host() {
+        assert_eq!(extract_host("https://github.com/rust-lang/rust"), Some("github.com"));
+        assert_eq!(extract_host("http://localhost:8080/api/v1"), Some("localhost"));
+        assert_eq!(extract_host("ftp://ftp.gnu.org/gnu"), Some("ftp.gnu.org"));
+        assert_eq!(extract_host("crates.io/crates/typst"), Some("crates.io"));
+        assert_eq!(extract_host(""), None);
+    }
+
+    #[test]
+    fn test_glob_match() {
+        assert!(glob_match("abc", "abc"));
+        assert!(!glob_match("abc", "abcd"));
+        assert!(glob_match("a?c", "abc"));
+        assert!(glob_match("a?c", "axc"));
+        assert!(!glob_match("a?c", "abbc"));
+
+        assert!(glob_match("*.rs", "main.rs"));
+        assert!(glob_match("test_*", "test_file.rs"));
+        assert!(glob_match("*github.com*", "https://github.com/botoxMD"));
+        assert!(glob_match("*.org", "WIKIPEDIA.ORG"));
+    }
+
+    #[test]
+    fn test_url_matches_pattern_cases() {
+        assert!(url_matches_pattern("https://x.com/username", "x.com"));
+        assert!(url_matches_pattern("https://sub.domain.com/path", "domain.com"));
+        assert!(url_matches_pattern("https://github.com/my-org/my-repo", "github.com/my-org"));
+        assert!(!url_matches_pattern("https://other.com/my-org", "github.com/my-org"));
+        assert!(!url_matches_pattern("https://latex.com/guide", "x.com"));
+        assert!(!url_matches_pattern("https://example.com", ""));
+    }
+
+    #[test]
+    fn test_format_references_block_multilingual() {
+        let refs = vec![
+            ("https://rust-lang.org".to_string(), "Rust".to_string()),
+            ("https://crates.io".to_string(), "https://crates.io".to_string()),
+        ];
+
+        // English document
+        let doc_en = format_references_block(None, &refs, false, false, "en", None, true);
+        assert!(doc_en.contains("#heading(numbering: none)[References] <references>"));
+        assert!(doc_en.contains("#v(2em)"));
+        assert!(doc_en.contains(r#"[1\] "Rust", [Online]. Available: #link("https://rust-lang.org").] <bib-1>"#));
+        assert!(doc_en.contains(r#"[2\] [Online]. Available: #link("https://crates.io").] <bib-2>"#));
+
+        // French document
+        let doc_fr = format_references_block(None, &refs, false, false, "fr", None, false);
+        assert!(doc_fr.contains("#heading(numbering: none)[Références]"));
+        assert!(!doc_fr.contains("<references>"));
+        assert!(doc_fr.contains("[En ligne]. Disponible sur :"));
+
+        // German document
+        let doc_de = format_references_block(None, &refs, false, false, "de", None, false);
+        assert!(doc_de.contains("#heading(numbering: none)[Literaturverzeichnis]"));
+        assert!(doc_de.contains("[Online]. Verfügbar unter:"));
+
+        // Spanish document
+        let doc_es = format_references_block(None, &refs, false, false, "es", None, false);
+        assert!(doc_es.contains("#heading(numbering: none)[Referencias]"));
+        assert!(doc_es.contains("[En línea]. Disponible en:"));
+
+        // Italian document
+        let doc_it = format_references_block(None, &refs, false, false, "it", None, false);
+        assert!(doc_it.contains("#heading(numbering: none)[Riferimenti bibliografici]"));
+        assert!(doc_it.contains("[Online]. Disponibile su:"));
+
+        // Custom heading override
+        let doc_custom = format_references_block(Some("Sources Cited"), &refs, false, false, "en", None, false);
+        assert!(doc_custom.contains("#heading(numbering: none)[Sources Cited]"));
+
+        // Slides mode
+        let slides = format_references_block(None, &refs, false, true, "en", None, false);
+        assert!(slides.contains("#pagebreak()"));
+    }
 }

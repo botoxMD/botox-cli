@@ -45,3 +45,28 @@ pub fn get_slide_theme_style(theme: &str) -> SlideThemeStyle {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_slide_theme_styles() {
+        for theme_name in &["dark", "nord", "academic", "gaia", "uncover", "custom", ""] {
+            let style = get_slide_theme_style(theme_name);
+            assert!(style.bg_color.starts_with('#'));
+            assert!(style.text_color.starts_with('#'));
+            assert!(style.heading_color.starts_with('#'));
+            assert!(style.muted_color.starts_with('#'));
+        }
+
+        let dark = get_slide_theme_style("dark");
+        assert_eq!(dark.bg_color, "#0f172a");
+
+        let academic = get_slide_theme_style("academic");
+        assert_eq!(academic.bg_color, "#ffffff");
+
+        let nord = get_slide_theme_style("nord");
+        assert_eq!(nord.bg_color, "#2e3440");
+    }
+}

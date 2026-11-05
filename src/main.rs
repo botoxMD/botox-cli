@@ -6,9 +6,16 @@ mod compiler;
 pub mod diagrams;
 mod skills;
 pub mod daemon;
+pub mod engine;
+pub mod emitter;
 
 use std::path::{Path, PathBuf};
-use serde_yaml::Value;
+
+pub use engine::{
+    detect_is_slides, extract_frontmatter, extract_yaml_string_list, parse_frontmatter_strict,
+    resolve_reference_filters, transpile_markdown_to_typst_markup, DocumentSource, PublishOptions,
+    PublishResult, TargetFormat,
+};
 
 fn show_help() {
     println!(r#"Usage: botox <input.md|input.btx|input.btx.md> [options]
@@ -40,6 +47,7 @@ Common Options:
 Markdown Export Options:
   --markdown, --md        Force normal Markdown export mode
   --assets-dir <dir>      Directory for exported diagram images (default: 'assets')
+  --no-frontmatter        Omit YAML frontmatter in exported Markdown
 
 Documentation Options:
   --pdf                   Force PDF documentation mode
@@ -529,118 +537,6 @@ Check out the [Botox Documentation](https://github.com) for more examples.
     }
 }
 
-pub fn extract_frontmatter(content: &str) -> (Value, &str) {
-    let (fm_raw, body) = markdown::export::extract_frontmatter_raw(content);
-    if fm_raw.trim().is_empty() {
-        return (Value::Null, body);
-    }
-    match serde_yaml::from_str::<Value>(fm_raw) {
-        Ok(val) => (val, body),
-        Err(_) => {
-            let sanitized = fm_raw.replace(r"\today", r#""\today""#);
-            if let Ok(val) = serde_yaml::from_str::<Value>(&sanitized) {
-                (val, body)
-            } else {
-                (Value::Null, body)
-            }
-        }
-    }
-}
-
-pub fn parse_frontmatter_strict(content: &str) -> Result<(Value, &str), String> {
-    let (fm_raw, body) = markdown::export::extract_frontmatter_raw(content);
-    if fm_raw.trim().is_empty() {
-        return Ok((Value::Null, body));
-    }
-    match serde_yaml::from_str::<Value>(fm_raw) {
-        Ok(val) => Ok((val, body)),
-        Err(err) => {
-            let sanitized = fm_raw.replace(r"\today", r#""\today""#);
-            if let Ok(val) = serde_yaml::from_str::<Value>(&sanitized) {
-                Ok((val, body))
-            } else {
-                Err(format!("{err}"))
-            }
-        }
-    }
-}
-
-fn detect_is_slides(
-    fm: &Value,
-    raw_content: &str,
-    input_path: &std::path::Path,
-    explicit_slides: bool,
-    explicit_pdf: bool,
-) -> bool {
-    if explicit_slides {
-        return true;
-    }
-    if explicit_pdf {
-        return false;
-    }
-
-    // 1. Check parsed YAML frontmatter mapping
-    if let Some(map) = fm.as_mapping() {
-        for (k, v) in map {
-            if let Some(key_str) = k.as_str() {
-                let key_lower = key_str.to_lowercase();
-                if (key_lower == "marp" || key_lower == "slides" || key_lower == "slide" || key_lower == "presentation")
-                    && (v.as_bool() == Some(true) || v.as_str().map(|s| s.eq_ignore_ascii_case("true")).unwrap_or(false)) {
-                        return true;
-                    }
-                if (key_lower == "type" || key_lower == "format" || key_lower == "document-type")
-                    && let Some(s) = v.as_str() {
-                        let s_lower = s.to_lowercase();
-                        if s_lower == "slides" || s_lower == "slide" || s_lower == "presentation" || s_lower == "deck" {
-                            return true;
-                        }
-                        if s_lower == "document" || s_lower == "article" || s_lower == "paper" || s_lower == "report" {
-                            return false;
-                        }
-                    }
-                if key_lower == "_class" {
-                    return true;
-                }
-            }
-        }
-    }
-
-    // 2. Direct text scan fallback across frontmatter in case YAML parsing failed
-    let trimmed = raw_content.trim_start();
-    if trimmed.starts_with("---")
-        && let Some(end_idx) = trimmed[3..].find("---") {
-            let header = &trimmed[3..3 + end_idx];
-            for line in header.lines() {
-                let l = line.trim();
-                let lower = l.to_lowercase();
-                if lower.starts_with("marp:") && lower.contains("true") {
-                    return true;
-                }
-                if lower.starts_with("slides:") && lower.contains("true") {
-                    return true;
-                }
-                if lower.starts_with("presentation:") && lower.contains("true") {
-                    return true;
-                }
-                if lower.starts_with("type:") && (lower.contains("slide") || lower.contains("deck") || lower.contains("presentation")) {
-                    return true;
-                }
-            }
-        }
-
-    // 3. Filename convention fallback (e.g. slides.md, deck.md, presentation.md)
-    let file_name = input_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    if file_name.contains("slide") || file_name.contains("deck") || file_name.contains("presentation") {
-        return true;
-    }
-
-    false
-}
-
 fn get_timestamp() -> String {
     chrono::Local::now().format("%H:%M:%S").to_string()
 }
@@ -699,16 +595,6 @@ pub fn compute_default_output_path(input_path: &Path, target_ext: &str) -> PathB
     }
 }
 
-pub fn extract_yaml_string_list(val: &Value) -> Vec<String> {
-    if let Some(arr) = val.as_sequence() {
-        arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
-    } else if let Some(s) = val.as_str() {
-        vec![s.to_string()]
-    } else {
-        Vec::new()
-    }
-}
-
 fn take_watch_snapshot(
     input_path: &std::path::Path,
     output_path: &std::path::Path,
@@ -747,205 +633,11 @@ fn take_watch_snapshot(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn transpile_markdown_to_typst_markup(
-    raw_content: &str,
-    doc_dir: Option<&std::path::Path>,
-    config_data: &config::BotoxConfig,
-    explicit_pdf: bool,
-    explicit_slides: bool,
-    cli_toc: Option<bool>,
-    cli_author: Option<&str>,
-    cli_font: Option<&str>,
-    cli_bibliography: Option<bool>,
-    cli_theme: Option<&str>,
-    cli_exclude_ref: &[String],
-    cli_include_ref: &[String],
-    source_path: Option<&std::path::Path>,
-) -> Result<(String, bool), String> {
-    let (fm, body_md) = parse_frontmatter_strict(raw_content)?;
-    let fallback = source_path.unwrap_or(std::path::Path::new("document.md"));
-    let is_slides = detect_is_slides(&fm, raw_content, fallback, explicit_slides, explicit_pdf);
-
-    let doc_config = config_data.document.clone().unwrap_or_default();
-    let slides_config = config_data.slides.clone().unwrap_or_default();
-
-    let lang = fm.get("lang")
-        .and_then(|v| v.as_str())
-        .or(doc_config.lang.as_deref())
-        .unwrap_or("en");
-    let biblio_title = fm.get("biblio-title")
-        .or_else(|| fm.get("bibliography-title"))
-        .or_else(|| fm.get("references-title"))
-        .and_then(|v| v.as_str());
-
-    let should_enable_bib = if let Some(cli) = cli_bibliography {
-        cli
-    } else if let Some(fm_bib) = fm.get("bibliography")
-        .or_else(|| fm.get("links-as-references"))
-        .or_else(|| fm.get("cite-links"))
-    {
-        match fm_bib {
-            Value::Bool(b) => *b,
-            Value::String(s) => !s.is_empty() && s != "false" && s != "no" && s != "off",
-            _ => false,
-        }
-    } else {
-        doc_config.bibliography.unwrap_or(false)
-    };
-
-    let toc_title = fm.get("toc-title")
-        .or_else(|| fm.get("toc_title"))
-        .and_then(|v| v.as_str())
-        .or(doc_config.toc_title.as_deref());
-
-    let toc_depth = fm.get("toc-depth")
-        .or_else(|| fm.get("toc_depth"))
-        .and_then(|v| v.as_u64())
-        .map(|n| n as usize)
-        .or(doc_config.toc_depth);
-
-    let extract_string_list = |val: &Value| -> Vec<String> {
-        if let Some(arr) = val.as_sequence() {
-            arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
-        } else if let Some(s) = val.as_str() {
-            vec![s.to_string()]
-        } else {
-            Vec::new()
-        }
-    };
-
-    let mut ref_exclude = Vec::new();
-    ref_exclude.extend_from_slice(cli_exclude_ref);
-    if let Some(ref cfg_ref) = config_data.references
-        && let Some(ref exc) = cfg_ref.exclude {
-            ref_exclude.extend(exc.clone());
-        }
-    if let Some(ref cfg_ref) = doc_config.references
-        && let Some(ref exc) = cfg_ref.exclude {
-            ref_exclude.extend(exc.clone());
-        }
-    if let Some(ref exc) = doc_config.exclude_references {
-        ref_exclude.extend(exc.clone());
-    }
-    if let Some(v) = fm.get("references").and_then(|r| r.get("exclude")) {
-        ref_exclude.extend(extract_string_list(v));
-    }
-    if let Some(v) = fm.get("exclude-references")
-        .or_else(|| fm.get("exclude_references"))
-        .or_else(|| fm.get("exclude-links"))
-        .or_else(|| fm.get("exclude_links"))
-    {
-        ref_exclude.extend(extract_string_list(v));
-    }
-
-    let mut ref_include = Vec::new();
-    ref_include.extend_from_slice(cli_include_ref);
-    if let Some(ref cfg_ref) = config_data.references
-        && let Some(ref inc) = cfg_ref.include {
-            ref_include.extend(inc.clone());
-        }
-    if let Some(ref cfg_ref) = doc_config.references
-        && let Some(ref inc) = cfg_ref.include {
-            ref_include.extend(inc.clone());
-        }
-    if let Some(ref inc) = doc_config.include_references {
-        ref_include.extend(inc.clone());
-    }
-    if let Some(v) = fm.get("references").and_then(|r| r.get("include")) {
-        ref_include.extend(extract_string_list(v));
-    }
-    if let Some(v) = fm.get("include-references")
-        .or_else(|| fm.get("include_references"))
-        .or_else(|| fm.get("include-links"))
-        .or_else(|| fm.get("include_links"))
-    {
-        ref_include.extend(extract_string_list(v));
-    }
-
-    let exclude_opt = if ref_exclude.is_empty() { None } else { Some(ref_exclude) };
-    let include_opt = if ref_include.is_empty() { None } else { Some(ref_include) };
-
-    let kroki_url = fm.get("kroki-url")
-        .or_else(|| fm.get("kroki_url"))
-        .or_else(|| fm.get("kroki-endpoint"))
-        .or_else(|| fm.get("kroki_endpoint"))
-        .and_then(|v| v.as_str())
-        .or(doc_config.kroki_url.as_deref());
-
-    let classoption = fm.get("classoption").and_then(|v| {
-        if let Some(s) = v.as_str() {
-            Some(s.to_string())
-        } else if let Some(arr) = v.as_sequence() {
-            Some(arr.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" "))
-        } else {
-            None
-        }
-    }).unwrap_or_default();
-
-    let is_landscape = fm.get("landscape").and_then(|v| v.as_bool())
-        .or_else(|| fm.get("flipped").and_then(|v| v.as_bool()))
-        .or_else(|| fm.get("orientation").and_then(|v| v.as_str()).map(|s| s.eq_ignore_ascii_case("landscape") || s.eq_ignore_ascii_case("horizontal")))
-        .unwrap_or_else(|| classoption.contains("landscape"));
-
-    let theme_explicit = cli_theme.is_some() || fm.get("theme").is_some();
-    let theme_raw = cli_theme
-        .as_deref()
-        .or_else(|| fm.get("theme").and_then(|v| v.as_str()))
-        .or(doc_config.theme.as_deref())
-        .unwrap_or("academic");
-    let doc_theme = document::DocumentTheme::parse(theme_raw);
-    let columns = fm.get("columns")
-        .and_then(|v| v.as_u64())
-        .map(|n| n as usize)
-        .or_else(|| if classoption.contains("twocolumn") { Some(2) } else { None })
-        .or_else(|| {
-            if theme_explicit {
-                Some(doc_theme.default_columns())
-            } else {
-                doc_config.columns.or_else(|| Some(doc_theme.default_columns()))
-            }
-        })
-        .unwrap_or_else(|| doc_theme.default_columns());
-
-    let md_opts = markdown::MarkdownOptions {
-        is_slides,
-        bibliography: should_enable_bib,
-        lang,
-        biblio_title,
-        toc_title,
-        toc_depth,
-        ref_exclude: exclude_opt.as_deref(),
-        ref_include: include_opt.as_deref(),
-        kroki_url,
-        resource_dir: doc_dir,
-        base_columns: columns,
-        is_landscape,
-    };
-    let body_typst = markdown::markdown_to_typst_with_options(body_md, &md_opts);
-
-    let typst_markup = if is_slides {
-        slides::wrap_slides(&body_typst, &fm, &slides_config, cli_author, cli_theme)
-    } else {
-        document::wrap_document(
-            &body_typst,
-            &fm,
-            &doc_config,
-            cli_toc,
-            cli_author,
-            cli_font,
-            cli_theme,
-        )
-    };
-
-    Ok((typst_markup, is_slides))
-}
-
-#[allow(clippy::too_many_arguments)]
 fn compile_once(
     input_path: &std::path::Path,
     output_path: &std::path::Path,
     doc_dir: Option<&std::path::Path>,
-    config_data: &config::BotoxConfig,
+    _config_data: &config::BotoxConfig,
     explicit_pdf: bool,
     explicit_slides: bool,
     cli_toc: Option<bool>,
@@ -958,71 +650,35 @@ fn compile_once(
     is_stdin: bool,
     cli_source_file: Option<&str>,
 ) -> Result<(bool, std::time::Duration), String> {
-    let raw_content = if is_stdin {
-        use std::io::Read;
-        let mut buffer = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buffer)
-            .map_err(|e| format!("Error reading from stdin: {e}"))?;
-        buffer
+    let source = if is_stdin {
+        engine::DocumentSource::stdin(cli_source_file, doc_dir)
     } else {
-        std::fs::read_to_string(input_path)
-            .map_err(|e| format!("Error reading '{}': {e}", input_path.display()))?
+        engine::DocumentSource::file_with_resource_dir(input_path, doc_dir)
     };
 
-    let src_path = if is_stdin {
-        cli_source_file.map(std::path::Path::new)
+    let target = if explicit_slides {
+        engine::TargetFormat::Slides
+    } else if explicit_pdf {
+        engine::TargetFormat::Pdf
     } else {
-        Some(input_path)
+        engine::TargetFormat::Auto
     };
 
-    let t_transpile_start = std::time::Instant::now();
-    let (typst_markup, is_slides) = transpile_markdown_to_typst_markup(
-        &raw_content,
-        doc_dir,
-        config_data,
-        explicit_pdf,
-        explicit_slides,
-        cli_toc,
-        cli_author,
-        cli_font,
-        cli_bibliography,
-        cli_theme,
-        cli_exclude_ref,
-        cli_include_ref,
-        src_path,
-    ).map_err(|e| {
-        let fname = src_path
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("document.md");
-        format!("[YAML Frontmatter Error] {fname}: {e}")
-    })?;
-    let t_transpile = t_transpile_start.elapsed();
-
-    let start = std::time::Instant::now();
-    let resource_dir = doc_dir;
-    let src_filename = if let Some(sf) = cli_source_file {
-        std::path::Path::new(sf).file_name().and_then(|n| n.to_str()).unwrap_or(sf)
-    } else if is_stdin {
-        "document.md"
-    } else {
-        input_path.file_name().and_then(|n| n.to_str()).unwrap_or("document.md")
+    let opts = engine::PublishOptions {
+        target,
+        output_path: Some(output_path),
+        theme: cli_theme,
+        author: cli_author,
+        font: cli_font,
+        toc: cli_toc,
+        bibliography: cli_bibliography,
+        exclude_ref: cli_exclude_ref,
+        include_ref: cli_include_ref,
+        ..Default::default()
     };
-    compiler::compile_typst_with_source(
-        &typst_markup,
-        output_path,
-        resource_dir,
-        Some(&raw_content),
-        Some(src_filename),
-    )?;
-    let duration = start.elapsed();
 
-    if std::env::var("BOTOX_PROFILE").is_ok() {
-        eprintln!("[PROFILE:PIPELINE] markdown_transpile: {t_transpile:.2?}, typst_backend: {duration:.2?}");
-    }
-
-    Ok((is_slides, duration))
+    let res = engine::publish(&source, &opts)?;
+    Ok((res.is_slides(), res.duration()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1030,174 +686,44 @@ fn compile_markdown_once(
     input_path: &std::path::Path,
     output_path: &std::path::Path,
     doc_dir: Option<&std::path::Path>,
-    config_data: &config::BotoxConfig,
+    _config_data: &config::BotoxConfig,
     cli_assets_dir: Option<&std::path::Path>,
     cli_toc: Option<bool>,
-    _cli_author: Option<&str>,
+    cli_author: Option<&str>,
     cli_bibliography: Option<bool>,
     cli_number_sections: bool,
     cli_exclude_ref: &[String],
     cli_include_ref: &[String],
     is_stdin: bool,
+    cli_no_frontmatter: bool,
 ) -> Result<(usize, std::time::Duration), String> {
-    let raw_content = if is_stdin {
-        use std::io::Read;
-        let mut buffer = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buffer)
-            .map_err(|e| format!("Error reading from stdin: {e}"))?;
-        buffer
+    let source = if is_stdin {
+        engine::DocumentSource::stdin(None, doc_dir)
     } else {
-        std::fs::read_to_string(input_path)
-            .map_err(|e| format!("Error reading '{}': {e}", input_path.display()))?
+        engine::DocumentSource::file_with_resource_dir(input_path, doc_dir)
     };
 
-    let start = std::time::Instant::now();
-    let (fm_raw, _) = markdown::export::extract_frontmatter_raw(&raw_content);
-    let fm: serde_yaml::Value = serde_yaml::from_str(fm_raw).unwrap_or(serde_yaml::Value::Null);
-    let doc_config = config_data.document.clone().unwrap_or_default();
-
-    let lang = fm.get("lang")
-        .and_then(|v| v.as_str())
-        .or(doc_config.lang.as_deref())
-        .unwrap_or("en");
-
-    let biblio_title = fm.get("biblio-title")
-        .or_else(|| fm.get("bibliography-title"))
-        .or_else(|| fm.get("references-title"))
-        .and_then(|v| v.as_str());
-
-    let should_enable_bib = if let Some(cli) = cli_bibliography {
-        cli
-    } else if let Some(fm_bib) = fm.get("bibliography")
-        .or_else(|| fm.get("links-as-references"))
-        .or_else(|| fm.get("cite-links"))
-    {
-        match fm_bib {
-            serde_yaml::Value::Bool(b) => *b,
-            serde_yaml::Value::String(s) => !s.is_empty() && s != "false" && s != "no" && s != "off",
-            _ => false,
-        }
-    } else {
-        doc_config.bibliography.unwrap_or(false)
-    };
-
-    let toc_title = fm.get("toc-title")
-        .or_else(|| fm.get("toc_title"))
-        .and_then(|v| v.as_str())
-        .or(doc_config.toc_title.as_deref());
-
-    let toc_depth = fm.get("toc-depth")
-        .or_else(|| fm.get("toc_depth"))
-        .and_then(|v| v.as_u64())
-        .map(|n| n as usize)
-        .or(doc_config.toc_depth);
-
-    let number_sections = if cli_number_sections {
-        true
-    } else if let Some(v) = fm.get("number-sections").or_else(|| fm.get("number_sections")) {
-        match v {
-            serde_yaml::Value::Bool(b) => *b,
-            serde_yaml::Value::String(s) => s == "true" || s == "yes" || s == "1",
-            _ => false,
-        }
-    } else {
-        doc_config.section_numbering.unwrap_or(false)
-    };
-
-    let kroki_url = fm.get("kroki-url")
-        .or_else(|| fm.get("kroki_url"))
-        .or_else(|| fm.get("kroki-endpoint"))
-        .or_else(|| fm.get("kroki_endpoint"))
-        .and_then(|v| v.as_str())
-        .or(doc_config.kroki_url.as_deref());
-
-    let mut ref_exclude = Vec::new();
-    ref_exclude.extend_from_slice(cli_exclude_ref);
-    if let Some(ref cfg_ref) = config_data.references
-        && let Some(ref exc) = cfg_ref.exclude {
-            ref_exclude.extend(exc.clone());
-        }
-    if let Some(ref cfg_ref) = doc_config.references
-        && let Some(ref exc) = cfg_ref.exclude {
-            ref_exclude.extend(exc.clone());
-        }
-    if let Some(ref exc) = doc_config.exclude_references {
-        ref_exclude.extend(exc.clone());
-    }
-    if let Some(v) = fm.get("references").and_then(|r| r.get("exclude")) {
-        ref_exclude.extend(extract_yaml_string_list(v));
-    }
-    if let Some(v) = fm.get("exclude-references")
-        .or_else(|| fm.get("exclude_references"))
-        .or_else(|| fm.get("exclude-links"))
-        .or_else(|| fm.get("exclude_links"))
-    {
-        ref_exclude.extend(extract_yaml_string_list(v));
-    }
-
-    let mut ref_include = Vec::new();
-    ref_include.extend_from_slice(cli_include_ref);
-    if let Some(ref cfg_ref) = config_data.references
-        && let Some(ref inc) = cfg_ref.include {
-            ref_include.extend(inc.clone());
-        }
-    if let Some(ref cfg_ref) = doc_config.references
-        && let Some(ref inc) = cfg_ref.include {
-            ref_include.extend(inc.clone());
-        }
-    if let Some(ref inc) = doc_config.include_references {
-        ref_include.extend(inc.clone());
-    }
-    if let Some(v) = fm.get("references").and_then(|r| r.get("include")) {
-        ref_include.extend(extract_yaml_string_list(v));
-    }
-    if let Some(v) = fm.get("include-references")
-        .or_else(|| fm.get("include_references"))
-        .or_else(|| fm.get("include-links"))
-        .or_else(|| fm.get("include_links"))
-    {
-        ref_include.extend(extract_yaml_string_list(v));
-    }
-
-    let exclude_opt = if ref_exclude.is_empty() { None } else { Some(ref_exclude) };
-    let include_opt = if ref_include.is_empty() { None } else { Some(ref_include) };
-
-    let export_opts = markdown::MarkdownExportOptions {
+    let opts = engine::PublishOptions {
+        target: engine::TargetFormat::Markdown,
         output_path: Some(output_path),
         assets_dir: cli_assets_dir,
-        resource_dir: doc_dir,
-        kroki_url,
-        bibliography: should_enable_bib,
-        lang,
-        biblio_title,
-        toc_title,
-        toc_depth,
-        ref_exclude: exclude_opt.as_deref(),
-        ref_include: include_opt.as_deref(),
-        generate_toc: cli_toc.unwrap_or(false),
-        number_sections,
+        toc: cli_toc,
+        author: cli_author,
+        bibliography: cli_bibliography,
+        number_sections: cli_number_sections,
+        exclude_ref: cli_exclude_ref,
+        include_ref: cli_include_ref,
+        no_frontmatter: cli_no_frontmatter,
+        ..Default::default()
     };
 
-    let result = markdown::export_to_normal_markdown(&raw_content, &export_opts)?;
-
-    if output_path.as_os_str() == "-" {
-        use std::io::Write;
-        std::io::stdout()
-            .write_all(result.content.as_bytes())
-            .map_err(|e| format!("Error writing to stdout: {e}"))?;
-    } else {
-        if let Some(parent) = output_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("Failed to create output directory '{}': {e}", parent.display()))?;
-            }
+    let res = engine::publish(&source, &opts)?;
+    match res {
+        engine::PublishResult::Markdown { result, duration, .. } => {
+            Ok((result.exported_assets.len(), duration))
         }
-        std::fs::write(output_path, result.content.as_bytes())
-            .map_err(|e| format!("Error writing to '{}': {e}", output_path.display()))?;
+        _ => Err("Expected markdown export output".to_string()),
     }
-
-    Ok((result.exported_assets.len(), start.elapsed()))
 }
 
 fn format_mode_str(is_slides: bool, output_path: &std::path::Path) -> &'static str {
@@ -1290,6 +816,7 @@ fn main() {
     let mut explicit_markdown = false;
     let mut cli_assets_dir: Option<PathBuf> = None;
     let mut cli_number_sections = false;
+    let mut cli_no_frontmatter = false;
     let mut watch_mode = false;
 
     let mut i = 1;
@@ -1407,6 +934,9 @@ fn main() {
             "-N" | "--number-sections" => {
                 cli_number_sections = true;
             }
+            "--no-frontmatter" => {
+                cli_no_frontmatter = true;
+            }
             other => {
                 if other == "-" && input_file.is_none() {
                     input_file = Some(PathBuf::from("-"));
@@ -1472,7 +1002,11 @@ fn main() {
         "pdf"
     };
     let default_output = if is_stdin {
-        PathBuf::from(format!("output.{default_ext}"))
+        if is_markdown_mode {
+            PathBuf::from("-")
+        } else {
+            PathBuf::from(format!("output.{default_ext}"))
+        }
     } else {
         compute_default_output_path(&input_path, default_ext)
     };
@@ -1507,6 +1041,7 @@ fn main() {
                 &cli_exclude_ref,
                 &cli_include_ref,
                 is_stdin,
+                cli_no_frontmatter,
             ) {
                 Ok((assets_count, duration)) => {
                     if !is_stdout {
@@ -1540,6 +1075,7 @@ fn main() {
             &cli_exclude_ref,
             &cli_include_ref,
             false,
+            cli_no_frontmatter,
         ) {
             Ok((assets_count, duration)) => {
                 let assets_info = if assets_count > 0 {
@@ -1606,6 +1142,7 @@ fn main() {
                     &cli_exclude_ref,
                     &cli_include_ref,
                     false,
+                    cli_no_frontmatter,
                 ) {
                     Ok((assets_count, duration)) => {
                         let assets_info = if assets_count > 0 {
@@ -1858,6 +1395,40 @@ mod tests {
 
         // When explicit_pdf is set, even marp: true is treated as pdf
         assert!(!detect_is_slides(&fm, slides_md, Path::new("test.md"), false, true));
+
+        // When explicit_slides is set, even normal document is treated as slides
+        assert!(detect_is_slides(&fm_doc, doc_md, Path::new("test.md"), true, false));
+
+        // String "true" for slides
+        let slides_str_md = "---\nslides: \"true\"\n---\n# Slide";
+        let (fm_str, _) = extract_frontmatter(slides_str_md);
+        assert!(detect_is_slides(&fm_str, slides_str_md, Path::new("talk.md"), false, false));
+
+        // Presentation: true
+        let pres_md = "---\npresentation: true\n---\n# Slide";
+        let (fm_pres, _) = extract_frontmatter(pres_md);
+        assert!(detect_is_slides(&fm_pres, pres_md, Path::new("talk.md"), false, false));
+
+        // type: deck vs type: report
+        let deck_md = "---\ntype: deck\n---\n# Slide";
+        let (fm_deck, _) = extract_frontmatter(deck_md);
+        assert!(detect_is_slides(&fm_deck, deck_md, Path::new("talk.md"), false, false));
+
+        let report_md = "---\ntype: report\n---\n# Section";
+        let (fm_rep, _) = extract_frontmatter(report_md);
+        assert!(!detect_is_slides(&fm_rep, report_md, Path::new("talk.md"), false, false));
+
+        // _class: invert
+        let class_md = "---\n_class: invert\n---\n# Slide";
+        let (fm_cls, _) = extract_frontmatter(class_md);
+        assert!(detect_is_slides(&fm_cls, class_md, Path::new("talk.md"), false, false));
+
+        // Filename convention fallback
+        let empty_fm = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        assert!(detect_is_slides(&empty_fm, "# Title", Path::new("lecture_slides.md"), false, false));
+        assert!(detect_is_slides(&empty_fm, "# Title", Path::new("pitch_deck.md"), false, false));
+        assert!(detect_is_slides(&empty_fm, "# Title", Path::new("keynote_presentation.md"), false, false));
+        assert!(!detect_is_slides(&empty_fm, "# Title", Path::new("thesis.md"), false, false));
     }
 
     #[test]
@@ -1915,7 +1486,22 @@ mod tests {
         assert!(is_relevant_watch_file(Path::new("slides.btx"), out));
         assert!(is_relevant_watch_file(Path::new("slides.btx.md"), out));
         assert!(is_relevant_watch_file(Path::new("sub/module.btx"), out));
+        assert!(is_relevant_watch_file(Path::new("diagram.svg"), out));
+        assert!(is_relevant_watch_file(Path::new("picture.png"), out));
+        assert!(is_relevant_watch_file(Path::new("bibliography.bib"), out));
+        assert!(is_relevant_watch_file(Path::new("custom.typ"), out));
+        assert!(is_relevant_watch_file(Path::new("botox.yaml"), out));
+
+        // Output path ignored
+        assert!(!is_relevant_watch_file(out, out));
+        // Hidden files ignored
         assert!(!is_relevant_watch_file(Path::new(".hidden.btx"), out));
+        assert!(!is_relevant_watch_file(Path::new(".git/HEAD"), out));
+        // Temp/backup files ending with ~ ignored
+        assert!(!is_relevant_watch_file(Path::new("document.md~"), out));
+        // Irrelevant extensions ignored
+        assert!(!is_relevant_watch_file(Path::new("build.rs"), out));
+        assert!(!is_relevant_watch_file(Path::new("app.exe"), out));
     }
 
     #[test]

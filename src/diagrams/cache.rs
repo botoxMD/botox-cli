@@ -72,21 +72,31 @@ pub fn detect_image_extension(content_type: Option<&str>, bytes: &[u8]) -> &'sta
 static IMAGE_AGENT: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|| {
     ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_millis(5000)))
+        .max_redirects(0)
+        .http_status_as_error(false)
         .build()
         .new_agent()
 });
 
 const MAX_REMOTE_IMAGE_SIZE: usize = 25 * 1024 * 1024; // 25 MB max
 
-fn is_forbidden_remote_host(url: &str) -> bool {
+pub(crate) fn is_forbidden_remote_host(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     if !lower.starts_with("http://") && !lower.starts_with("https://") {
         return true;
     }
     let without_scheme = lower.strip_prefix("http://").or_else(|| lower.strip_prefix("https://")).unwrap_or(&lower);
-    let host = without_scheme.split(['/', ':', '?', '#']).next().unwrap_or("").trim();
+    let host = if without_scheme.starts_with('[') {
+        if let Some(bracket_end) = without_scheme.find(']') {
+            &without_scheme[1..bracket_end]
+        } else {
+            without_scheme.split(['/', '?', '#']).next().unwrap_or("").trim()
+        }
+    } else {
+        without_scheme.split(['/', ':', '?', '#']).next().unwrap_or("").trim()
+    };
 
-    matches!(
+    if matches!(
         host,
         "localhost"
             | "127.0.0.1"
@@ -100,6 +110,33 @@ fn is_forbidden_remote_host(url: &str) -> bool {
         || host.starts_with("192.168.")
         || (host.starts_with("172.")
             && host.split('.').nth(1).and_then(|p| p.parse::<u8>().ok()).is_some_and(|o| (16..=31).contains(&o)))
+    {
+        return true;
+    }
+
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        match ip {
+            std::net::IpAddr::V4(v4) => {
+                let octets = v4.octets();
+                if octets[0] == 127
+                    || octets[0] == 10
+                    || octets[0] == 0
+                    || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+                    || (octets[0] == 192 && octets[1] == 168)
+                    || (octets[0] == 169 && octets[1] == 254)
+                {
+                    return true;
+                }
+            }
+            std::net::IpAddr::V6(v6) => {
+                if v6.is_loopback() || v6.is_unspecified() {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
 }
 
 /// Fetch a remote image/badge over HTTP/HTTPS and save it to the local cache directory.
@@ -125,41 +162,66 @@ pub fn fetch_and_cache_remote_image(url: &str) -> Result<PathBuf, String> {
             }
     }
 
-    let mut resp = IMAGE_AGENT
-        .get(url)
-        .header("User-Agent", "botox/0.1")
-        .call()
-        .map_err(|e| format!("Failed to fetch remote image `{url}`: {e}"))?;
+    let mut current_url = url.to_string();
+    let mut redirects = 0;
 
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(format!("Remote image server returned HTTP {status} for `{url}`"));
-    }
-
-    let content_type = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
-    
-    // Check Content-Length header if present
-    if let Some(cl) = resp.headers().get("content-length").and_then(|v| v.to_str().ok())
-        && let Ok(len) = cl.parse::<usize>()
-        && len > MAX_REMOTE_IMAGE_SIZE {
-            return Err(format!("Remote image `{url}` exceeds maximum permitted size of 25MB ({len} bytes)"));
+    let (content_type, body_bytes) = loop {
+        if is_forbidden_remote_host(&current_url) {
+            return Err(format!("Blocked remote image request to private, local, or invalid network address: `{current_url}`"));
         }
 
-    use std::io::Read;
-    let mut body_bytes = Vec::new();
-    resp.body_mut()
-        .as_reader()
-        .take((MAX_REMOTE_IMAGE_SIZE + 1) as u64)
-        .read_to_end(&mut body_bytes)
-        .map_err(|e| format!("Failed to read remote image `{url}` body: {e}"))?;
+        let mut resp = IMAGE_AGENT
+            .get(&current_url)
+            .header("User-Agent", concat!("botox/", env!("CARGO_PKG_VERSION")))
+            .call()
+            .map_err(|e| format!("Failed to fetch remote image `{current_url}`: {e}"))?;
 
-    if body_bytes.is_empty() {
-        return Err(format!("Remote image `{url}` returned empty content"));
-    }
+        let status = resp.status();
+        let code = status.as_u16();
+        if matches!(code, 301 | 302 | 303 | 307 | 308) {
+            if redirects >= 5 {
+                return Err(format!("Too many redirects fetching `{url}`"));
+            }
+            if let Some(loc) = resp.headers().get("location").and_then(|v| v.to_str().ok()) {
+                current_url = crate::diagrams::kroki::resolve_redirect_url(&current_url, loc);
+                redirects += 1;
+                continue;
+            } else {
+                return Err(format!("HTTP {status} redirect without Location header for `{current_url}`"));
+            }
+        }
 
-    if body_bytes.len() > MAX_REMOTE_IMAGE_SIZE {
-        return Err(format!("Remote image `{url}` exceeds maximum permitted size of 25MB"));
-    }
+        if !status.is_success() {
+            return Err(format!("Remote image server returned HTTP {status} for `{current_url}`"));
+        }
+
+        let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+
+        // Check Content-Length header if present
+        if let Some(cl) = resp.headers().get("content-length").and_then(|v| v.to_str().ok())
+            && let Ok(len) = cl.parse::<usize>()
+            && len > MAX_REMOTE_IMAGE_SIZE {
+                return Err(format!("Remote image `{current_url}` exceeds maximum permitted size of 25MB ({len} bytes)"));
+            }
+
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        resp.body_mut()
+            .as_reader()
+            .take((MAX_REMOTE_IMAGE_SIZE + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("Failed to read remote image `{current_url}` body: {e}"))?;
+
+        if bytes.is_empty() {
+            return Err(format!("Remote image `{current_url}` returned empty content"));
+        }
+
+        if bytes.len() > MAX_REMOTE_IMAGE_SIZE {
+            return Err(format!("Remote image `{current_url}` exceeds maximum permitted size of 25MB"));
+        }
+
+        break (ct, bytes);
+    };
 
     let ext = detect_image_extension(content_type.as_deref(), &body_bytes);
     let final_bytes = if ext == "svg" {
@@ -470,4 +532,126 @@ pub fn save_to_cache(hash: &str, svg_bytes: &[u8]) -> Result<PathBuf, String> {
     }
 
     Ok(cache_file)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_image_extension_from_headers_and_magic() {
+        assert_eq!(detect_image_extension(Some("image/svg+xml"), b""), "svg");
+        assert_eq!(detect_image_extension(Some("IMAGE/PNG"), b""), "png");
+        assert_eq!(detect_image_extension(Some("image/jpeg"), b""), "jpg");
+        assert_eq!(detect_image_extension(Some("image/webp"), b""), "webp");
+        assert_eq!(detect_image_extension(Some("image/gif"), b""), "gif");
+
+        // Byte magic fallback
+        assert_eq!(detect_image_extension(None, b"\x89PNG\r\n\x1a\nrest-of-png"), "png");
+        assert_eq!(detect_image_extension(None, b"\xff\xd8\xffrest-of-jpg"), "jpg");
+        assert_eq!(detect_image_extension(None, b"GIF89a..."), "gif");
+        assert_eq!(detect_image_extension(None, b"GIF87a..."), "gif");
+        assert_eq!(detect_image_extension(None, b"RIFF\x20\0\0\0WEBPVP8 ..."), "webp");
+        assert_eq!(detect_image_extension(None, b"<svg></svg>"), "svg");
+    }
+
+    #[test]
+    fn test_is_forbidden_remote_host_ssrf_protection() {
+        // Disallowed schemes
+        assert!(is_forbidden_remote_host("file:///etc/passwd"));
+        assert!(is_forbidden_remote_host("ftp://ftp.is.co.za/"));
+        assert!(is_forbidden_remote_host("gopher://gopher.floodgap.com/"));
+
+        // Loopback and internal addresses
+        assert!(is_forbidden_remote_host("http://localhost:3000/image.png"));
+        assert!(is_forbidden_remote_host("http://127.0.0.1/test.svg"));
+        assert!(is_forbidden_remote_host("http://127.0.1.1/test.svg"));
+        assert!(is_forbidden_remote_host("http://[::1]/test.svg"));
+        assert!(is_forbidden_remote_host("http://0.0.0.0/test.svg"));
+
+        // Cloud metadata
+        assert!(is_forbidden_remote_host("http://169.254.169.254/latest/meta-data"));
+        assert!(is_forbidden_remote_host("http://metadata.google.internal/computeMetadata"));
+        assert!(is_forbidden_remote_host("http://instance-data/latest"));
+
+        // Private IP ranges (RFC 1918)
+        assert!(is_forbidden_remote_host("http://10.0.1.5/pic.png"));
+        assert!(is_forbidden_remote_host("http://192.168.1.100/badge.svg"));
+        assert!(is_forbidden_remote_host("http://172.16.0.1/logo.png"));
+        assert!(is_forbidden_remote_host("http://172.31.255.255/logo.png"));
+
+        // Allowed public endpoints
+        assert!(!is_forbidden_remote_host("https://raw.githubusercontent.com/org/repo/main/logo.png"));
+        assert!(!is_forbidden_remote_host("https://img.shields.io/badge/build-success-brightgreen"));
+        assert!(!is_forbidden_remote_host("http://example.com/public-diagram.svg"));
+    }
+
+    #[test]
+    fn test_canonicalize_diagram_source() {
+        let mermaid_raw = "
+            %% comment to be removed
+            %%{init: {'theme': 'dark'}}%%
+            graph TD
+                A --> B
+        ";
+        let canon = canonicalize_diagram_source("mermaid", mermaid_raw);
+        assert!(!canon.contains("%% comment to be removed"));
+        assert!(canon.contains("%%{init: {'theme': 'dark'}}%%"));
+        assert!(canon.contains("A --> B"));
+
+        let puml_raw = "
+            ' plantuml comment
+            @startuml
+            Alice -> Bob
+            @enduml
+        ";
+        let canon_puml = canonicalize_diagram_source("plantuml", puml_raw);
+        assert!(!canon_puml.contains("' plantuml comment"));
+        assert!(canon_puml.contains("Alice -> Bob"));
+    }
+
+    #[test]
+    fn test_compute_diagram_hash_aliases() {
+        let puml_code = "@startuml\nA -> B\n@enduml";
+        let hash1 = compute_diagram_hash("puml", puml_code);
+        let hash2 = compute_diagram_hash("plantuml", puml_code);
+        let hash3 = compute_diagram_hash("PLANTUML", puml_code);
+        assert_eq!(hash1, hash2);
+        assert_eq!(hash2, hash3);
+
+        let uxf_code = "<diagram>...</diagram>";
+        assert_eq!(compute_diagram_hash("uxf", uxf_code), compute_diagram_hash("umlet", uxf_code));
+    }
+
+    #[test]
+    fn test_sanitize_svg_for_typesetting_text_align() {
+        let svg_left = r#"<svg><foreignObject x="10" y="20" width="100" height="40"><div style="text-align: left">Left Aligned Text</div></foreignObject></svg>"#;
+        let sanitized_left = sanitize_svg_for_typesetting(svg_left);
+        assert!(sanitized_left.contains(r#"text-anchor="start""#));
+        assert!(sanitized_left.contains("Left Aligned Text"));
+
+        let svg_right = r#"<svg><foreignObject x="10" y="20" width="100" height="40"><div style="text-align: right">Right Aligned Text</div></foreignObject></svg>"#;
+        let sanitized_right = sanitize_svg_for_typesetting(svg_right);
+        assert!(sanitized_right.contains(r#"text-anchor="end""#));
+        assert!(sanitized_right.contains("Right Aligned Text"));
+
+        let svg_plain = "<svg><circle cx=\"50\" cy=\"50\" r=\"40\" /></svg>";
+        assert_eq!(sanitize_svg_for_typesetting(svg_plain), svg_plain);
+    }
+
+    #[test]
+    fn test_cache_dirs_and_save_cache() {
+        let cache_dir = get_cache_dir();
+        assert!(!cache_dir.as_os_str().is_empty());
+        let img_cache_dir = get_image_cache_dir();
+        assert!(!img_cache_dir.as_os_str().is_empty());
+
+        let test_hash = "test_diag_hash_987654";
+        let test_svg = b"<svg><text>Sample Diagram</text></svg>";
+        let saved_path = save_to_cache(test_hash, test_svg).expect("save_to_cache should succeed");
+        assert!(saved_path.is_file());
+        let read_back = fs::read_to_string(&saved_path).unwrap();
+        assert!(read_back.contains("Sample Diagram"));
+        let _ = fs::remove_file(saved_path);
+    }
 }

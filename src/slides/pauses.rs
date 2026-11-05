@@ -74,3 +74,48 @@ pub fn process_slide_pauses(trimmed_slide: &str, out: &mut String) {
     }
     out.push('\n');
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_split_outside_code_fences() {
+        let markup = "Step 1\n#botox_pause()\n```rust\n// #botox_pause() inside code\n```\n#botox_pause()\nStep 3";
+        let parts = split_outside_code_fences(markup, "#botox_pause()");
+        assert_eq!(parts.len(), 3);
+        assert!(parts[0].contains("Step 1"));
+        assert!(parts[1].contains("// #botox_pause() inside code"));
+        assert!(parts[2].contains("Step 3"));
+    }
+
+    #[test]
+    fn test_process_slide_pauses_cumulative() {
+        let slide = "Item 1\n\n#botox_pause()\n\nItem 2\n\n#botox_pause()\n\nItem 3";
+        let mut out = String::new();
+        process_slide_pauses(slide, &mut out);
+
+        // Should have 2 pagebreaks for 3 steps
+        let pagebreaks: Vec<_> = out.match_indices("#pagebreak()").collect();
+        assert_eq!(pagebreaks.len(), 2);
+
+        // Steps 1 and 2 should have step metadata tag, final step should not
+        let steps: Vec<_> = out.match_indices("<botox-step>").collect();
+        assert_eq!(steps.len(), 2);
+
+        // Final page should contain all 3 items cumulatively
+        let pages: Vec<&str> = out.split("#pagebreak()").collect();
+        assert_eq!(pages.len(), 3);
+        assert!(pages[2].contains("Item 1") && pages[2].contains("Item 2") && pages[2].contains("Item 3"));
+    }
+
+    #[test]
+    fn test_process_slide_without_pauses() {
+        let slide = "Simple slide with no pause directives.";
+        let mut out = String::new();
+        process_slide_pauses(slide, &mut out);
+        assert!(!out.contains("#pagebreak()"));
+        assert!(!out.contains("<botox-step>"));
+        assert!(out.contains("Simple slide"));
+    }
+}

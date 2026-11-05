@@ -1,51 +1,34 @@
 pub fn escape_typst_text(s: &str) -> String {
-    let mut s = s.to_string();
-    let has_newpage = s.contains(r"\newpage") || s.contains(r"\pagebreak") || s.contains(r"\clearpage");
-    let has_colbreak = s.contains(r"\columnbreak") || s.contains(r"\colbreak");
-    let has_toc = s.contains(r"\tableofcontents");
-    let has_lof = s.contains(r"\listoffigures");
-    let has_lot = s.contains(r"\listoftables");
-    let has_today = s.contains(r"\today");
-    let has_pause = s.contains(r"\pause");
-
-    if has_newpage {
-        s = s.replace(r"\newpage landscape", "<!--botox:page:landscape:start-->")
-             .replace(r"\pagebreak landscape", "<!--botox:page:landscape:start-->")
-             .replace(r"\clearpage landscape", "<!--botox:page:landscape:start-->")
-             .replace(r"\newpage{landscape}", "<!--botox:page:landscape:start-->")
-             .replace(r"\pagebreak{landscape}", "<!--botox:page:landscape:start-->")
-             .replace(r"\clearpage{landscape}", "<!--botox:page:landscape:start-->")
-             .replace(r"\newpage portrait", "<!--botox:page:landscape:end-->")
-             .replace(r"\pagebreak portrait", "<!--botox:page:landscape:end-->")
-             .replace(r"\clearpage portrait", "<!--botox:page:landscape:end-->")
-             .replace(r"\newpage{portrait}", "<!--botox:page:landscape:end-->")
-             .replace(r"\pagebreak{portrait}", "<!--botox:page:landscape:end-->")
-             .replace(r"\clearpage{portrait}", "<!--botox:page:landscape:end-->")
-             .replace(r"\newpage", "BOTOXCMDNEWPAGEBOTOX")
-             .replace(r"\pagebreak", "BOTOXCMDNEWPAGEBOTOX")
-             .replace(r"\clearpage", "BOTOXCMDNEWPAGEBOTOX");
-    }
-    if has_colbreak {
-        s = s.replace(r"\columnbreak", "BOTOXCMDCOLBREAKBOTOX")
-             .replace(r"\colbreak", "BOTOXCMDCOLBREAKBOTOX");
-    }
-    if has_toc {
-        s = s.replace(r"\tableofcontents", "BOTOXCMDTOCBOTOX");
-    }
-    if has_lof {
-        s = s.replace(r"\listoffigures", "BOTOXCMDLOFBOTOX");
-    }
-    if has_lot {
-        s = s.replace(r"\listoftables", "BOTOXCMDLOTBOTOX");
-    }
-    if has_today {
-        s = s.replace(r"\today", "BOTOXCMDTODAYBOTOX");
-    }
-    if has_pause {
-        s = s.replace(r"\pause", "BOTOXCMDPAUSEBOTOX");
+    if !s.bytes().any(|b| matches!(b, b'#' | b']' | b'[' | b'~' | b'^' | b'@' | b'/' | b'\\' | b'*' | b'_' | b'$' | b'<' | b'>' | b'=' | b'-' | b'+')) {
+        return s.to_string();
     }
 
-    s = crate::markdown::pandoc::convert_cross_references(&s);
+    let s = crate::markdown::pandoc::convert_cross_references(s);
+
+    const LATEX_COMMANDS: &[(&str, &str)] = &[
+        (r"\newpage landscape", "\n#pagebreak(weak: true)\n#set page(flipped: true)\n"),
+        (r"\pagebreak landscape", "\n#pagebreak(weak: true)\n#set page(flipped: true)\n"),
+        (r"\clearpage landscape", "\n#pagebreak(weak: true)\n#set page(flipped: true)\n"),
+        (r"\newpage{landscape}", "\n#pagebreak(weak: true)\n#set page(flipped: true)\n"),
+        (r"\pagebreak{landscape}", "\n#pagebreak(weak: true)\n#set page(flipped: true)\n"),
+        (r"\clearpage{landscape}", "\n#pagebreak(weak: true)\n#set page(flipped: true)\n"),
+        (r"\newpage portrait", "\n#pagebreak(weak: true)\n#set page(flipped: false)\n"),
+        (r"\pagebreak portrait", "\n#pagebreak(weak: true)\n#set page(flipped: false)\n"),
+        (r"\clearpage portrait", "\n#pagebreak(weak: true)\n#set page(flipped: false)\n"),
+        (r"\newpage{portrait}", "\n#pagebreak(weak: true)\n#set page(flipped: false)\n"),
+        (r"\pagebreak{portrait}", "\n#pagebreak(weak: true)\n#set page(flipped: false)\n"),
+        (r"\clearpage{portrait}", "\n#pagebreak(weak: true)\n#set page(flipped: false)\n"),
+        (r"\newpage", "\n#pagebreak()\n"),
+        (r"\pagebreak", "\n#pagebreak()\n"),
+        (r"\clearpage", "\n#pagebreak()\n"),
+        (r"\columnbreak", "\n#colbreak()\n"),
+        (r"\colbreak", "\n#colbreak()\n"),
+        (r"\tableofcontents", "\n#outline(depth: 3)\n"),
+        (r"\listoffigures", "\n#outline(target: figure.where(kind: image))\n"),
+        (r"\listoftables", "\n#outline(target: figure.where(kind: table))\n"),
+        (r"\today", "#datetime.today().display(\"[day] [month repr:long] [year]\")"),
+        (r"\pause", "\n#botox_pause()\n"),
+    ];
 
     let chars: Vec<char> = s.chars().collect();
     let n = chars.len();
@@ -118,9 +101,9 @@ pub fn escape_typst_text(s: &str) -> String {
                     if !closing_next_is_tilde && j > i + 1 {
                         let sub: String = chars[i + 1..j].iter().collect();
                         let escaped_sub = escape_typst_text(&sub);
-                        out.push_str("BOTOXSUBSTART");
+                        out.push_str("#sub[");
                         out.push_str(&escaped_sub);
-                        out.push_str("BOTOXSUBEND");
+                        out.push(']');
                         i = j + 1;
                         continue;
                     }
@@ -145,9 +128,9 @@ pub fn escape_typst_text(s: &str) -> String {
                     if !closing_next_is_hat && j > i + 1 {
                         let sup: String = chars[i + 1..j].iter().collect();
                         let escaped_sup = escape_typst_text(&sup);
-                        out.push_str("BOTOXSUPERSTART");
+                        out.push_str("#super[");
                         out.push_str(&escaped_sup);
-                        out.push_str("BOTOXSUPEREND");
+                        out.push(']');
                         i = j + 1;
                         continue;
                     }
@@ -183,8 +166,21 @@ pub fn escape_typst_text(s: &str) -> String {
             continue;
         }
 
-        // Check for backslash
+        // Check for backslash and LaTeX commands
         if c == '\\' {
+            let rest: String = chars[i..].iter().take(22).collect();
+            let mut matched = false;
+            for (cmd, typst_replacement) in LATEX_COMMANDS {
+                if rest.starts_with(cmd) {
+                    out.push_str(typst_replacement);
+                    i += cmd.chars().count();
+                    matched = true;
+                    break;
+                }
+            }
+            if matched {
+                continue;
+            }
             out.push_str(r"\\");
             i += 1;
             continue;
@@ -209,35 +205,106 @@ pub fn escape_typst_text(s: &str) -> String {
         i += 1;
     }
 
-    let mut final_out = out
-        .replace("BOTOXSUBSTART", "#sub[")
-        .replace("BOTOXSUBEND", "]")
-        .replace("BOTOXSUPERSTART", "#super[")
-        .replace("BOTOXSUPEREND", "]");
+    out
+}
 
-    if has_newpage {
-        final_out = final_out.replace("<!--botox:page:landscape:start-->", "\n#pagebreak(weak: true)\n#set page(flipped: true)\n")
-            .replace("<!--botox:page:landscape:end-->", "\n#pagebreak(weak: true)\n#set page(flipped: false)\n")
-            .replace("BOTOXCMDNEWPAGEBOTOX", "\n#pagebreak()\n");
-    }
-    if has_colbreak {
-        final_out = final_out.replace("BOTOXCMDCOLBREAKBOTOX", "\n#colbreak()\n");
-    }
-    if has_toc {
-        final_out = final_out.replace("BOTOXCMDTOCBOTOX", "\n#outline(depth: 3)\n");
-    }
-    if has_lof {
-        final_out = final_out.replace("BOTOXCMDLOFBOTOX", "\n#outline(target: figure.where(kind: image))\n");
-    }
-    if has_lot {
-        final_out = final_out.replace("BOTOXCMDLOTBOTOX", "\n#outline(target: figure.where(kind: table))\n");
-    }
-    if has_today {
-        final_out = final_out.replace("BOTOXCMDTODAYBOTOX", "#datetime.today().display(\"[day] [month repr:long] [year]\")");
-    }
-    if has_pause {
-        final_out = final_out.replace("BOTOXCMDPAUSEBOTOX", "\n#botox_pause()\n");
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_escape_typst_commands_preservation() {
+        let text = "#sub[H2O] and #super[100] and #strike[deleted] and #pagebreak() and #colbreak() and #outline(depth: 2)";
+        let escaped = escape_typst_text(text);
+        assert!(escaped.contains("#sub[H2O]"));
+        assert!(escaped.contains("#super[100]"));
+        assert!(escaped.contains("#strike[deleted]"));
+        assert!(escaped.contains("#pagebreak()"));
+        assert!(escaped.contains("#colbreak()"));
+        assert!(escaped.contains("#outline(depth: 2)"));
+
+        let hashtags = "Check #123 and C# programming";
+        let esc_hash = escape_typst_text(hashtags);
+        assert!(esc_hash.contains(r"\#123"));
+        assert!(esc_hash.contains(r"C\#"));
     }
 
-    final_out
+    #[test]
+    fn test_subscript_and_superscript_escaping() {
+        let text = "Formula H~2~O and value 2^10^ alongside ~~strike~~";
+        let escaped = escape_typst_text(text);
+        assert!(escaped.contains("H#sub[2]O"));
+        assert!(escaped.contains("2#super[10]"));
+        assert!(escaped.contains(r"\~\~strike\~\~"));
+    }
+
+    #[test]
+    fn test_bracket_balancing() {
+        let text = "Array arr[0] and lone bracket ] here";
+        let escaped = escape_typst_text(text);
+        assert!(escaped.contains(r"arr\[0\]"));
+        assert!(escaped.contains(r"\] here"));
+    }
+
+    #[test]
+    fn test_escape_cross_references() {
+        let text = "See @fig-1 and @tbl-2 vs email user@domain.com";
+        let escaped = escape_typst_text(text);
+        assert!(escaped.contains("@fig-1"));
+        assert!(escaped.contains("@tbl-2"));
+        assert!(escaped.contains(r"user\@domain.com"));
+    }
+
+    #[test]
+    fn test_escape_comments_and_slashes() {
+        let text = "// comment\n/* block */\nNormal a/b slash\n/ Description term";
+        let escaped = escape_typst_text(text);
+        assert!(escaped.contains(r"\// comment"));
+        assert!(escaped.contains(r"/\* block"));
+        assert!(escaped.contains("Normal a/b slash"));
+        assert!(escaped.contains(r"\/ Description term"));
+    }
+
+    #[test]
+    fn test_landscape_and_portrait_pagebreaks() {
+        let text_land1 = "Start\\newpage landscapeEnd";
+        assert!(escape_typst_text(text_land1).contains("#pagebreak(weak: true)\n#set page(flipped: true)"));
+
+        let text_land2 = "Start\\pagebreak{landscape}End";
+        assert!(escape_typst_text(text_land2).contains("#pagebreak(weak: true)\n#set page(flipped: true)"));
+
+        let text_port = "Start\\clearpage portraitEnd";
+        assert!(escape_typst_text(text_port).contains("#pagebreak(weak: true)\n#set page(flipped: false)"));
+
+        let text_page = "Before\\pagebreak After";
+        assert!(escape_typst_text(text_page).contains("\n#pagebreak()\n"));
+    }
+
+    #[test]
+    fn test_breaks_and_helpers() {
+        let text_col = "Col1\\columnbreak Col2\\colbreak Col3";
+        let esc_col = escape_typst_text(text_col);
+        assert!(esc_col.contains("\n#colbreak()\n"));
+
+        let text_outlines = "\\tableofcontents\n\\listoffigures\n\\listoftables";
+        let esc_outlines = escape_typst_text(text_outlines);
+        assert!(esc_outlines.contains("\n#outline(depth: 3)\n"));
+        assert!(esc_outlines.contains("#outline(target: figure.where(kind: image))"));
+        assert!(esc_outlines.contains("#outline(target: figure.where(kind: table))"));
+
+        let text_today = "Today is \\today";
+        assert!(escape_typst_text(text_today).contains("#datetime.today().display("));
+
+        let text_pause = "Slide 1\\pause Slide 2";
+        assert!(escape_typst_text(text_pause).contains("\n#botox_pause()\n"));
+    }
+
+    #[test]
+    fn test_line_start_markers() {
+        let text = "= Title\n- Bullet\n+ Numbered";
+        let escaped = escape_typst_text(text);
+        assert!(escaped.starts_with(r"\= Title"));
+        assert!(escaped.contains(r"\- Bullet"));
+        assert!(escaped.contains(r"\+ Numbered"));
+    }
 }

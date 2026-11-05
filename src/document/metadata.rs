@@ -141,3 +141,59 @@ pub fn build_document_metadata(
         Some(format!("#set document({})\n", fields.join(", ")))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_title() {
+        let fm_str: Value = serde_yaml::from_str("title: \"My Document\"").unwrap();
+        assert_eq!(extract_title(&fm_str).as_deref(), Some("My Document"));
+
+        let fm_int: Value = serde_yaml::from_str("title: 2026").unwrap();
+        assert_eq!(extract_title(&fm_int).as_deref(), Some("2026"));
+
+        let fm_none: Value = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(extract_title(&fm_none), None);
+    }
+
+    #[test]
+    fn test_extract_authors_hierarchy() {
+        let fm_single: Value = serde_yaml::from_str("author: \"Single Author\"").unwrap();
+        assert_eq!(extract_authors(&fm_single, None, None), vec!["Single Author"]);
+
+        let fm_list: Value = serde_yaml::from_str("authors: [\"Author One\", \"Author Two\"]").unwrap();
+        assert_eq!(extract_authors(&fm_list, None, None), vec!["Author One", "Author Two"]);
+
+        let fm_objects: Value = serde_yaml::from_str("authors:\n  - name: \"Dr. A\"\n  - name: \"Prof. B\"").unwrap();
+        assert_eq!(extract_authors(&fm_objects, None, None), vec!["Dr. A", "Prof. B"]);
+
+        let fm_empty: Value = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(extract_authors(&fm_empty, Some("Config Author"), None), vec!["Config Author"]);
+        assert_eq!(extract_authors(&fm_single, Some("Config Author"), Some("CLI Author")), vec!["CLI Author"]);
+    }
+
+    #[test]
+    fn test_extract_date() {
+        let fm_str: Value = serde_yaml::from_str("date: \"2026-11-04\"").unwrap();
+        assert_eq!(extract_date(&fm_str).as_deref(), Some("2026-11-04"));
+
+        let fm_int: Value = serde_yaml::from_str("date: 2026").unwrap();
+        assert_eq!(extract_date(&fm_int).as_deref(), Some("2026"));
+    }
+
+    #[test]
+    fn test_build_document_metadata() {
+        let authors = vec!["Alice".to_string(), "Bob".to_string()];
+        let meta = build_document_metadata(Some("Research Paper"), &authors, Some("2026-10-01"));
+        assert!(meta.is_some());
+        let meta_str = meta.unwrap();
+        assert!(meta_str.contains("title: \"Research Paper\""));
+        assert!(meta_str.contains(r#"author: ("Alice", "Bob")"#));
+        assert!(meta_str.contains("date: datetime(year: 2026, month: 10, day: 1)"));
+
+        let empty = build_document_metadata(None, &[], None);
+        assert_eq!(empty, None);
+    }
+}

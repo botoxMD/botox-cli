@@ -2,7 +2,6 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use crate::compiler::{self, BotoxHeadingInfo};
-use crate::config;
 
 #[derive(Deserialize, Debug)]
 pub struct DaemonRequest {
@@ -56,10 +55,14 @@ pub fn handle_daemon(_args: &[String]) {
     eprintln!("[BOTOX:DAEMON] ready v{}", env!("CARGO_PKG_VERSION"));
 
     let mut line_buffer = String::new();
-    while reader.read_line(&mut line_buffer).is_ok() {
+    loop {
+        line_buffer.clear();
+        match reader.read_line(&mut line_buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
         let trimmed = line_buffer.trim();
         if trimmed.is_empty() {
-            line_buffer.clear();
             continue;
         }
 
@@ -140,25 +143,36 @@ pub fn handle_daemon(_args: &[String]) {
 }
 
 fn process_daemon_request(req: &DaemonRequest, start_time: std::time::Instant) -> DaemonResponse {
-    let raw_content = if let Some(ref md) = req.markdown {
-        md.clone()
+    let doc_dir_buf = req.resource_dir.as_ref().map(PathBuf::from).or_else(|| {
+        req.file.as_ref().and_then(|f| Path::new(f).parent().map(|p| p.to_path_buf()))
+    });
+    let doc_dir = doc_dir_buf.as_deref();
+
+    let source = if let Some(ref md) = req.markdown {
+        crate::engine::DocumentSource::Memory {
+            content: md,
+            source_filename: req.source_file.as_deref().or(req.file.as_deref()),
+            resource_dir: doc_dir,
+        }
     } else if let Some(ref file_path) = req.file {
-        match std::fs::read_to_string(file_path) {
-            Ok(content) => content,
-            Err(e) => {
-                return DaemonResponse {
-                    id: req.id,
-                    status: "error".to_string(),
-                    error: Some(format!("Error reading '{}': {e}", file_path)),
-                    num_pages: None,
-                    pages: None,
-                    headings: None,
-                    is_slides: None,
-                    pause_indices: None,
-                    duration_ms: Some(start_time.elapsed().as_secs_f64() * 1000.0),
-                    version: None,
-                };
-            }
+        let p = Path::new(file_path);
+        if !compiler::is_path_allowed(p, None) {
+            return DaemonResponse {
+                id: req.id,
+                status: "error".to_string(),
+                error: Some(format!("Access denied to file outside allowed directory: '{file_path}'")),
+                num_pages: None,
+                pages: None,
+                headings: None,
+                is_slides: None,
+                pause_indices: None,
+                duration_ms: Some(start_time.elapsed().as_secs_f64() * 1000.0),
+                version: None,
+            };
+        }
+        crate::engine::DocumentSource::File {
+            path: p,
+            resource_dir: doc_dir,
         }
     } else {
         return DaemonResponse {
@@ -175,70 +189,35 @@ fn process_daemon_request(req: &DaemonRequest, start_time: std::time::Instant) -
         };
     };
 
-    let doc_dir_buf = req.resource_dir.as_ref().map(PathBuf::from).or_else(|| {
-        req.file.as_ref().and_then(|f| Path::new(f).parent().map(|p| p.to_path_buf()))
-    });
-    let doc_dir = doc_dir_buf.as_deref();
-
-    let (config_data, _) = config::BotoxConfig::load(None, doc_dir);
-    let explicit_slides = req.is_slides == Some(true);
-    let explicit_pdf = req.is_slides == Some(false);
-
-    let src_path = req.file.as_deref().map(Path::new)
-        .or_else(|| req.source_file.as_deref().map(Path::new));
-
-    let src_filename = src_path
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-        .unwrap_or("document.md");
-
-    let (typst_markup, _) = match crate::transpile_markdown_to_typst_markup(
-        &raw_content,
-        doc_dir,
-        &config_data,
-        explicit_pdf,
-        explicit_slides,
-        req.toc,
-        req.author.as_deref(),
-        req.font.as_deref(),
-        req.bibliography,
-        req.theme.as_deref(),
-        &[],
-        &[],
-        src_path,
-    ) {
-        Ok(res) => res,
-        Err(e) => {
-            return DaemonResponse {
-                id: req.id,
-                status: "error".to_string(),
-                error: Some(format!("[YAML Frontmatter Error] {src_filename}: {e}")),
-                num_pages: None,
-                pages: None,
-                headings: None,
-                is_slides: None,
-                pause_indices: None,
-                duration_ms: Some(start_time.elapsed().as_secs_f64() * 1000.0),
-                version: None,
-            };
-        }
+    let target = match req.is_slides {
+        Some(true) => crate::engine::TargetFormat::Slides,
+        Some(false) => crate::engine::TargetFormat::Pdf,
+        None => crate::engine::TargetFormat::Auto,
     };
 
-    match compiler::compile_typst_to_pages(
-        &typst_markup,
-        doc_dir,
-        Some(&raw_content),
-        Some(src_filename),
-    ) {
+    let opts = crate::engine::PublishOptions {
+        target,
+        theme: req.theme.as_deref(),
+        author: req.author.as_deref(),
+        font: req.font.as_deref(),
+        toc: req.toc,
+        bibliography: req.bibliography,
+        ..Default::default()
+    };
+
+    match crate::engine::publish_to_pages(&source, &opts) {
         Ok(output) => {
             let duration_ms = start_time.elapsed().as_secs_f64() * 1000.0;
             if let Some(ref out_file) = req.output_file {
                 let p = Path::new(out_file);
-                if let Some(parent) = p.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if let Ok(json_str) = serde_json::to_string(&output) {
-                    let _ = std::fs::write(p, json_str);
+                let check_target = if p.exists() { p } else { p.parent().unwrap_or(Path::new(".")) };
+                if compiler::is_path_allowed(check_target, doc_dir) {
+                    if let Some(parent) = p.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    if let Ok(json_str) = serde_json::to_string(&output) {
+                        let _ = std::fs::write(p, json_str);
+                    }
                 }
             }
             DaemonResponse {
@@ -368,6 +347,28 @@ mod tests {
         assert_eq!(resp.status, "error");
         assert_eq!(resp.id, Some(999));
         assert!(resp.error.is_some());
+    }
+
+    #[test]
+    fn test_daemon_unauthorized_file_access() {
+        let req = DaemonRequest {
+            id: Some(101),
+            action: "compile_file".to_string(),
+            markdown: None,
+            file: Some("/etc/shadow".to_string()),
+            resource_dir: None,
+            source_file: None,
+            theme: None,
+            author: None,
+            font: None,
+            toc: None,
+            bibliography: None,
+            is_slides: None,
+            output_file: None,
+        };
+        let resp = process_daemon_request(&req, std::time::Instant::now());
+        assert_eq!(resp.status, "error");
+        assert!(resp.error.unwrap().contains("Access denied"));
     }
 }
 

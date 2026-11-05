@@ -96,4 +96,120 @@ impl DocumentTheme {
             Self::Minimal => "0.8em",
         }
     }
+
+    pub fn callout_preamble(&self) -> String {
+        match self {
+            Self::Minimal => {
+                "#let botox_callout(kind, title, body) = {\n  let stroke_color = rgb(\"#71717a\");\n  let default_title = if kind == \"warning\" { \"Warning\" } else if kind == \"tip\" { \"Tip\" } else if kind == \"important\" { \"Important\" } else { \"Note\" };\n  let display_title = if title != \"\" { title } else { default_title };\n  block(\n    stroke: (left: 2pt + stroke_color),\n    inset: (left: 10pt, y: 4pt),\n    width: 100%,\n    above: 1.2em,\n    below: 1.2em,\n  )[\n    #text(weight: \"bold\", fill: stroke_color)[#display_title]\\\n    #v(0.2em)\n    #body\n  ]\n}\n\n".to_string()
+            }
+            _ => {
+                let (note_stroke, note_fill) = match self {
+                    Self::Modern => ("#2563eb", "#eff6ff"),
+                    Self::Technical => ("#0284c7", "#f0f9ff"),
+                    Self::Elegant => ("#0369a1", "#f0f9ff"),
+                    _ => ("#0284c7", "#f1f5f9"),
+                };
+                let (tip_stroke, tip_fill) = match self {
+                    Self::Technical => ("#0d9488", "#f0fdfa"),
+                    Self::Elegant => ("#15803d", "#f0fdf4"),
+                    _ => ("#16a34a", "#f0fdf4"),
+                };
+                let (warn_stroke, warn_fill) = match self {
+                    Self::Elegant => ("#b45309", "#fffbeb"),
+                    _ => ("#d97706", "#fffbeb"),
+                };
+                let (danger_stroke, danger_fill) = match self {
+                    Self::Technical => ("#e11d48", "#fff1f2"),
+                    Self::Elegant => ("#b91c1c", "#fef2f2"),
+                    _ => ("#dc2626", "#fef2f2"),
+                };
+                let stroke_spec = match self {
+                    Self::Technical => "1pt + stroke_color",
+                    Self::Modern => "(left: 4pt + stroke_color)",
+                    _ => "(left: 3.5pt + stroke_color)",
+                };
+                let radius_spec = match self {
+                    Self::Modern => "radius: 4pt,\n",
+                    Self::Technical => "radius: 2pt,\n",
+                    Self::Elegant => "radius: (right: 3pt),\n",
+                    _ => "radius: (right: 4pt),\n",
+                };
+                format!(
+r#"#let botox_callout(kind, title, body) = {{
+  let (stroke_color, fill_color, default_title) = if kind == "warning" {{
+    (rgb("{warn_stroke}"), rgb("{warn_fill}"), "Warning")
+  }} else if kind == "tip" {{
+    (rgb("{tip_stroke}"), rgb("{tip_fill}"), "Tip")
+  }} else if kind == "important" or kind == "caution" or kind == "danger" {{
+    (rgb("{danger_stroke}"), rgb("{danger_fill}"), "Important")
+  }} else {{
+    (rgb("{note_stroke}"), rgb("{note_fill}"), "Note")
+  }};
+  let display_title = if title != "" {{ title }} else {{ default_title }};
+  block(
+    fill: fill_color,
+    stroke: {stroke_spec},
+    inset: (x: 12pt, y: 10pt),
+    {radius_spec}    width: 100%,
+    above: 1.2em,
+    below: 1.2em,
+  )[
+    #text(weight: "bold", fill: stroke_color)[#display_title]\
+    #v(0.3em)
+    #body
+  ]
+}}
+
+"#
+                )
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_document_theme_parsing_and_aliases() {
+        assert_eq!(DocumentTheme::parse("academic"), DocumentTheme::Academic);
+        assert_eq!(DocumentTheme::parse("ACADEMIC"), DocumentTheme::Academic);
+        assert_eq!(DocumentTheme::parse("modern"), DocumentTheme::Modern);
+        assert_eq!(DocumentTheme::parse("elegant"), DocumentTheme::Elegant);
+        assert_eq!(DocumentTheme::parse("technical"), DocumentTheme::Technical);
+        assert_eq!(DocumentTheme::parse("tech"), DocumentTheme::Technical);
+        assert_eq!(DocumentTheme::parse("compact"), DocumentTheme::Compact);
+        assert_eq!(DocumentTheme::parse("ieee"), DocumentTheme::Compact);
+        assert_eq!(DocumentTheme::parse("acm"), DocumentTheme::Compact);
+        assert_eq!(DocumentTheme::parse("minimal"), DocumentTheme::Minimal);
+        assert_eq!(DocumentTheme::parse("swiss"), DocumentTheme::Minimal);
+        assert_eq!(DocumentTheme::parse("unknown_theme"), DocumentTheme::Academic);
+    }
+
+    #[test]
+    fn test_theme_properties_consistency() {
+        let all_themes = [
+            DocumentTheme::Academic,
+            DocumentTheme::Modern,
+            DocumentTheme::Elegant,
+            DocumentTheme::Technical,
+            DocumentTheme::Compact,
+            DocumentTheme::Minimal,
+        ];
+
+        for t in &all_themes {
+            assert!(!t.default_font().is_empty());
+            assert!(!t.default_fontsize().is_empty());
+            let (mx, my) = t.default_margins();
+            assert!(!mx.is_empty() && !my.is_empty());
+            assert!(t.default_linkcolor().starts_with('#'));
+            assert!(!t.default_leading().is_empty());
+        }
+
+        assert_eq!(DocumentTheme::Compact.default_columns(), 2);
+        assert_eq!(DocumentTheme::Academic.default_columns(), 1);
+        assert!(!DocumentTheme::Minimal.default_numbering());
+        assert!(DocumentTheme::Academic.default_numbering());
+    }
 }

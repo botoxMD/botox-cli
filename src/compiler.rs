@@ -26,14 +26,13 @@ impl BotoxFonts {
     }
 }
 
-fn is_path_allowed(path: &Path, resource_dir: &Path) -> bool {
+pub fn is_path_allowed(path: &Path, resource_dir: Option<&Path>) -> bool {
     let Ok(canonical) = path.canonicalize() else {
         return false;
     };
-    let res_dir = if resource_dir.as_os_str().is_empty() {
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-    } else {
-        resource_dir.to_path_buf()
+    let res_dir = match resource_dir {
+        Some(rd) if !rd.as_os_str().is_empty() => rd.to_path_buf(),
+        _ => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
     };
     let allowed_dirs: [Option<PathBuf>; 5] = [
         Some(res_dir),
@@ -84,18 +83,18 @@ impl typst::World for BotoxWorld {
         let abs_candidate = Path::new(vpath.get_with_slash());
 
         if abs_candidate.is_absolute()
-            && is_path_allowed(abs_candidate, &self.resource_dir)
+            && is_path_allowed(abs_candidate, Some(&self.resource_dir))
             && let Ok(content) = std::fs::read_to_string(abs_candidate) {
                 return Ok(typst::syntax::Source::new(id, content));
             }
 
         let rel_cand = self.resource_dir.join(rel_path);
-        if is_path_allowed(&rel_cand, &self.resource_dir)
+        if is_path_allowed(&rel_cand, Some(&self.resource_dir))
             && let Ok(content) = std::fs::read_to_string(&rel_cand) {
                 return Ok(typst::syntax::Source::new(id, content));
             }
 
-        if is_path_allowed(rel_path, &self.resource_dir)
+        if is_path_allowed(rel_path, Some(&self.resource_dir))
             && let Ok(content) = std::fs::read_to_string(rel_path) {
                 return Ok(typst::syntax::Source::new(id, content));
             }
@@ -112,18 +111,18 @@ impl typst::World for BotoxWorld {
         let abs_candidate = Path::new(vpath.get_with_slash());
 
         if abs_candidate.is_absolute()
-            && is_path_allowed(abs_candidate, &self.resource_dir)
+            && is_path_allowed(abs_candidate, Some(&self.resource_dir))
             && let Ok(bytes) = std::fs::read(abs_candidate) {
                 return Ok(typst::foundations::Bytes::new(bytes));
             }
 
         let rel_cand = self.resource_dir.join(rel_path);
-        if is_path_allowed(&rel_cand, &self.resource_dir)
+        if is_path_allowed(&rel_cand, Some(&self.resource_dir))
             && let Ok(bytes) = std::fs::read(&rel_cand) {
                 return Ok(typst::foundations::Bytes::new(bytes));
             }
 
-        if is_path_allowed(rel_path, &self.resource_dir)
+        if is_path_allowed(rel_path, Some(&self.resource_dir))
             && let Ok(bytes) = std::fs::read(rel_path) {
                 return Ok(typst::foundations::Bytes::new(bytes));
             }
@@ -157,7 +156,7 @@ pub struct BotoxHeadingInfo {
     pub y_ratio: f64,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BotoxPagesOutput {
     pub num_pages: usize,
     pub pages: Vec<String>,
@@ -234,10 +233,10 @@ fn load_needed_fonts(typst_markup: &str) -> BotoxFonts {
     // e.g. `font: "..."` or `font: ("...", "...")`
     let mut custom_fonts: Vec<String> = Vec::new();
     let mut idx = 0;
-    while let Some(pos) = typst_markup[idx..].find("font:") {
+    while idx < typst_markup.len() && let Some(pos) = typst_markup[idx..].find("font:") {
         let start = idx + pos + 5;
         let rest = typst_markup[start..].trim_start();
-        idx = start + 5;
+        idx = start;
         if rest.starts_with('(') {
             if let Some(end_paren) = rest.find(')') {
                 let content = &rest[1..end_paren];
@@ -293,27 +292,55 @@ fn load_needed_fonts(typst_markup: &str) -> BotoxFonts {
     };
 
     if !custom_fonts.is_empty() {
-        static SYSTEM_FONTS_DB: std::sync::OnceLock<fontdb::Database> = std::sync::OnceLock::new();
-        let db = SYSTEM_FONTS_DB.get_or_init(|| {
-            let mut db = fontdb::Database::new();
-            db.load_system_fonts();
-            db
-        });
-        for face in db.faces() {
-            let matches_custom = face.families.iter().any(|(fam, _)| {
-                custom_fonts.iter().any(|cf| fam.eq_ignore_ascii_case(cf))
-            }) || custom_fonts
-                .iter()
-                .any(|cf| face.post_script_name.eq_ignore_ascii_case(cf));
+        static LOADED_CUSTOM_FONTS: std::sync::LazyLock<
+            std::sync::RwLock<std::collections::HashMap<String, Vec<typst::text::Font>>>,
+        > = std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
 
-            if matches_custom
-                && let fontdb::Source::File(ref path) = face.source
-                    && let Ok(data) = std::fs::read(path) {
+        let mut missing_fonts = Vec::new();
+        {
+            let cache = LOADED_CUSTOM_FONTS.read().unwrap();
+            for cf in &custom_fonts {
+                if let Some(cached) = cache.get(cf) {
+                    fonts.extend(cached.iter().cloned());
+                } else {
+                    missing_fonts.push(cf.clone());
+                }
+            }
+        }
+
+        if !missing_fonts.is_empty() {
+            static SYSTEM_FONTS_DB: std::sync::OnceLock<fontdb::Database> = std::sync::OnceLock::new();
+            let db = SYSTEM_FONTS_DB.get_or_init(|| {
+                let mut db = fontdb::Database::new();
+                db.load_system_fonts();
+                db
+            });
+
+            let mut newly_loaded: std::collections::HashMap<String, Vec<typst::text::Font>> =
+                std::collections::HashMap::new();
+
+            for face in db.faces() {
+                for cf in &missing_fonts {
+                    let matches_custom = face.families.iter().any(|(fam, _)| fam.eq_ignore_ascii_case(cf))
+                        || face.post_script_name.eq_ignore_ascii_case(cf);
+
+                    if matches_custom
+                        && let fontdb::Source::File(ref path) = face.source
+                        && let Ok(data) = std::fs::read(path)
+                    {
                         let bytes = typst::foundations::Bytes::new(data);
                         if let Some(font) = typst::text::Font::new(bytes, face.index) {
-                            fonts.push(font);
+                            fonts.push(font.clone());
+                            newly_loaded.entry(cf.clone()).or_default().push(font);
                         }
                     }
+                }
+            }
+
+            let mut cache = LOADED_CUSTOM_FONTS.write().unwrap();
+            for (k, v) in newly_loaded {
+                cache.insert(k, v);
+            }
         }
     }
 
@@ -414,17 +441,8 @@ fn format_compilation_error(
                     let md_line_count = md.lines().count();
 
                     let fm_lines = {
-                        let trimmed = md.trim_start();
-                        if let Some(stripped) = trimmed.strip_prefix("---") {
-                            if let Some(end_idx) = stripped.find("---") {
-                                let header = &trimmed[..3 + end_idx + 3];
-                                header.lines().count()
-                            } else {
-                                0
-                            }
-                        } else {
-                            0
-                        }
+                        let (_, body) = crate::markdown::export::extract_frontmatter_raw(md);
+                        md[..md.len() - body.len()].lines().count()
                     };
 
                     let typst_line_opt = range.as_ref().and_then(|r| {
@@ -646,23 +664,21 @@ fn walk_frame_data(
                     r#"<text x="{x:.2}" y="{y:.2}" font-size="{size:.2}pt" textLength="{width:.2}" lengthAdjust="spacingAndGlyphs" fill="transparent" stroke="none" style="cursor: text; user-select: text;">{escaped}</text>"#
                 );
             }
-            typst_library::layout::FrameItem::Tag(tag) => {
-                if let typst_library::introspection::Tag::Start(elem, _) = tag {
-                    if ctx.check_pause && elem.label().is_some_and(|l| l.resolve().as_str() == "botox-step") {
-                        *ctx.is_pause_out = true;
-                    }
-                    if let Some(heading) = elem.to_packed::<typst_library::model::HeadingElem>() {
-                        let text = heading.body.plain_text().to_string();
-                        let trimmed = text.trim();
-                        if !trimmed.is_empty() {
-                            let y = item_ts.ty.to_pt();
-                            let cur_ratio = (y / ctx.page_height).clamp(0.0, 1.0);
-                            ctx.headings_out.push(BotoxHeadingInfo {
-                                page_index: ctx.page_idx,
-                                text: trimmed.to_string(),
-                                y_ratio: cur_ratio,
-                            });
-                        }
+            typst_library::layout::FrameItem::Tag(typst_library::introspection::Tag::Start(elem, _)) => {
+                if ctx.check_pause && elem.label().is_some_and(|l| l.resolve().as_str() == "botox-step") {
+                    *ctx.is_pause_out = true;
+                }
+                if let Some(heading) = elem.to_packed::<typst_library::model::HeadingElem>() {
+                    let text = heading.body.plain_text().to_string();
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        let y = item_ts.ty.to_pt();
+                        let cur_ratio = (y / ctx.page_height).clamp(0.0, 1.0);
+                        ctx.headings_out.push(BotoxHeadingInfo {
+                            page_index: ctx.page_idx,
+                            text: trimmed.to_string(),
+                            y_ratio: cur_ratio,
+                        });
                     }
                 }
             }
@@ -921,47 +937,11 @@ pub fn compile_typst_with_source(
             }
         }
         "html" | "htm" => {
-            let svg_opts = typst_svg::SvgOptions::default();
-            let is_presentation = doc.pages().first().map(|p| {
-                p.frame.width().to_pt() > p.frame.height().to_pt()
-            }).unwrap_or(false);
-
-            let pages_slice = doc.pages();
-            let pages: Vec<String> = if pages_slice.len() <= 1 {
-                pages_slice
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, p)| process_page_vector(p, idx, &svg_opts, is_presentation).0)
-                    .collect()
+            let output_struct = render_doc_to_pages(&doc);
+            let html_content = if output_struct.is_slides {
+                render_slides_html(&output_struct.pages)
             } else {
-                let num_threads = std::thread::available_parallelism()
-                    .map(|n| n.get())
-                    .unwrap_or(4)
-                    .min(pages_slice.len());
-                let chunk_size = pages_slice.len().div_ceil(num_threads);
-                std::thread::scope(|s| {
-                    let mut handles = Vec::new();
-                    for (chunk_idx, chunk) in pages_slice.chunks(chunk_size).enumerate() {
-                        let start_idx = chunk_idx * chunk_size;
-                        let svg_opts_ref = &svg_opts;
-                        handles.push(s.spawn(move || {
-                            chunk
-                                .iter()
-                                .enumerate()
-                                .map(|(rel_idx, page)| {
-                                    process_page_vector(page, start_idx + rel_idx, svg_opts_ref, is_presentation).0
-                                })
-                                .collect::<Vec<_>>()
-                        }));
-                    }
-                    handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
-                })
-            };
-
-            let html_content = if is_presentation {
-                render_slides_html(&pages)
-            } else {
-                render_document_html(&pages)
+                render_document_html(&output_struct.pages)
             };
 
             std::fs::write(output_path, html_content)
@@ -1677,8 +1657,8 @@ Second column body text.
     #[test]
     fn test_spt_guides_math_with_mitex() {
         let paths = [
-            "/home/minus/Downloads/spt/te1_theory_guide.md",
-            "/home/minus/Downloads/spt/te1_exercises_and_exam_solutions.md",
+            "ex-c.md",
+            "examples/document.md",
         ];
 
         let preamble = crate::markdown::math::TYPST_MATH_PREAMBLE;
@@ -1700,8 +1680,8 @@ Second column body text.
             let bytes = content.as_bytes();
             let mut i = 0;
             while i < bytes.len() {
-                if bytes[i] == b'$' && (i + 1 < bytes.len() && bytes[i + 1] != b'$') && (i == 0 || bytes[i - 1] != b'$') {
-                    if let Some(end) = content[i + 1..].find('$') {
+                if bytes[i] == b'$' && (i + 1 < bytes.len() && bytes[i + 1] != b'$') && (i == 0 || bytes[i - 1] != b'$')
+                    && let Some(end) = content[i + 1..].find('$') {
                         let inner = &content[i + 1..i + 1 + end];
                         if !inner.contains('\n') && !inner.trim().is_empty() {
                             math_snippets.push((inner.trim(), false));
@@ -1709,7 +1689,6 @@ Second column body text.
                         i = i + 1 + end + 1;
                         continue;
                     }
-                }
                 i += 1;
             }
 
@@ -1720,7 +1699,7 @@ Second column body text.
                 match mitex::convert_math(snip, None) {
                     Ok(typst_math) => {
                         let full = format!("{}\n\n$ {} $\n", preamble, typst_math);
-                        let tmp = std::env::temp_dir().join("test_spt_snip.pdf");
+                        let tmp = std::env::temp_dir().join(format!("test_spt_snip_{}_{}.pdf", std::process::id(), pass_count + fail_count));
                         match compile_typst(&full, &tmp, None) {
                             Ok(_) => pass_count += 1,
                             Err(e) => {
@@ -1758,9 +1737,9 @@ Second column body text.
         ];
 
         for expr in tricky_latex {
-            let typst_math = mitex::convert_math(expr, None).expect(&format!("mitex parse failed on {}", expr));
+            let typst_math = mitex::convert_math(expr, None).unwrap_or_else(|_| panic!("mitex parse failed on {}", expr));
             let full = format!("{}\n\n$ {} $\n", preamble, typst_math);
-            let tmp = std::env::temp_dir().join("test_tricky_snip.pdf");
+            let tmp = std::env::temp_dir().join(format!("test_tricky_snip_{}_{}.pdf", std::process::id(), expr.len()));
             assert!(compile_typst(&full, &tmp, None).is_ok(), "Typst failed to compile tricky LaTeX expr: {}\n  Mitex: {}", expr, typst_math);
             let _ = std::fs::remove_file(tmp);
         }
@@ -1790,5 +1769,14 @@ More body text.
         assert_eq!(heading_texts[0], "First Main Heading");
         assert_eq!(heading_texts[1], "Second Level Subheading");
         let _ = std::fs::remove_file(tmp_json);
+    }
+
+    #[test]
+    fn test_load_needed_fonts_utf8_and_boundary_safety() {
+        // Must not panic on trailing font: or multi-byte UTF-8 right after font:
+        let _ = load_needed_fonts("font:");
+        let _ = load_needed_fonts("font: 日本語");
+        let _ = load_needed_fonts("test font: \"");
+        let _ = load_needed_fonts("font: (\"CustomFont\", \"Liberation Sans\")");
     }
 }

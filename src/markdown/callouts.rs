@@ -131,4 +131,40 @@ mod tests {
         assert_eq!(kind, "warning");
         assert_eq!(title, "System Down");
     }
+
+    #[test]
+    fn test_parse_github_callout_header() {
+        assert_eq!(
+            parse_github_callout_header("[!NOTE]"),
+            Some(("note".to_string(), "".to_string()))
+        );
+        assert_eq!(
+            parse_github_callout_header("[!NOTE] Additional Details"),
+            Some(("note".to_string(), "Additional Details".to_string()))
+        );
+        assert_eq!(
+            parse_github_callout_header("[!HINT] Helpful hint"),
+            Some(("tip".to_string(), "Helpful hint".to_string()))
+        );
+        assert_eq!(
+            parse_github_callout_header("[!IMPORTANT] Crucial step"),
+            Some(("important".to_string(), "Crucial step".to_string()))
+        );
+        assert_eq!(
+            parse_github_callout_header("[!WARNING]"),
+            Some(("warning".to_string(), "".to_string()))
+        );
+        assert_eq!(
+            parse_github_callout_header("[!DANGER] Critical hazard"),
+            Some(("caution".to_string(), "Critical hazard".to_string()))
+        );
+        assert_eq!(
+            parse_github_callout_header("[!CAUTION]"),
+            Some(("caution".to_string(), "".to_string()))
+        );
+
+        assert_eq!(parse_github_callout_header("Regular blockquote"), None);
+        assert_eq!(parse_github_callout_header("[!UNKNOWN]"), None);
+        assert_eq!(parse_github_callout_header("[!UNCLOSED"), None);
+    }
 }

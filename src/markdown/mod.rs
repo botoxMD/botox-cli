@@ -9,7 +9,7 @@ pub mod tables;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 pub use escapes::escape_typst_text;
-pub use export::{export_to_normal_markdown, MarkdownExportOptions};
+pub use export::{export_to_normal_markdown, MarkdownExportOptions, MarkdownExportResult};
 pub use math::convert_latex_math_to_typst;
 pub use pandoc::{
     parse_heading_attributes, parse_image_attributes, preprocess_pandoc,
@@ -113,10 +113,12 @@ pub fn markdown_to_typst_with_options(
     options.insert(Options::ENABLE_MATH);
     options.insert(Options::ENABLE_DEFINITION_LIST);
 
-    // Pass 1: Parse and collect footnote definitions
+    // Pass 1: Parse and collect footnote definitions and references
     let parser1 = Parser::new_ext(markdown, options);
     let mut footnote_defs: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut current_footnote: Option<(String, String)> = None;
+    let mut references: Vec<(String, String)> = Vec::new();
+    let mut pass1_link: Option<(String, String)> = None;
 
     for event in parser1 {
         match event {
@@ -128,9 +130,56 @@ pub fn markdown_to_typst_with_options(
                     footnote_defs.insert(name, text.trim().to_string());
                 }
             }
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                let is_external = dest_url.starts_with("http://")
+                    || dest_url.starts_with("https://")
+                    || dest_url.starts_with("ftp://");
+
+                let is_excluded = if is_external {
+                    let not_in_include = if let Some(inc) = ref_include {
+                        !inc.iter().any(|pat| url_matches_pattern(&dest_url, pat))
+                    } else {
+                        false
+                    };
+                    let in_exclude = if let Some(exc) = ref_exclude {
+                        exc.iter().any(|pat| url_matches_pattern(&dest_url, pat))
+                    } else {
+                        false
+                    };
+                    not_in_include || in_exclude
+                } else {
+                    true
+                };
+
+                if should_index_citations && is_external && !is_excluded {
+                    pass1_link = Some((dest_url.to_string(), String::new()));
+                } else {
+                    pass1_link = None;
+                }
+            }
+            Event::Start(Tag::Image { .. }) => {
+                if let Some((_, ref mut l_text)) = pass1_link {
+                    l_text.push_str("#image(");
+                }
+            }
+            Event::End(TagEnd::Link) => {
+                if let Some((url, link_text)) = pass1_link.take() {
+                    let trimmed = link_text.trim();
+                    let is_image_only = trimmed.is_empty() || trimmed.contains("#image(");
+                    let already_citation = (trimmed.starts_with('[') && trimmed.ends_with(']'))
+                        || trimmed.parse::<usize>().is_ok();
+
+                    if !is_image_only && !already_citation && !references.iter().any(|(u, _)| u == &url) {
+                        references.push((url, trimmed.to_string()));
+                    }
+                }
+            }
             Event::Text(t) => {
                 if let Some((_, ref mut text)) = current_footnote {
                     text.push_str(&escape_typst_text(&t));
+                }
+                if let Some((_, ref mut l_text)) = pass1_link {
+                    l_text.push_str(&t);
                 }
             }
             Event::Code(c) => {
@@ -138,6 +187,11 @@ pub fn markdown_to_typst_with_options(
                     text.push('`');
                     text.push_str(&c);
                     text.push('`');
+                }
+                if let Some((_, ref mut l_text)) = pass1_link {
+                    l_text.push('`');
+                    l_text.push_str(&c);
+                    l_text.push('`');
                 }
             }
             _ => {}
@@ -155,7 +209,7 @@ pub fn markdown_to_typst_with_options(
     let mut current_cell = String::new();
     let mut in_table = false;
     let mut in_footnote_def = false;
-    let mut references: Vec<(String, String)> = Vec::new();
+    let mut rendered_first_ref = false;
     let mut in_link = false;
     let mut current_link: Option<(String, String)> = None;
     let mut current_image: Option<(String, String)> = None;
@@ -851,12 +905,16 @@ pub fn markdown_to_typst_with_options(
                                             full_p.push_str(m);
                                             full_p.push('$');
                                         }
-                                        Event::SoftBreak => full_p.push(' '),
+                                        Event::SoftBreak | Event::HardBreak => full_p.push(' '),
+                                        Event::Start(Tag::Emphasis) | Event::End(TagEnd::Emphasis) => full_p.push('_'),
+                                        Event::Start(Tag::Strong) | Event::End(TagEnd::Strong) => full_p.push('*'),
+                                        Event::Start(Tag::Strikethrough) | Event::End(TagEnd::Strikethrough) => full_p.push_str("~~"),
                                         Event::End(TagEnd::Paragraph) => {
                                             valid_caption = true;
                                             break;
                                         }
-                                        _ => break,
+                                        Event::Start(_) | Event::End(_) => {}
+                                        _ => {}
                                     }
                                     j += 1;
                                 }
@@ -874,7 +932,7 @@ pub fn markdown_to_typst_with_options(
                             }
                         }
 
-                        let row_count = if cols > 0 { table_cells.len() / cols } else { 0 };
+                        let row_count = table_cells.len().checked_div(cols).unwrap_or(0);
                         if let Some((caption, label)) = pending_table_caption.take() {
                             let escaped_caption = escape_typst_text(&caption);
                             let mut fig = format!("\n#figure(\n  {tbl_str},\n  caption: [{escaped_caption}],\n)");
@@ -928,7 +986,7 @@ pub fn markdown_to_typst_with_options(
                         let mut parts = content.splitn(2, ':');
                         let kind = parts.next().unwrap_or("note");
                         let title = parts.next().unwrap_or("");
-                        let escaped_title = escape_typst_text(title);
+                        let escaped_title = escape_typst_text(title).replace('"', "\\\"");
                         typst.push_str(&format!("\n#botox_callout(\"{kind}\", \"{escaped_title}\")[\n"));
                     }
                 } else if html.contains("<!--botox:callout:end-->") {
@@ -1000,14 +1058,31 @@ pub fn markdown_to_typst_with_options(
                         typst.push_str(&format!("\n#outline(depth: {depth})\n#v(1.5em)\n\n"));
                     }
                 } else if html.contains("<!--botox:ref") {
-                    let custom_title = if html.contains("<!--botox:ref:") {
-                        let rest = html.split("<!--botox:ref:").nth(1).unwrap_or("");
-                        let inner = rest.split("-->").next().unwrap_or("").trim();
-                        inner.to_string()
-                    } else {
-                        String::new()
-                    };
-                    typst.push_str(&format!("\nBOTOX_REF_PLACEHOLDER_START:{custom_title}:BOTOX_REF_PLACEHOLDER_END\n\n"));
+                    if !rendered_first_ref {
+                        let custom_title = if html.contains("<!--botox:ref:") {
+                            let rest = html.split("<!--botox:ref:").nth(1).unwrap_or("");
+                            let inner = rest.split("-->").next().unwrap_or("").trim();
+                            if !inner.is_empty() {
+                                Some(inner)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        let at_start_of_slide = typst.trim_end().ends_with("#pagebreak()");
+                        let ref_rendered = format_references_block(
+                            custom_title,
+                            &references,
+                            at_start_of_slide,
+                            is_slides,
+                            lang,
+                            biblio_title,
+                            true,
+                        );
+                        typst.push_str(&ref_rendered);
+                        rendered_first_ref = true;
+                    }
                 } else if html.trim().starts_with("<!--") && html.trim().ends_with("-->") {
                     // Raw HTML comment: ignore
                 } else {
@@ -1178,38 +1253,6 @@ pub fn markdown_to_typst_with_options(
             }
         }
         i += 1;
-    }
-
-    let mut rendered_first = false;
-    while let Some(start_pos) = typst.find("BOTOX_REF_PLACEHOLDER_START:") {
-        if let Some(end_pos) = typst[start_pos..].find(":BOTOX_REF_PLACEHOLDER_END") {
-            let full_end = start_pos + end_pos + ":BOTOX_REF_PLACEHOLDER_END".len();
-            if !rendered_first {
-                let title_raw = &typst[start_pos + "BOTOX_REF_PLACEHOLDER_START:".len()..start_pos + end_pos];
-                let custom_heading = if !title_raw.trim().is_empty() {
-                    Some(title_raw.trim())
-                } else {
-                    None
-                };
-                let at_start_of_slide = typst[..start_pos].trim_end().ends_with("#pagebreak()");
-                let ref_rendered = format_references_block(
-                    custom_heading,
-                    &references,
-                    at_start_of_slide,
-                    is_slides,
-                    lang,
-                    biblio_title,
-                    true,
-                );
-                typst.replace_range(start_pos..full_end, &ref_rendered);
-                rendered_first = true;
-            } else {
-                // Strip duplicate \ref placeholders so duplicate <bib-n> labels are not emitted
-                typst.replace_range(start_pos..full_end, "");
-            }
-        } else {
-            break;
-        }
     }
 
     if !has_ref_command && bibliography && !references.is_empty() {
@@ -1601,6 +1644,18 @@ Check [link](https://example.com/api?q="quoted") here.
     }
 
     #[test]
+    fn test_trailing_table_caption_with_formatting() {
+        let md = "| Col1 | Col2 |\n|---|---|\n| A | B |\nTable: Comparison of **Model A** and *Model B* {#tbl:models}";
+        let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
+        assert!(typst.contains("#figure("), "Expected #figure wrapper: {typst}");
+        assert!(
+            typst.contains("caption: [Comparison of \\*Model A\\* and \\_Model B\\_]"),
+            "Expected formatted caption: {typst}"
+        );
+        assert!(typst.contains("<tbl-models>"), "Expected <tbl-models> label: {typst}");
+    }
+
+    #[test]
     fn test_mermaid_comma_fence_syntax() {
         let md = "```{mermaid, caption=\"Microservices Event Mesh\", id=\"fig:event-mesh\", width=\"85%\"}\nsequenceDiagram\n    Client->>Server: Request\n```";
         let typst = markdown_to_typst(md, false, false, "en", None, None, None, None, None);
@@ -1632,8 +1687,10 @@ Check [link](https://example.com/api?q="quoted") here.
     #[test]
     fn test_landscape_with_two_columns() {
         let md = "Page 1 in 2 columns\n\n::: landscape\nPage 2 single column wide table\n:::\n\nPage 3 back to 2 columns";
-        let mut opts = MarkdownOptions::default();
-        opts.base_columns = 2;
+        let opts = MarkdownOptions {
+            base_columns: 2,
+            ..Default::default()
+        };
         let typst = markdown_to_typst_with_options(md, &opts);
         assert!(typst.contains("#pagebreak(weak: true)\n#set page(flipped: true, columns: 1)"));
         assert!(typst.contains("#pagebreak(weak: true)\n#set page(flipped: false, columns: 2)"));

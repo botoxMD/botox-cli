@@ -244,9 +244,11 @@ impl BotoxConfig {
         let mut global_candidates = Vec::new();
         if let Some(home) = dirs_home() {
             global_candidates.push(home.join(".config").join("botox").join("config.yaml"));
+            global_candidates.push(home.join(".config").join("botox").join("config.yml"));
         }
         if let Ok(appdata) = std::env::var("APPDATA") {
-            global_candidates.push(PathBuf::from(appdata).join("botox").join("config.yaml"));
+            global_candidates.push(PathBuf::from(&appdata).join("botox").join("config.yaml"));
+            global_candidates.push(PathBuf::from(&appdata).join("botox").join("config.yml"));
         }
         for path in global_candidates {
             if path.is_file()
@@ -259,7 +261,12 @@ impl BotoxConfig {
         }
 
         // 2. Current working directory config (./botox.yaml)
-        let cwd_candidates = [PathBuf::from("botox.yaml")];
+        let cwd_candidates = [
+            PathBuf::from("botox.yaml"),
+            PathBuf::from("botox.yml"),
+            PathBuf::from(".botox.yaml"),
+            PathBuf::from(".botox.yml"),
+        ];
         for path in &cwd_candidates {
             if path.is_file()
                 && let Ok(content) = std::fs::read_to_string(path)
@@ -273,7 +280,12 @@ impl BotoxConfig {
 
         // 3. Document directory config (<doc_dir>/botox.yaml)
         if let Some(dir) = doc_dir {
-            let doc_candidates = [dir.join("botox.yaml")];
+            let doc_candidates = [
+                dir.join("botox.yaml"),
+                dir.join("botox.yml"),
+                dir.join(".botox.yaml"),
+                dir.join(".botox.yml"),
+            ];
             for path in &doc_candidates {
                 if path.is_file() {
                     let canon_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());

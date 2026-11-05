@@ -1,256 +1,19 @@
 pub mod columns;
+pub mod layout;
 pub mod metadata;
 pub mod themes;
 
 use crate::config::{DocumentConfig, MarginConfig};
 use serde_yaml::Value;
 
+#[allow(unused_imports)]
 pub use columns::sanitize_column_pagebreaks;
+pub use layout::DocumentLayout;
 pub use metadata::{
     build_document_metadata, extract_authors, extract_date, extract_title,
 };
 pub use themes::DocumentTheme;
-
-fn render_date_value(d: &str) -> String {
-    let trimmed = d.trim();
-    if trimmed == r"\today" || trimmed.eq_ignore_ascii_case("today") {
-        "#datetime.today().display(\"[day] [month repr:long] [year]\")".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_title_and_abstract(
-    doc_theme: DocumentTheme,
-    title: Option<&str>,
-    subtitle: Option<&str>,
-    authors: &[String],
-    affiliation: Option<&str>,
-    date_str: Option<&str>,
-    abstract_text: Option<&str>,
-    keywords_str: Option<&str>,
-) -> String {
-    if title.is_none() && authors.is_empty() && abstract_text.is_none() {
-        return String::new();
-    }
-
-    let mut b = String::new();
-
-    match doc_theme {
-        DocumentTheme::Modern => {
-            if title.is_some() || !authors.is_empty() {
-                b.push_str("#block(\n  width: 100%,\n  stroke: (left: 4.5pt + rgb(\"#2563eb\")),\n  inset: (left: 14pt, top: 4pt, bottom: 4pt),\n)[\n  #set par(justify: false)\n");
-                if let Some(t) = title {
-                    b.push_str(&format!("  #text(size: 2em, weight: \"bold\", fill: rgb(\"#0f172a\"))[{t}]\n"));
-                }
-                if let Some(sub) = subtitle {
-                    b.push_str(&format!("  #v(0.3em)\n  #text(size: 1.15em, fill: rgb(\"#475569\"))[{sub}]\n"));
-                }
-                if !authors.is_empty() || affiliation.is_some() || date_str.is_some() {
-                    b.push_str("  #v(0.5em)\n");
-                    if !authors.is_empty() {
-                        let joined = authors.join(", ");
-                        b.push_str(&format!("  #text(size: 1.05em, weight: \"bold\", fill: rgb(\"#334155\"))[{joined}]\n"));
-                    }
-                    if let Some(aff) = affiliation
-                        && !aff.is_empty() {
-                            b.push_str(&format!("  #v(0.2em)\n  #text(size: 0.95em, fill: rgb(\"#64748b\"))[{aff}]\n"));
-                        }
-                    if let Some(d) = date_str {
-                        let date_typst = render_date_value(d);
-                        b.push_str(&format!("  #v(0.2em)\n  #text(size: 0.9em, fill: rgb(\"#64748b\"))[{date_typst}]\n"));
-                    }
-                }
-                b.push_str("]\n\n#v(1.4em)\n");
-            }
-            if abstract_text.is_some() || keywords_str.is_some() {
-                b.push_str("#block(\n  fill: rgb(\"#f8fafc\"),\n  stroke: 0.5pt + rgb(\"#e2e8f0\"),\n  inset: (x: 14pt, y: 12pt),\n  radius: 4pt,\n  width: 100%,\n)[\n");
-                b.push_str("  #set par(justify: true, leading: 0.65em)\n");
-                if let Some(abs) = abstract_text {
-                    b.push_str(&format!("  #text(weight: \"bold\", fill: rgb(\"#0f172a\"))[Abstract] -- #text(fill: rgb(\"#334155\"))[{abs}]\n"));
-                }
-                if let Some(kw) = keywords_str {
-                    if abstract_text.is_some() {
-                        b.push_str("  #v(0.5em)\n");
-                    }
-                    b.push_str(&format!("  #text(weight: \"bold\", fill: rgb(\"#0f172a\"))[Keywords] -- #text(fill: rgb(\"#475569\"))[{kw}]\n"));
-                }
-                b.push_str("]\n\n#v(1.4em)\n");
-            }
-        }
-        DocumentTheme::Technical => {
-            if title.is_some() || !authors.is_empty() {
-                b.push_str("#block(\n  width: 100%,\n  stroke: 1pt + rgb(\"#0d9488\"),\n  fill: rgb(\"#f0fdfa\"),\n  inset: (x: 14pt, y: 12pt),\n  radius: 3pt,\n)[\n  #set par(justify: false)\n");
-                b.push_str("  #text(size: 8.5pt, weight: \"bold\", fill: rgb(\"#0f766e\"))[ENGINEERING SPECIFICATION]\n");
-                if let Some(t) = title {
-                    b.push_str(&format!("  #v(0.3em)\n  #text(size: 1.8em, weight: \"bold\", fill: rgb(\"#0f172a\"))[{t}]\n"));
-                }
-                if let Some(sub) = subtitle {
-                    b.push_str(&format!("  #v(0.2em)\n  #text(size: 1.05em, fill: rgb(\"#0f766e\"))[{sub}]\n"));
-                }
-                if !authors.is_empty() || date_str.is_some() || affiliation.is_some() {
-                    b.push_str("  #v(0.4em)\n  #line(length: 100%, stroke: 0.5pt + rgb(\"#ccfbf1\"))\n  #v(0.3em)\n");
-                    let authors_str = if !authors.is_empty() { authors.join(", ") } else { String::new() };
-                    let aff_suffix = if let Some(aff) = affiliation { format!(" ({aff})") } else { String::new() };
-                    let full_author = format!("{authors_str}{aff_suffix}");
-                    let d_str = date_str.map(render_date_value).unwrap_or_default();
-                    b.push_str(&format!("  #grid(columns: (1fr, auto), text(size: 9pt, fill: rgb(\"#334155\"))[{full_author}], text(size: 9pt, fill: rgb(\"#0f766e\"))[{d_str}])\n"));
-                }
-                b.push_str("]\n\n#v(1.4em)\n");
-            }
-            if abstract_text.is_some() || keywords_str.is_some() {
-                b.push_str("#block(\n  stroke: (left: 3pt + rgb(\"#0d9488\")),\n  fill: rgb(\"#f8fafc\"),\n  inset: (x: 12pt, y: 10pt),\n  width: 100%,\n)[\n  #set par(justify: true, leading: 0.6em)\n");
-                if let Some(abs) = abstract_text {
-                    b.push_str(&format!("  #text(weight: \"bold\", fill: rgb(\"#0f766e\"))[Summary] -- #text(fill: rgb(\"#334155\"))[{abs}]\n"));
-                }
-                if let Some(kw) = keywords_str {
-                    if abstract_text.is_some() {
-                        b.push_str("  #v(0.5em)\n");
-                    }
-                    b.push_str(&format!("  #text(weight: \"bold\", fill: rgb(\"#0f766e\"))[Keywords] -- #text(fill: rgb(\"#475569\"))[{kw}]\n"));
-                }
-                b.push_str("]\n\n#v(1.4em)\n");
-            }
-        }
-        DocumentTheme::Elegant => {
-            if title.is_some() || !authors.is_empty() {
-                b.push_str("#align(center)[\n  #set par(justify: false)\n");
-                if let Some(t) = title {
-                    b.push_str(&format!("  #text(size: 2em, weight: \"bold\", fill: rgb(\"#1c1917\"))[{t}]\n"));
-                }
-                if let Some(sub) = subtitle {
-                    b.push_str(&format!("  #v(0.3em)\n  #text(size: 1.15em, style: \"italic\", fill: rgb(\"#44403c\"))[{sub}]\n"));
-                }
-                b.push_str("  #v(0.5em)\n  #line(length: 30%, stroke: 0.6pt + rgb(\"#a8a29e\"))\n  #v(0.5em)\n");
-                if !authors.is_empty() {
-                    let joined = authors.join(", ");
-                    b.push_str(&format!("  #text(size: 1.05em, fill: rgb(\"#292524\"))[{joined}]\n"));
-                }
-                if let Some(aff) = affiliation
-                    && !aff.is_empty() {
-                        b.push_str(&format!("  #v(0.2em)\n  #text(size: 0.95em, style: \"italic\", fill: rgb(\"#78716c\"))[{aff}]\n"));
-                    }
-                if let Some(d) = date_str {
-                    let date_typst = render_date_value(d);
-                    b.push_str(&format!("  #v(0.3em)\n  #text(size: 0.9em, fill: rgb(\"#78716c\"))[{date_typst}]\n"));
-                }
-                b.push_str("]\n\n#v(1.6em)\n");
-            }
-            if abstract_text.is_some() || keywords_str.is_some() {
-                b.push_str("#align(center)[\n  #block(width: 82%)[\n    #set par(justify: true, leading: 0.7em)\n");
-                if let Some(abs) = abstract_text {
-                    b.push_str(&format!("    #text(weight: \"bold\", fill: rgb(\"#1c1917\"))[Abstract] -- #text(style: \"italic\", fill: rgb(\"#44403c\"))[{abs}]\n"));
-                }
-                if let Some(kw) = keywords_str {
-                    if abstract_text.is_some() {
-                        b.push_str("    #v(0.5em)\n");
-                    }
-                    b.push_str(&format!("    #text(weight: \"bold\", fill: rgb(\"#1c1917\"))[Keywords] -- #text(style: \"italic\", fill: rgb(\"#78716c\"))[{kw}]\n"));
-                }
-                b.push_str("  ]\n]\n\n#v(1.6em)\n");
-            }
-        }
-        DocumentTheme::Minimal => {
-            if title.is_some() || !authors.is_empty() {
-                b.push_str("#block(width: 100%)[\n  #set par(justify: false)\n");
-                if let Some(t) = title {
-                    b.push_str(&format!("  #text(size: 2.2em, weight: \"bold\", fill: rgb(\"#18181b\"))[{t}]\n"));
-                }
-                if let Some(sub) = subtitle {
-                    b.push_str(&format!("  #v(0.3em)\n  #text(size: 1.15em, fill: rgb(\"#71717a\"))[{sub}]\n"));
-                }
-                b.push_str("  #v(0.8em)\n");
-                if !authors.is_empty() {
-                    let joined = authors.join(", ");
-                    b.push_str(&format!("  #text(size: 1.0em, fill: rgb(\"#3f3f46\"))[{joined}]\n"));
-                }
-                if let Some(aff) = affiliation
-                    && !aff.is_empty() {
-                        b.push_str(&format!("  #v(0.15em)\n  #text(size: 0.9em, fill: rgb(\"#71717a\"))[{aff}]\n"));
-                    }
-                if let Some(d) = date_str {
-                    let date_typst = render_date_value(d);
-                    b.push_str(&format!("  #v(0.2em)\n  #text(size: 0.85em, fill: rgb(\"#71717a\"))[{date_typst}]\n"));
-                }
-                b.push_str("]\n\n#v(2.0em)\n");
-            }
-            if abstract_text.is_some() || keywords_str.is_some() {
-                b.push_str("#block(width: 100%)[\n  #set par(justify: true, leading: 0.7em)\n");
-                if let Some(abs) = abstract_text {
-                    b.push_str(&format!("  #text(fill: rgb(\"#52525b\"))[{abs}]\n"));
-                }
-                if let Some(kw) = keywords_str {
-                    if abstract_text.is_some() {
-                        b.push_str("  #v(0.4em)\n");
-                    }
-                    b.push_str(&format!("  #text(size: 0.9em, fill: rgb(\"#71717a\"))[{kw}]\n"));
-                }
-                b.push_str("]\n\n#v(1.8em)\n");
-            }
-        }
-        DocumentTheme::Academic | DocumentTheme::Compact => {
-            if title.is_some() || !authors.is_empty() {
-                b.push_str("#align(center)[\n  #set par(justify: false)\n");
-                let title_size = if doc_theme == DocumentTheme::Compact { "1.6em" } else { "1.8em" };
-                if let Some(t) = title {
-                    b.push_str(&format!("  #text(size: {title_size}, weight: \"bold\")[{t}]\n\n"));
-                }
-                if let Some(sub) = subtitle {
-                    b.push_str(&format!("  #v(0.3em)\n  #text(size: 1.15em, style: \"italic\", fill: rgb(\"#334155\"))[{sub}]\n\n"));
-                }
-                b.push_str("  #v(0.6em)\n");
-                if !authors.is_empty() {
-                    let joined = authors.join(", ");
-                    b.push_str(&format!("  #text(size: 1.1em)[{joined}]\n"));
-                }
-                if let Some(aff) = affiliation
-                    && !aff.is_empty() {
-                        b.push_str(&format!("  #v(0.2em)\n  #text(size: 0.95em, style: \"italic\")[{aff}]\n"));
-                    }
-                if let Some(d) = date_str {
-                    let date_typst = render_date_value(d);
-                    b.push_str(&format!("  #v(0.4em)\n  #text(size: 0.9em, fill: rgb(\"#475569\"))[{date_typst}]\n"));
-                }
-                b.push_str("]\n\n#v(1.2em)\n");
-            }
-            if abstract_text.is_some() || keywords_str.is_some() {
-                let abs_width = if doc_theme == DocumentTheme::Compact { "92%" } else { "88%" };
-                b.push_str(&format!("#align(center)[\n  #block(width: {abs_width})[\n    #set par(justify: true, leading: 0.6em)\n"));
-                if let Some(abs) = abstract_text {
-                    b.push_str(&format!("    #text(weight: \"bold\")[Abstract] -- #text(style: \"italic\")[{abs}]\n"));
-                }
-                if let Some(kw) = keywords_str {
-                    if abstract_text.is_some() {
-                        b.push_str("    #v(0.6em)\n");
-                    }
-                    b.push_str(&format!("    #text(weight: \"bold\")[Keywords] -- #text(style: \"italic\")[{kw}]\n"));
-                }
-                b.push_str("  ]\n]\n\n#v(1.4em)\n");
-            }
-        }
-    }
-
-    b
-}
-
-fn format_font_stack(font_raw: &str) -> String {
-    if font_raw.eq_ignore_ascii_case("Times New Roman") || font_raw.eq_ignore_ascii_case("Times") {
-        "(\"Times New Roman\", \"Nimbus Roman\", \"Liberation Serif\", \"New Computer Modern\")".to_string()
-    } else if font_raw.eq_ignore_ascii_case("New Computer Modern") {
-        "(\"New Computer Modern\",)".to_string()
-    } else if font_raw.eq_ignore_ascii_case("Liberation Sans")
-        || font_raw.eq_ignore_ascii_case("Helvetica")
-        || font_raw.eq_ignore_ascii_case("Arial")
-        || font_raw.eq_ignore_ascii_case("Sans")
-    {
-        "(\"Liberation Sans\", \"Adwaita Sans\", \"DejaVu Sans\", \"Helvetica Neue\", \"Arial\", \"New Computer Modern\")".to_string()
-    } else if font_raw.eq_ignore_ascii_case("Linux Libertine") || font_raw.eq_ignore_ascii_case("Libertinus Serif") {
-        "(\"Linux Libertine\", \"Libertinus Serif\", \"Nimbus Roman\", \"Times New Roman\", \"New Computer Modern\")".to_string()
-    } else {
-        format!("(\"{font_raw}\", \"New Computer Modern\")")
-    }
-}
+pub use crate::emitter::{format_font_stack, DocumentEmitter, BOTOX_BODY_START};
 
 fn parse_margins(fm: &Value, config: &DocumentConfig, default_x: &str, default_y: &str, theme_explicit: bool) -> (String, String) {
     if let Some(fm_m) = fm.get("margin") {
@@ -309,27 +72,37 @@ fn parse_margins(fm: &Value, config: &DocumentConfig, default_x: &str, default_y
     (default_x.to_string(), default_y.to_string())
 }
 
-pub fn wrap_document(
-    body_typst: &str,
-    fm: &Value,
-    config: &DocumentConfig,
-    cli_toc: Option<bool>,
-    cli_author: Option<&str>,
-    cli_font: Option<&str>,
-    cli_theme: Option<&str>,
-) -> String {
-    let mut out = String::new();
+/// Layout emitter adapter for standard documents and academic papers.
+pub struct ArticleEmitter<'a> {
+    pub fm: &'a Value,
+    pub config: &'a DocumentConfig,
+    pub cli_toc: Option<bool>,
+    pub cli_author: Option<&'a str>,
+    pub cli_font: Option<&'a str>,
+    pub cli_theme: Option<&'a str>,
+}
 
-    let theme_explicit = cli_theme.is_some() || fm.get("theme").is_some();
-    let theme_raw = cli_theme
-        .or_else(|| fm.get("theme").and_then(|v| v.as_str()))
-        .or(config.theme.as_deref())
-        .unwrap_or("academic");
-    let doc_theme = DocumentTheme::parse(theme_raw);
+impl<'a> DocumentEmitter for ArticleEmitter<'a> {
+    fn emit(&self, body_typst: &str) -> String {
+        let fm = self.fm;
+        let config = self.config;
+        let cli_toc = self.cli_toc;
+        let cli_author = self.cli_author;
+        let cli_font = self.cli_font;
+        let cli_theme = self.cli_theme;
 
-    let title = extract_title(fm);
-    let authors = extract_authors(fm, config.author.as_deref(), cli_author);
-    let date_str = extract_date(fm);
+        let mut out = String::new();
+
+        let theme_explicit = cli_theme.is_some() || fm.get("theme").is_some();
+        let theme_raw = cli_theme
+            .or_else(|| fm.get("theme").and_then(|v| v.as_str()))
+            .or(config.theme.as_deref())
+            .unwrap_or("academic");
+        let doc_theme = DocumentTheme::parse(theme_raw);
+
+        let title = extract_title(fm);
+        let authors = extract_authors(fm, config.author.as_deref(), cli_author);
+        let date_str = extract_date(fm);
 
     // 0. PDF Document Metadata
     if let Some(doc_meta) = build_document_metadata(title.as_deref(), &authors, date_str.as_deref()) {
@@ -460,135 +233,7 @@ pub fn wrap_document(
     out.push_str("#set math.equation(numbering: \"(1)\")\n\n");
 
     // Pandoc callouts prelude styled by theme
-    match doc_theme {
-        DocumentTheme::Modern => {
-            out.push_str("#let botox_callout(kind, title, body) = {\n");
-            out.push_str("  let (stroke_color, fill_color, default_title) = if kind == \"warning\" {\n");
-            out.push_str("    (rgb(\"#d97706\"), rgb(\"#fffbeb\"), \"Warning\")\n");
-            out.push_str("  } else if kind == \"tip\" {\n");
-            out.push_str("    (rgb(\"#16a34a\"), rgb(\"#f0fdf4\"), \"Tip\")\n");
-            out.push_str("  } else if kind == \"important\" or kind == \"caution\" or kind == \"danger\" {\n");
-            out.push_str("    (rgb(\"#dc2626\"), rgb(\"#fef2f2\"), \"Important\")\n");
-            out.push_str("  } else {\n");
-            out.push_str("    (rgb(\"#2563eb\"), rgb(\"#eff6ff\"), \"Note\")\n");
-            out.push_str("  };\n");
-            out.push_str("  let display_title = if title != \"\" { title } else { default_title };\n");
-            out.push_str("  block(\n");
-            out.push_str("    fill: fill_color,\n");
-            out.push_str("    stroke: (left: 4pt + stroke_color),\n");
-            out.push_str("    inset: (x: 12pt, y: 10pt),\n");
-            out.push_str("    radius: 4pt,\n");
-            out.push_str("    width: 100%,\n");
-            out.push_str("    above: 1.2em,\n");
-            out.push_str("    below: 1.2em,\n");
-            out.push_str("  )[\n");
-            out.push_str("    #text(weight: \"bold\", fill: stroke_color)[#display_title]\\\n");
-            out.push_str("    #v(0.3em)\n");
-            out.push_str("    #body\n");
-            out.push_str("  ]\n");
-            out.push_str("}\n\n");
-        }
-        DocumentTheme::Technical => {
-            out.push_str("#let botox_callout(kind, title, body) = {\n");
-            out.push_str("  let (stroke_color, fill_color, default_title) = if kind == \"warning\" {\n");
-            out.push_str("    (rgb(\"#d97706\"), rgb(\"#fffbeb\"), \"Warning\")\n");
-            out.push_str("  } else if kind == \"tip\" {\n");
-            out.push_str("    (rgb(\"#0d9488\"), rgb(\"#f0fdfa\"), \"Tip\")\n");
-            out.push_str("  } else if kind == \"important\" or kind == \"caution\" or kind == \"danger\" {\n");
-            out.push_str("    (rgb(\"#e11d48\"), rgb(\"#fff1f2\"), \"Important\")\n");
-            out.push_str("  } else {\n");
-            out.push_str("    (rgb(\"#0284c7\"), rgb(\"#f0f9ff\"), \"Note\")\n");
-            out.push_str("  };\n");
-            out.push_str("  let display_title = if title != \"\" { title } else { default_title };\n");
-            out.push_str("  block(\n");
-            out.push_str("    fill: fill_color,\n");
-            out.push_str("    stroke: 1pt + stroke_color,\n");
-            out.push_str("    inset: (x: 12pt, y: 10pt),\n");
-            out.push_str("    radius: 2pt,\n");
-            out.push_str("    width: 100%,\n");
-            out.push_str("    above: 1.2em,\n");
-            out.push_str("    below: 1.2em,\n");
-            out.push_str("  )[\n");
-            out.push_str("    #text(weight: \"bold\", fill: stroke_color)[#display_title]\\\n");
-            out.push_str("    #v(0.3em)\n");
-            out.push_str("    #body\n");
-            out.push_str("  ]\n");
-            out.push_str("}\n\n");
-        }
-        DocumentTheme::Minimal => {
-            out.push_str("#let botox_callout(kind, title, body) = {\n");
-            out.push_str("  let stroke_color = rgb(\"#71717a\");\n");
-            out.push_str("  let default_title = if kind == \"warning\" { \"Warning\" } else if kind == \"tip\" { \"Tip\" } else if kind == \"important\" { \"Important\" } else { \"Note\" };\n");
-            out.push_str("  let display_title = if title != \"\" { title } else { default_title };\n");
-            out.push_str("  block(\n");
-            out.push_str("    stroke: (left: 2pt + stroke_color),\n");
-            out.push_str("    inset: (left: 10pt, y: 4pt),\n");
-            out.push_str("    width: 100%,\n");
-            out.push_str("    above: 1.2em,\n");
-            out.push_str("    below: 1.2em,\n");
-            out.push_str("  )[\n");
-            out.push_str("    #text(weight: \"bold\", fill: stroke_color)[#display_title]\\\n");
-            out.push_str("    #v(0.2em)\n");
-            out.push_str("    #body\n");
-            out.push_str("  ]\n");
-            out.push_str("}\n\n");
-        }
-        DocumentTheme::Elegant => {
-            out.push_str("#let botox_callout(kind, title, body) = {\n");
-            out.push_str("  let (stroke_color, fill_color, default_title) = if kind == \"warning\" {\n");
-            out.push_str("    (rgb(\"#b45309\"), rgb(\"#fffbeb\"), \"Warning\")\n");
-            out.push_str("  } else if kind == \"tip\" {\n");
-            out.push_str("    (rgb(\"#15803d\"), rgb(\"#f0fdf4\"), \"Tip\")\n");
-            out.push_str("  } else if kind == \"important\" or kind == \"caution\" or kind == \"danger\" {\n");
-            out.push_str("    (rgb(\"#b91c1c\"), rgb(\"#fef2f2\"), \"Important\")\n");
-            out.push_str("  } else {\n");
-            out.push_str("    (rgb(\"#0369a1\"), rgb(\"#f0f9ff\"), \"Note\")\n");
-            out.push_str("  };\n");
-            out.push_str("  let display_title = if title != \"\" { title } else { default_title };\n");
-            out.push_str("  block(\n");
-            out.push_str("    fill: fill_color,\n");
-            out.push_str("    stroke: (left: 3.5pt + stroke_color),\n");
-            out.push_str("    inset: (x: 12pt, y: 10pt),\n");
-            out.push_str("    radius: (right: 3pt),\n");
-            out.push_str("    width: 100%,\n");
-            out.push_str("    above: 1.2em,\n");
-            out.push_str("    below: 1.2em,\n");
-            out.push_str("  )[\n");
-            out.push_str("    #text(weight: \"bold\", fill: stroke_color)[#display_title]\\\n");
-            out.push_str("    #v(0.3em)\n");
-            out.push_str("    #body\n");
-            out.push_str("  ]\n");
-            out.push_str("}\n\n");
-        }
-        _ => {
-            // Academic & Compact
-            out.push_str("#let botox_callout(kind, title, body) = {\n");
-            out.push_str("  let (stroke_color, fill_color, default_title) = if kind == \"warning\" {\n");
-            out.push_str("    (rgb(\"#d97706\"), rgb(\"#fffbeb\"), \"Warning\")\n");
-            out.push_str("  } else if kind == \"tip\" {\n");
-            out.push_str("    (rgb(\"#16a34a\"), rgb(\"#f0fdf4\"), \"Tip\")\n");
-            out.push_str("  } else if kind == \"important\" or kind == \"caution\" or kind == \"danger\" {\n");
-            out.push_str("    (rgb(\"#dc2626\"), rgb(\"#fef2f2\"), \"Important\")\n");
-            out.push_str("  } else {\n");
-            out.push_str("    (rgb(\"#0284c7\"), rgb(\"#f1f5f9\"), \"Note\")\n");
-            out.push_str("  };\n");
-            out.push_str("  let display_title = if title != \"\" { title } else { default_title };\n");
-            out.push_str("  block(\n");
-            out.push_str("    fill: fill_color,\n");
-            out.push_str("    stroke: (left: 3.5pt + stroke_color),\n");
-            out.push_str("    inset: (x: 12pt, y: 10pt),\n");
-            out.push_str("    radius: (right: 4pt),\n");
-            out.push_str("    width: 100%,\n");
-            out.push_str("    above: 1.2em,\n");
-            out.push_str("    below: 1.2em,\n");
-            out.push_str("  )[\n");
-            out.push_str("    #text(weight: \"bold\", fill: stroke_color)[#display_title]\\\n");
-            out.push_str("    #v(0.3em)\n");
-            out.push_str("    #body\n");
-            out.push_str("  ]\n");
-            out.push_str("}\n\n");
-        }
-    }
+    out.push_str(&doc_theme.callout_preamble());
 
     // Link color
     let linkcolor = fm.get("linkcolor")
@@ -831,8 +476,20 @@ pub fn wrap_document(
         }
     });
 
-    let rendered_header = render_title_and_abstract(
-        doc_theme,
+    let gutter = fm.get("column-gutter")
+        .or_else(|| fm.get("column_gutter"))
+        .and_then(|v| {
+            if let Some(s) = v.as_str() {
+                Some(s.to_string())
+            } else if let Some(n) = v.as_i64() {
+                Some(format!("{n}pt"))
+            } else { v.as_f64().map(|n| format!("{n}pt")) }
+        })
+        .unwrap_or_else(|| "14pt".to_string());
+
+    let layout = DocumentLayout::new(doc_theme, columns, gutter);
+
+    let rendered_header = layout.render_header(
         title.as_deref(),
         subtitle,
         &authors,
@@ -841,25 +498,10 @@ pub fn wrap_document(
         abstract_text,
         keywords_str.as_deref(),
     );
-    let rendered_header = if columns > 1 && !rendered_header.trim().is_empty() {
-        format!("#place(top, float: true, scope: \"parent\")[\n{rendered_header}]\n\n")
-    } else {
-        rendered_header
-    };
     out.push_str(&rendered_header);
 
     if columns > 1 {
-        let gutter = fm.get("column-gutter")
-            .or_else(|| fm.get("column_gutter"))
-            .and_then(|v| {
-                if let Some(s) = v.as_str() {
-                    Some(s.to_string())
-                } else if let Some(n) = v.as_i64() {
-                    Some(format!("{n}pt"))
-                } else { v.as_f64().map(|n| format!("{n}pt")) }
-            })
-            .unwrap_or_else(|| "14pt".to_string());
-        out.push_str(&format!("#set columns(gutter: {gutter})\n\n"));
+        out.push_str(&format!("#set columns(gutter: {})\n\n", layout.column_gutter));
     }
 
     // 4. Table of Contents
@@ -915,14 +557,35 @@ pub fn wrap_document(
 
     // 5. Math bridge preambles and body
     out.push_str(crate::markdown::math::TYPST_MATH_PREAMBLE);
-    out.push_str("\n");
+    out.push('\n');
 
-    let clean_body = body_typst.replace("#botox_pause()", "");
-    let processed_body = sanitize_column_pagebreaks(&clean_body, columns);
-    out.push_str("// BOTOX_BODY_START\n");
+    let processed_body = layout.prepare_body(body_typst);
+    out.push_str(BOTOX_BODY_START);
     out.push_str(&processed_body);
 
     out
+    }
+}
+
+#[allow(dead_code)]
+pub fn wrap_document(
+    body_typst: &str,
+    fm: &Value,
+    config: &DocumentConfig,
+    cli_toc: Option<bool>,
+    cli_author: Option<&str>,
+    cli_font: Option<&str>,
+    cli_theme: Option<&str>,
+) -> String {
+    let emitter = ArticleEmitter {
+        fm,
+        config,
+        cli_toc,
+        cli_author,
+        cli_font,
+        cli_theme,
+    };
+    emitter.emit(body_typst)
 }
 
 #[cfg(test)]
@@ -1099,5 +762,15 @@ title: "Config Fallback"
         let doc_single = wrap_document("= Sec 1\n#colbreak()\n= Sec 2", &fm_single, &default_cfg, None, None, None, None);
         assert!(!doc_single.contains("#colbreak()"));
         assert!(doc_single.contains("#pagebreak()"));
+    }
+
+    #[test]
+    fn test_render_title_and_abstract_escaping() {
+        let default_cfg = DocumentConfig::defaults();
+        let fm: Value = serde_yaml::from_str("theme: modern\ntitle: \"C# Programming [Vol 1]\"\nabstract: \"Testing # [brackets] and $math$\"").unwrap();
+        let doc = wrap_document("Body", &fm, &default_cfg, None, None, None, None);
+        assert!(doc.contains(r"C\#"));
+        assert!(doc.contains(r"\[Vol 1\]"));
+        assert!(doc.contains(r"\[brackets\]"));
     }
 }

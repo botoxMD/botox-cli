@@ -41,3 +41,47 @@ slides:
 "#
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_config_yaml_variations() {
+        // With affiliation
+        let yaml_with_aff = generate_config_yaml(
+            "Ada Lovelace",
+            Some("Babbage Lab"),
+            "modern",
+            "nord",
+            "a4",
+            true,
+            false,
+        );
+        assert!(yaml_with_aff.contains("author: \"Ada Lovelace\""));
+        assert!(yaml_with_aff.contains("affiliation: \"Babbage Lab\""));
+        assert!(yaml_with_aff.contains("theme: \"modern\""));
+        assert!(yaml_with_aff.contains("theme: \"nord\""));
+        assert!(yaml_with_aff.contains("toc: true"));
+        assert!(yaml_with_aff.contains("bibliography: false"));
+
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml_with_aff).unwrap();
+        assert_eq!(parsed["document"]["author"].as_str(), Some("Ada Lovelace"));
+        assert_eq!(parsed["document"]["affiliation"].as_str(), Some("Babbage Lab"));
+
+        // Without affiliation
+        let yaml_no_aff = generate_config_yaml(
+            "Alan Turing",
+            None,
+            "academic",
+            "dark",
+            "us-letter",
+            false,
+            true,
+        );
+        assert!(yaml_no_aff.contains("author: \"Alan Turing\""));
+        assert!(!yaml_no_aff.contains("affiliation:"));
+        let parsed_no_aff: serde_yaml::Value = serde_yaml::from_str(&yaml_no_aff).unwrap();
+        assert_eq!(parsed_no_aff["document"]["papersize"].as_str(), Some("us-letter"));
+    }
+}

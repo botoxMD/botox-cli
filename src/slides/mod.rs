@@ -1,83 +1,96 @@
+pub mod layout;
 pub mod pauses;
 pub mod themes;
 
 use crate::config::SlidesConfig;
+pub use layout::SlideDeckLayout;
+#[allow(unused_imports)]
 pub use pauses::{process_slide_pauses, split_outside_code_fences};
 use serde_yaml::Value;
 pub use themes::get_slide_theme_style;
+pub use crate::emitter::{format_font_stack, DocumentEmitter, BOTOX_BODY_START};
 
-pub fn wrap_slides(
-    slides_typst: &str,
-    fm: &Value,
-    config: &SlidesConfig,
-    cli_author: Option<&str>,
-    cli_theme: Option<&str>,
-) -> String {
-    let mut out = String::new();
+/// Layout emitter adapter for interactive presentation slides.
+pub struct SlideEmitter<'a> {
+    pub fm: &'a Value,
+    pub config: &'a SlidesConfig,
+    pub cli_author: Option<&'a str>,
+    pub cli_theme: Option<&'a str>,
+}
 
-    // 0. PDF Document Metadata
-    let title = crate::document::extract_title(fm).or_else(|| {
-        let first_slide = slides_typst.split("#pagebreak()").next()?;
-        for line in first_slide.lines() {
-            let trimmed = line.trim();
-            if let Some(h) = trimmed.strip_prefix("= ") {
-                return Some(h.trim().to_string());
+impl<'a> DocumentEmitter for SlideEmitter<'a> {
+    fn emit(&self, slides_typst: &str) -> String {
+        let fm = self.fm;
+        let config = self.config;
+        let cli_author = self.cli_author;
+        let cli_theme = self.cli_theme;
+
+        let mut out = String::new();
+
+        // 0. PDF Document Metadata
+        let title = crate::document::extract_title(fm).or_else(|| {
+            let first_slide = slides_typst.split("#pagebreak()").next()?;
+            for line in first_slide.lines() {
+                let trimmed = line.trim();
+                if let Some(h) = trimmed.strip_prefix("= ") {
+                    return Some(h.trim().to_string());
+                }
             }
+            None
+        });
+        let authors = crate::document::extract_authors(fm, config.author.as_deref(), cli_author);
+        let date_str = crate::document::extract_date(fm);
+
+        if let Some(doc_meta) = crate::document::build_document_metadata(title.as_deref(), &authors, date_str.as_deref()) {
+            out.push_str(&doc_meta);
         }
-        None
-    });
-    let authors = crate::document::extract_authors(fm, config.author.as_deref(), cli_author);
-    let date_str = crate::document::extract_date(fm);
 
-    if let Some(doc_meta) = crate::document::build_document_metadata(title.as_deref(), &authors, date_str.as_deref()) {
-        out.push_str(&doc_meta);
-    }
+        let theme = cli_theme
+            .or_else(|| fm.get("theme").and_then(|v| v.as_str()))
+            .or(config.theme.as_deref())
+            .unwrap_or("default");
 
-    let theme = cli_theme
-        .or_else(|| fm.get("theme").and_then(|v| v.as_str()))
-        .or(config.theme.as_deref())
-        .unwrap_or("default");
+        let theme_style = get_slide_theme_style(theme);
 
-    let theme_style = get_slide_theme_style(theme);
+        let bg_color = fm.get("backgroundColor")
+            .or_else(|| fm.get("background_color"))
+            .or_else(|| fm.get("background-color"))
+            .and_then(|v| v.as_str())
+            .or(config.background_color.as_deref())
+            .unwrap_or(theme_style.bg_color);
 
-    let bg_color = fm.get("backgroundColor")
-        .or_else(|| fm.get("background_color"))
-        .or_else(|| fm.get("background-color"))
-        .and_then(|v| v.as_str())
-        .or(config.background_color.as_deref())
-        .unwrap_or(theme_style.bg_color);
+        let text_color = fm.get("color")
+            .and_then(|v| v.as_str())
+            .or(config.color.as_deref())
+            .unwrap_or(theme_style.text_color);
 
-    let text_color = fm.get("color")
-        .and_then(|v| v.as_str())
-        .or(config.color.as_deref())
-        .unwrap_or(theme_style.text_color);
+        let font = fm.get("font")
+            .and_then(|v| v.as_str())
+            .or(config.font.as_deref())
+            .unwrap_or("New Computer Modern");
 
-    let font = fm.get("font")
-        .and_then(|v| v.as_str())
-        .or(config.font.as_deref())
-        .unwrap_or("New Computer Modern");
+        let paginate = fm.get("paginate")
+            .and_then(|v| v.as_bool())
+            .or(config.paginate)
+            .unwrap_or(true);
 
-    let paginate = fm.get("paginate")
-        .and_then(|v| v.as_bool())
-        .or(config.paginate)
-        .unwrap_or(true);
+        let heading_color = theme_style.heading_color;
+        let muted_color = theme_style.muted_color;
 
-    let heading_color = theme_style.heading_color;
-    let muted_color = theme_style.muted_color;
+        let footer_code = if paginate {
+            "  footer: context {\n    let p = counter(\"slide\").get().first()\n    if p > 1 {\n      align(right, text(size: 12pt, fill: rgb(\"#64748b\"))[#p])\n    }\n  },\n"
+        } else {
+            ""
+        };
 
-    let footer_code = if paginate {
-        "  footer: context {\n    let p = counter(\"slide\").get().first()\n    if p > 1 {\n      align(right, text(size: 12pt, fill: rgb(\"#64748b\"))[#p])\n    }\n  },\n"
-    } else {
-        ""
-    };
+        out.push_str(&format!(
+            "#set page(\n  paper: \"presentation-16-9\",\n  margin: (x: 2.4cm, top: 2.2cm, bottom: 2cm),\n  fill: rgb(\"{bg_color}\"),\n{footer_code})\n"
+        ));
 
-    out.push_str(&format!(
-        "#set page(\n  paper: \"presentation-16-9\",\n  margin: (x: 2.4cm, top: 2.2cm, bottom: 2cm),\n  fill: rgb(\"{bg_color}\"),\n{footer_code})\n"
-    ));
-
-    out.push_str(&format!(
-        "#set text(\n  font: (\"{font}\", \"New Computer Modern\"),\n  size: 20pt,\n  fill: rgb(\"{text_color}\"),\n)\n"
-    ));
+        let font_family = format_font_stack(font);
+        out.push_str(&format!(
+            "#set text(\n  font: {font_family},\n  size: 20pt,\n  fill: rgb(\"{text_color}\"),\n)\n"
+        ));
 
     out.push_str("#set par(justify: false, leading: 0.75em)\n");
     out.push_str("#set list(spacing: 1.1em, marker: [•])\n");
@@ -145,44 +158,31 @@ pub fn wrap_slides(
     out.push_str("#botox_slide_counter.step()\n\n");
     out.push_str("#let botox_pause() = {}\n\n");
     out.push_str(crate::markdown::math::TYPST_MATH_PREAMBLE);
-    out.push_str("\n");
-    out.push_str("// BOTOX_BODY_START\n");
+    out.push('\n');
+    out.push_str(BOTOX_BODY_START);
 
-    let raw_slides = split_outside_code_fences(slides_typst, "#pagebreak()");
-    let mut first_emitted = false;
-
-    for (i, slide) in raw_slides.iter().enumerate() {
-        let trimmed = slide.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let is_first_logical_slide = !first_emitted;
-        first_emitted = true;
-
-        if !is_first_logical_slide {
-            out.push_str("\n#pagebreak()\n#botox_slide_counter.step()\n\n");
-        }
-
-        if i == 0 && is_title_slide(trimmed) && !trimmed.contains("#botox_pause()") {
-            out.push_str(&format!(
-                "#place(center + horizon)[\n  #align(center)[\n    #show heading.where(level: 1): it => block(below: 0.6em)[#text(size: 2.1em, weight: \"bold\", fill: rgb(\"{heading_color}\"))[#it.body]]\n    #show heading.where(level: 3): it => block(below: 0.4em)[#text(size: 1.15em, style: \"italic\", fill: rgb(\"{muted_color}\"))[#it.body]]\n    {trimmed}\n  ]\n]\n"
-            ));
-        } else if trimmed.contains("#botox_pause()") {
-            process_slide_pauses(trimmed, &mut out);
-        } else {
-            out.push_str(trimmed);
-            out.push('\n');
-        }
-    }
+    let layout = SlideDeckLayout::new(heading_color, muted_color);
+    out.push_str(&layout.layout_slides(slides_typst));
 
     out
+    }
 }
 
-fn is_title_slide(slide_text: &str) -> bool {
-    let has_h1 = slide_text.lines().any(|l| l.starts_with("= "));
-    let has_h2 = slide_text.lines().any(|l| l.starts_with("== "));
-    has_h1 && !has_h2
+#[allow(dead_code)]
+pub fn wrap_slides(
+    slides_typst: &str,
+    fm: &Value,
+    config: &SlidesConfig,
+    cli_author: Option<&str>,
+    cli_theme: Option<&str>,
+) -> String {
+    let emitter = SlideEmitter {
+        fm,
+        config,
+        cli_author,
+        cli_theme,
+    };
+    emitter.emit(slides_typst)
 }
 
 #[cfg(test)]

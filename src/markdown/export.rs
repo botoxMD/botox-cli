@@ -64,6 +64,7 @@ pub struct MarkdownExportOptions<'a> {
     pub ref_include: Option<&'a [String]>,
     pub generate_toc: bool,
     pub number_sections: bool,
+    pub no_frontmatter: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -104,23 +105,93 @@ fn slugify(s: &str) -> String {
 }
 
 fn format_today_date(lang: &str) -> String {
+    use chrono::Datelike;
     let now = chrono::Local::now();
+    let day = now.day();
+    let month = now.month();
+    let year = now.year();
+
     match lang {
-        "fr" => now.format("%d %B %Y").to_string(),
-        "de" => now.format("%d. %B %Y").to_string(),
-        "es" => now.format("%d de %B de %Y").to_string(),
-        "it" => now.format("%d %B %Y").to_string(),
-        _ => now.format("%B %-d, %Y").to_string(),
+        "fr" => {
+            const MONTHS_FR: [&str; 12] = [
+                "janvier", "février", "mars", "avril", "mai", "juin",
+                "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+            ];
+            let m_name = MONTHS_FR.get(month.saturating_sub(1) as usize).unwrap_or(&"");
+            format!("{day} {m_name} {year}")
+        }
+        "de" => {
+            const MONTHS_DE: [&str; 12] = [
+                "Januar", "Februar", "März", "April", "Mai", "Juni",
+                "Juli", "August", "September", "Oktober", "November", "Dezember",
+            ];
+            let m_name = MONTHS_DE.get(month.saturating_sub(1) as usize).unwrap_or(&"");
+            format!("{day}. {m_name} {year}")
+        }
+        "es" => {
+            const MONTHS_ES: [&str; 12] = [
+                "enero", "febrero", "marzo", "abril", "mayo", "junio",
+                "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+            ];
+            let m_name = MONTHS_ES.get(month.saturating_sub(1) as usize).unwrap_or(&"");
+            format!("{day} de {m_name} de {year}")
+        }
+        "it" => {
+            const MONTHS_IT: [&str; 12] = [
+                "gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
+                "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre",
+            ];
+            let m_name = MONTHS_IT.get(month.saturating_sub(1) as usize).unwrap_or(&"");
+            format!("{day} {m_name} {year}")
+        }
+        _ => {
+            const MONTHS_EN: [&str; 12] = [
+                "January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November", "December",
+            ];
+            let m_name = MONTHS_EN.get(month.saturating_sub(1) as usize).unwrap_or(&"");
+            format!("{m_name} {day}, {year}")
+        }
+    }
+}
+
+pub fn detect_diagram_type_from_filename(filename: &str) -> Option<&'static str> {
+    let lower = filename.trim().to_lowercase();
+    if lower.ends_with(".uxf") || lower.ends_with(".umlet") {
+        Some("umlet")
+    } else if lower.ends_with(".puml") || lower.ends_with(".plantuml") {
+        Some("plantuml")
+    } else if lower.ends_with(".mmd") || lower.ends_with(".mermaid") {
+        Some("mermaid")
+    } else if lower.ends_with(".ditaa") {
+        Some("ditaa")
+    } else if lower.ends_with(".wavedrom") {
+        Some("wavedrom")
+    } else if lower.ends_with(".bytefield") {
+        Some("bytefield")
+    } else if lower.ends_with(".bpmn") {
+        Some("bpmn")
+    } else if lower.ends_with(".d2") {
+        Some("d2")
+    } else if lower.ends_with(".erd") {
+        Some("erd")
+    } else if lower.ends_with(".nomnoml") {
+        Some("nomnoml")
+    } else if lower.ends_with(".svgbob") {
+        Some("svgbob")
+    } else if lower.ends_with(".dot") || lower.ends_with(".gv") {
+        Some("graphviz")
+    } else {
+        None
     }
 }
 
 pub fn is_references_heading_title(title: &str, biblio_title: Option<&str>) -> bool {
     let lower = title.trim().to_lowercase();
-    if let Some(bt) = biblio_title {
-        if lower == bt.trim().to_lowercase() {
+    if let Some(bt) = biblio_title
+        && lower == bt.trim().to_lowercase() {
             return true;
         }
-    }
     matches!(
         lower.as_str(),
         "references"
@@ -161,26 +232,36 @@ pub fn detect_list_indent(lines: &[&str], current_line_idx: usize) -> Option<&'s
     None
 }
 
-pub fn filter_frontmatter_for_markdown(raw_fm: &str) -> Option<String> {
+pub fn filter_frontmatter_for_markdown(raw_fm: &str, lang: &str) -> Option<String> {
     let val: serde_yaml::Value = serde_yaml::from_str(raw_fm).ok()?;
     let map = val.as_mapping()?;
     let mut new_map = serde_yaml::Mapping::new();
 
     let internal_keys = [
         "theme", "slides_theme", "slides-theme",
-        "papersize", "paper", "pagesize", "page-size",
+        "papersize", "paper", "pagesize", "page-size", "page_size",
         "fontsize", "font-size", "font",
-        "margin", "margins", "columns", "gutter",
+        "mainfont", "sansfont", "monofont", "mathfont", "cjkfont",
+        "margin", "margins", "geometry",
+        "columns", "gutter", "column-gutter", "column_gutter",
         "linestretch", "line-spacing", "line_spacing",
-        "pagebreak-before", "pagebreak_before",
+        "linenumbers", "line-numbers", "line_numbers",
+        "indent", "parindent",
+        "pagebreak-before", "pagebreak_before", "pagebreak",
+        "landscape", "flipped", "orientation",
+        "classoption", "documentclass",
+        "linkcolor", "link-color", "link_color",
+        "backgroundcolor", "background-color", "background_color", "backgroundColor",
+        "color",
         "kroki_url", "kroki-url", "kroki_endpoint", "kroki-endpoint",
-        "toc", "toc-depth", "toc_depth", "toc-title", "toc_title",
-        "number-sections", "number_sections",
-        "bibliography", "bibliography-title", "biblio-title", "biblio_title", "references-title", "references_title",
+        "toc", "table-of-contents", "table_of_contents", "toc-depth", "toc_depth", "toc-title", "toc_title",
+        "lof", "lot", "table-of-figures", "table_of_figures", "table-of-tables", "table_of_tables",
+        "number-sections", "number_sections", "numbersections", "section-numbering", "section_numbering",
+        "bibliography", "bibliography-title", "biblio-title", "biblio_title", "references-title", "references_title", "references",
         "links-as-references", "links_as_references", "cite-links", "cite_links",
         "exclude-references", "exclude_references", "exclude-links", "exclude_links",
         "include-references", "include_references", "include-links", "include_links",
-        "marp", "slide", "slides", "presentation",
+        "marp", "slide", "slides", "presentation", "paginate", "header", "footer", "page-numbering", "page_numbering",
         "_class",
     ];
 
@@ -191,9 +272,22 @@ pub fn filter_frontmatter_for_markdown(raw_fm: &str) -> Option<String> {
                 let ik_norm = ik.replace('_', "-");
                 key_norm == ik_norm
             });
-            if !is_internal {
-                new_map.insert(k.clone(), v.clone());
+            if is_internal {
+                continue;
             }
+
+            // Resolve date macro like \today or today if present
+            if key_norm == "date"
+                && let Some(date_str) = v.as_str() {
+                    let trimmed = date_str.trim();
+                    if trimmed == r"\today" || trimmed.eq_ignore_ascii_case("today") {
+                        let resolved = format_today_date(lang);
+                        new_map.insert(k.clone(), serde_yaml::Value::String(resolved));
+                        continue;
+                    }
+                }
+
+            new_map.insert(k.clone(), v.clone());
         } else {
             new_map.insert(k.clone(), v.clone());
         }
@@ -295,25 +389,25 @@ fn parse_display_math_block(
             let cur_line = lines[j];
             let cur_trimmed = cur_line.trim();
 
-            if cur_trimmed.starts_with("$$") {
-                let after_closing = cur_trimmed[2..].trim();
+            if let Some(stripped) = cur_trimmed.strip_prefix("$$") {
+                let after_closing = stripped.trim();
                 if after_closing.starts_with("{#") {
                     let end_brace = after_closing.find('}').unwrap_or(after_closing.len());
-                    let raw = &after_closing[1..end_brace].trim();
+                    let raw = after_closing[1..end_brace].trim();
                     eq_id = Some(raw.strip_prefix('#').unwrap_or(raw).to_string());
                 } else if after_closing.is_empty() && j + 1 < lines.len() {
                     let next_line = lines[j + 1].trim();
                     if next_line.starts_with("{#eq:") || next_line.starts_with("{#") {
                         let end_brace = next_line.find('}').unwrap_or(next_line.len());
-                        let raw = &next_line[1..end_brace].trim();
+                        let raw = next_line[1..end_brace].trim();
                         eq_id = Some(raw.strip_prefix('#').unwrap_or(raw).to_string());
                         j += 1;
                     }
                 }
                 end_idx = j;
                 break;
-            } else if cur_trimmed.ends_with("$$") {
-                let formula_part = cur_trimmed[..cur_trimmed.len() - 2].trim();
+            } else if let Some(stripped) = cur_trimmed.strip_suffix("$$") {
+                let formula_part = stripped.trim();
                 if !formula_part.is_empty() {
                     math_code.push_str(formula_part);
                 }
@@ -328,13 +422,11 @@ fn parse_display_math_block(
         }
     }
 
-    if eq_id.is_none() {
-        if let Some(pos) = math_code.find(r"\label{") {
-            if let Some(end) = math_code[pos..].find('}') {
-                eq_id = Some(math_code[pos + 7..pos + end].to_string());
-            }
+    if eq_id.is_none()
+        && let Some(pos) = math_code.find(r"\label{")
+        && let Some(end) = math_code[pos..].find('}') {
+            eq_id = Some(math_code[pos + 7..pos + end].to_string());
         }
-    }
 
     (math_code.trim().to_string(), eq_id, end_idx)
 }
@@ -345,7 +437,7 @@ pub fn export_to_normal_markdown(
 ) -> Result<MarkdownExportResult, String> {
     let (fm_raw, body_md) = extract_frontmatter_raw(raw_content);
 
-    let fm: serde_yaml::Value = serde_yaml::from_str(&fm_raw).unwrap_or(serde_yaml::Value::Null);
+    let fm: serde_yaml::Value = serde_yaml::from_str(fm_raw).unwrap_or(serde_yaml::Value::Null);
 
     let lang = fm.get("lang")
         .and_then(|v| v.as_str())
@@ -452,7 +544,7 @@ pub fn export_to_normal_markdown(
     // --- PASS 1: Index headings, tables, equations, diagrams, and citations ---
     let mut labels: HashMap<String, TargetInfo> = HashMap::new();
     let mut headings_list: Vec<(usize, String, String, String)> = Vec::new(); // (level, title, id, number)
-    let mut section_counters = vec![0usize; 6];
+    let mut section_counters = [0usize; 6];
     let mut fig_counter = 0usize;
     let mut tbl_counter = 0usize;
     let mut eq_counter = 0usize;
@@ -520,8 +612,8 @@ pub fn export_to_normal_markdown(
 
                 let number_str = if number_sections && !is_unnumbered {
                     section_counters[hashes - 1] += 1;
-                    for k in hashes..6 {
-                        section_counters[k] = 0;
+                    for item in section_counters.iter_mut().take(6).skip(hashes) {
+                        *item = 0;
                     }
                     let parts: Vec<String> = section_counters[..hashes]
                         .iter()
@@ -550,7 +642,7 @@ pub fn export_to_normal_markdown(
         }
 
         // Table with caption: Table: ... {#tbl:targets}
-        if trimmed.starts_with("Table:") || (trimmed.starts_with(':') && !trimmed.starts_with(":::")) {
+        if trimmed.starts_with("Table:") || trimmed.starts_with(": ") {
             let (caption, id_opt) = parse_caption_and_label(trimmed);
             tbl_counter += 1;
             let id = id_opt.unwrap_or_else(|| format!("tbl-{tbl_counter}"));
@@ -587,24 +679,16 @@ pub fn export_to_normal_markdown(
         }
 
         // Image with diagram extension: ![caption](arch.uxf){#fig:umlet-img}
-        if trimmed.starts_with("![") && trimmed.contains('(') {
-            if let Some(open_paren) = trimmed.find('(') {
-                if let Some(close_paren) = trimmed[open_paren..].find(')') {
-                    let url = &trimmed[open_paren + 1..open_paren + close_paren];
-                    let norm = url.trim().to_lowercase();
-                    if norm.ends_with(".uxf")
-                        || norm.ends_with(".umlet")
-                        || norm.ends_with(".puml")
-                        || norm.ends_with(".plantuml")
-                        || norm.ends_with(".mmd")
-                        || norm.ends_with(".mermaid")
-                        || norm.ends_with(".dot")
-                    {
-                        fig_counter += 1;
+        if trimmed.starts_with("![")
+            && let Some(open_paren) = trimmed.find('(')
+            && let Some(close_paren) = trimmed[open_paren..].find(')') {
+                let url = &trimmed[open_paren + 1..open_paren + close_paren];
+                if detect_diagram_type_from_filename(url).is_some() {
+                    fig_counter += 1;
                         let mut fig_id = None;
-                        let after_paren = &trimmed[open_paren + close_paren + 1..].trim();
-                        if after_paren.starts_with('{') {
-                            let (_, _, id_opt) = parse_image_attributes(&after_paren[1..after_paren.len().saturating_sub(1)]);
+                        let after_paren = trimmed[open_paren + close_paren + 1..].trim();
+                        if after_paren.starts_with('{') && after_paren.ends_with('}') && after_paren.len() >= 2 {
+                            let (_, _, id_opt) = parse_image_attributes(&after_paren[1..after_paren.len() - 1]);
                             fig_id = id_opt;
                         }
                         let id = fig_id.unwrap_or_else(|| format!("fig-{fig_counter}"));
@@ -620,9 +704,7 @@ pub fn export_to_normal_markdown(
                         labels.insert(clean_id.clone(), info.clone());
                         labels.insert(id, info);
                     }
-                }
             }
-        }
 
         i += 1;
     }
@@ -685,11 +767,10 @@ pub fn export_to_normal_markdown(
                                 let trimmed_text = cur_link_text.trim();
                                 let is_badge = trimmed_text.is_empty() || trimmed_text.starts_with("![");
                                 let is_numeric = trimmed_text.starts_with('[') && trimmed_text.ends_with(']');
-                                if !is_badge && !is_numeric {
-                                    if !references.iter().any(|(u, _)| u == trimmed_url) {
+                                if !is_badge && !is_numeric
+                                    && !references.iter().any(|(u, _)| u == trimmed_url) {
                                         references.push((trimmed_url.to_string(), trimmed_text.to_string()));
                                     }
-                                }
                             }
                         }
                     }
@@ -702,7 +783,7 @@ pub fn export_to_normal_markdown(
     // --- PASS 2: Line by line transformation ---
     let mut out = String::with_capacity(body_md.len() * 2);
     let mut exported_assets = Vec::new();
-    let mut in_callout = false;
+    let mut callout_depth = 0usize;
     let mut cur_fig_num = 0usize;
     let mut cur_tbl_num = 0usize;
     let mut cur_eq_num = 0usize;
@@ -710,13 +791,13 @@ pub fn export_to_normal_markdown(
     let mut has_rendered_ref = false;
 
     // Output frontmatter if present (cleaned of internal compiler keys)
-    if !fm_raw.trim().is_empty() {
-        if let Some(clean_fm) = filter_frontmatter_for_markdown(fm_raw) {
+    if !opts.no_frontmatter
+        && !fm_raw.trim().is_empty()
+        && let Some(clean_fm) = filter_frontmatter_for_markdown(fm_raw, lang) {
             out.push_str("---\n");
             out.push_str(&clean_fm);
             out.push_str("\n---\n\n");
         }
-    }
 
     // If explicit --toc was requested and no \toc in body, prepend TOC
     let doc_has_toc_marker = body_md.lines().any(|l| parse_toc_line(l).is_some());
@@ -776,23 +857,16 @@ pub fn export_to_normal_markdown(
                         } else if let Some(rest) = trimmed_diag.strip_prefix("file: ") {
                             file_to_load = Some(rest.trim().to_string());
                         } else if !trimmed_diag.contains('\n')
-                            && (trimmed_diag.ends_with(".uxf")
-                                || trimmed_diag.ends_with(".umlet")
-                                || trimmed_diag.ends_with(".puml")
-                                || trimmed_diag.ends_with(".plantuml")
-                                || trimmed_diag.ends_with(".mmd")
-                                || trimmed_diag.ends_with(".mermaid")
-                                || trimmed_diag.ends_with(".dot"))
+                            && detect_diagram_type_from_filename(trimmed_diag).is_some()
                         {
                             file_to_load = Some(trimmed_diag.to_string());
                         }
                     }
 
-                    if let Some(ref cf) = file_to_load {
-                        if let Some(loaded) = resolve_file_content(cf, opts.resource_dir) {
+                    if let Some(ref cf) = file_to_load
+                        && let Some(loaded) = resolve_file_content(cf, opts.resource_dir) {
                             diag_code = loaded;
                         }
-                    }
 
                     // Render diagram via Kroki / cache
                     let id_str = spec.id.clone().unwrap_or_else(|| format!("fig-{cur_fig_num}"));
@@ -803,7 +877,7 @@ pub fn export_to_normal_markdown(
                     if let Ok(cached_svg_path) = render_diagram(&spec.diagram_type, &diag_code, kroki_url) {
                         let _ = fs::create_dir_all(&target_assets_dir);
                         let target_asset_path = target_assets_dir.join(&asset_filename);
-                        if let Ok(_) = fs::copy(&cached_svg_path, &target_asset_path) {
+                        if fs::copy(&cached_svg_path, &target_asset_path).is_ok() {
                             exported_assets.push(target_asset_path);
                             export_success = true;
                         }
@@ -903,14 +977,15 @@ pub fn export_to_normal_markdown(
             }
 
             if rest.is_empty() {
-                if in_callout {
-                    in_callout = false;
+                if callout_depth > 0 {
+                    callout_depth -= 1;
                     out.push('\n');
                 } else {
                     out.push_str(":::\n\n");
                 }
             } else {
-                in_callout = true;
+                callout_depth += 1;
+                let prefix = "> ".repeat(callout_depth);
                 let (kind, title) = super::callouts::parse_callout_header(rest);
                 let gh_kind = match kind.to_ascii_lowercase().as_str() {
                     "note" | "info" => "NOTE",
@@ -920,9 +995,9 @@ pub fn export_to_normal_markdown(
                     "important" => "IMPORTANT",
                     _ => "NOTE",
                 };
-                out.push_str(&format!("> [!{gh_kind}]\n"));
+                out.push_str(&format!("{prefix}[!{gh_kind}]\n"));
                 if !title.is_empty() {
-                    out.push_str(&format!("> **{title}**\n>\n"));
+                    out.push_str(&format!("{prefix}**{title}**\n{prefix}\n"));
                 }
             }
             line_idx += 1;
@@ -930,8 +1005,9 @@ pub fn export_to_normal_markdown(
         }
 
         // Inside ::: callout
-        if in_callout {
-            out.push_str(&format!("> {line}\n"));
+        if callout_depth > 0 {
+            let prefix = "> ".repeat(callout_depth);
+            out.push_str(&format!("{prefix}{line}\n"));
             line_idx += 1;
             continue;
         }
@@ -967,7 +1043,7 @@ pub fn export_to_normal_markdown(
         }
 
         // 4. Tables with Pandoc captions: Table: ... {#tbl:targets}
-        if trimmed.starts_with("Table:") || (trimmed.starts_with(':') && !trimmed.starts_with(":::")) {
+        if trimmed.starts_with("Table:") || trimmed.starts_with(": ") {
             cur_tbl_num += 1;
             let (caption, id_opt) = parse_caption_and_label(trimmed);
             let id = id_opt.unwrap_or_else(|| format!("tbl-{cur_tbl_num}"));
@@ -1000,83 +1076,62 @@ pub fn export_to_normal_markdown(
         }
 
         // 6. Image with diagram extension: ![caption](arch.uxf){#fig:umlet-img}
-        if trimmed.starts_with("![") && trimmed.contains('(') {
-            if let Some(open_paren) = trimmed.find('(') {
-                if let Some(close_paren) = trimmed[open_paren..].find(')') {
-                    let url = &trimmed[open_paren + 1..open_paren + close_paren];
-                    let norm = url.trim().to_lowercase();
-                    if norm.ends_with(".uxf")
-                        || norm.ends_with(".umlet")
-                        || norm.ends_with(".puml")
-                        || norm.ends_with(".plantuml")
-                        || norm.ends_with(".mmd")
-                        || norm.ends_with(".mermaid")
-                        || norm.ends_with(".dot")
-                    {
-                        cur_fig_num += 1;
-                        let mut fig_id = None;
-                        let mut fig_width = None;
-                        let after_paren = &trimmed[open_paren + close_paren + 1..].trim();
-                        if after_paren.starts_with('{') {
-                            let (w, _, id_opt) = parse_image_attributes(&after_paren[1..after_paren.len().saturating_sub(1)]);
-                            fig_id = id_opt;
-                            fig_width = w;
-                        }
-                        let id = fig_id.unwrap_or_else(|| format!("fig-{cur_fig_num}"));
-                        let clean_id = id.replace(':', "-");
-                        let alt = trimmed[2..open_paren].trim_end_matches(']').trim();
-                        let title = if alt.is_empty() { format!("Figure {cur_fig_num}") } else { alt.to_string() };
+        if trimmed.starts_with("![")
+            && let Some(open_paren) = trimmed.find('(')
+            && let Some(close_paren) = trimmed[open_paren..].find(')') {
+                let url = &trimmed[open_paren + 1..open_paren + close_paren];
+                if let Some(diag_type) = detect_diagram_type_from_filename(url) {
+                    cur_fig_num += 1;
+                    let mut fig_id = None;
+                    let mut fig_width = None;
+                    let after_paren = trimmed[open_paren + close_paren + 1..].trim();
+                    if after_paren.starts_with('{') && after_paren.ends_with('}') && after_paren.len() >= 2 {
+                        let (w, _, id_opt) = parse_image_attributes(&after_paren[1..after_paren.len() - 1]);
+                        fig_id = id_opt;
+                        fig_width = w;
+                    }
+                    let id = fig_id.unwrap_or_else(|| format!("fig-{cur_fig_num}"));
+                    let clean_id = id.replace(':', "-");
+                    let alt = trimmed[2..open_paren].trim_end_matches(']').trim();
+                    let title = if alt.is_empty() { format!("Figure {cur_fig_num}") } else { alt.to_string() };
 
-                        let diag_type = if norm.ends_with(".uxf") || norm.ends_with(".umlet") {
-                            "umlet"
-                        } else if norm.ends_with(".puml") || norm.ends_with(".plantuml") {
-                            "plantuml"
-                        } else if norm.ends_with(".mmd") || norm.ends_with(".mermaid") {
-                            "mermaid"
-                        } else {
-                            "graphviz"
-                        };
-
-                        let asset_filename = format!("{clean_id}.svg");
-                        let mut export_success = false;
-                        if let Some(diag_code) = resolve_file_content(url, opts.resource_dir) {
-                            if let Ok(cached_svg) = render_diagram(diag_type, &diag_code, kroki_url) {
-                                let _ = fs::create_dir_all(&target_assets_dir);
-                                let target_asset_path = target_assets_dir.join(&asset_filename);
-                                if let Ok(_) = fs::copy(&cached_svg, &target_asset_path) {
-                                    exported_assets.push(target_asset_path);
-                                    export_success = true;
-                                }
+                    let asset_filename = format!("{clean_id}.svg");
+                    let mut export_success = false;
+                    if let Some(diag_code) = resolve_file_content(url, opts.resource_dir)
+                        && let Ok(cached_svg) = render_diagram(diag_type, &diag_code, kroki_url) {
+                            let _ = fs::create_dir_all(&target_assets_dir);
+                            let target_asset_path = target_assets_dir.join(&asset_filename);
+                            if fs::copy(&cached_svg, &target_asset_path).is_ok() {
+                                exported_assets.push(target_asset_path);
+                                export_success = true;
                             }
                         }
 
-                        let indent = detect_list_indent(&lines, line_idx).unwrap_or("");
-                        let width_attr = if let Some(ref w) = fig_width {
-                            format!(" width=\"{w}\"")
-                        } else {
-                            String::new()
-                        };
+                    let indent = detect_list_indent(&lines, line_idx).unwrap_or("");
+                    let width_attr = if let Some(ref w) = fig_width {
+                        format!(" width=\"{w}\"")
+                    } else {
+                        String::new()
+                    };
 
-                        let img_src = if export_success {
-                            format!("{relative_assets_prefix}/{asset_filename}")
-                        } else {
-                            url.to_string()
-                        };
+                    let img_src = if export_success {
+                        format!("{relative_assets_prefix}/{asset_filename}")
+                    } else {
+                        url.to_string()
+                    };
 
-                        out.push_str(&format!("{indent}<p align=\"center\" id=\"{clean_id}\">\n"));
-                        out.push_str(&format!("{indent}  <img src=\"{img_src}\" alt=\"{title}\"{width_attr} style=\"border-radius: 8px;\" />"));
-                        if !title.is_empty() {
-                            out.push_str(&format!("<br>\n{indent}  <em>Figure {cur_fig_num}: {title}</em>\n"));
-                        } else {
-                            out.push('\n');
-                        }
-                        out.push_str(&format!("{indent}</p>\n\n"));
-
-                        line_idx += 1;
-                        continue;
+                    out.push_str(&format!("{indent}<p align=\"center\" id=\"{clean_id}\">\n"));
+                    out.push_str(&format!("{indent}  <img src=\"{img_src}\" alt=\"{title}\"{width_attr} style=\"border-radius: 8px;\" />"));
+                    if !title.is_empty() {
+                        out.push_str(&format!("<br>\n{indent}  <em>Figure {cur_fig_num}: {title}</em>\n"));
+                    } else {
+                        out.push('\n');
                     }
+                    out.push_str(&format!("{indent}</p>\n\n"));
+
+                    line_idx += 1;
+                    continue;
                 }
-            }
         }
 
         // 7. Table of contents line: \toc, \tableofcontents, <!-- toc -->
@@ -1171,7 +1226,7 @@ pub fn export_to_normal_markdown(
             .map(|(_, title, _, _)| is_references_heading_title(title, biblio_title))
             .unwrap_or(false);
         let heading_level = if last_heading_is_ref { 0 } else { 1 };
-        out.push_str("\n");
+        out.push('\n');
         out.push_str(&render_references_section(title_to_use, &references, lang, heading_level));
         out.push('\n');
     }
@@ -1211,13 +1266,7 @@ fn render_references_section(
     lang: &str,
     heading_level: usize,
 ) -> String {
-    let (online_label, available_label) = match lang {
-        "fr" => ("[En ligne]", "Disponible sur :"),
-        "de" => ("[Online]", "Verfügbar unter:"),
-        "es" => ("[En línea]", "Disponible en:"),
-        "it" => ("[Online]", "Disponibile su:"),
-        _ => ("[Online]", "Available:"),
-    };
+    let (online_label, available_label) = super::references::get_reference_labels(lang);
 
     let mut s = String::new();
     if heading_level > 0 && !title.is_empty() {
@@ -1257,6 +1306,39 @@ fn transform_inline_cross_refs_and_citations(
     let mut i = 0;
 
     while i < n {
+        // 0. Skip inline code spans `...` or ``...`` verbatim
+        if chars[i] == '`' {
+            let mut run = 0;
+            while i + run < n && chars[i + run] == '`' {
+                run += 1;
+            }
+            // Search for matching closing backtick run of exact length `run`
+            let mut close_idx = None;
+            let mut j = i + run;
+            while j < n {
+                if chars[j] == '`' {
+                    let mut close_run = 0;
+                    while j + close_run < n && chars[j + close_run] == '`' {
+                        close_run += 1;
+                    }
+                    if close_run == run {
+                        close_idx = Some(j);
+                        break;
+                    }
+                    j += close_run;
+                } else {
+                    j += 1;
+                }
+            }
+            if let Some(c_idx) = close_idx {
+                for c in &chars[i..c_idx + run] {
+                    result.push(*c);
+                }
+                i = c_idx + run;
+                continue;
+            }
+        }
+
         // A. Check for Pandoc cross references: @sec:..., @fig:..., @tbl:..., @eq:..., @lst:...
         if chars[i] == '@' && (i == 0 || chars[i - 1].is_whitespace() || chars[i - 1] == '(' || chars[i - 1] == '[') {
             let mut j = i + 1;
@@ -1328,8 +1410,8 @@ fn transform_inline_cross_refs_and_citations(
                 }
                 j += 1;
             }
-            if let Some(cb) = close_bracket {
-                if cb + 1 < n && chars[cb + 1] == '(' {
+            if let Some(cb) = close_bracket
+                && cb + 1 < n && chars[cb + 1] == '(' {
                     let mut close_paren = None;
                     let mut k = cb + 2;
                     while k < n {
@@ -1360,7 +1442,6 @@ fn transform_inline_cross_refs_and_citations(
                         }
                     }
                 }
-            }
         }
 
         result.push(chars[i]);
@@ -1397,6 +1478,32 @@ mod tests {
         assert!(res.content.contains("> This is an important message."));
         assert!(res.content.contains("> [!NOTE]"));
         assert!(res.content.contains("> Keep this note."));
+    }
+
+    #[test]
+    fn test_export_nested_callouts() {
+        let md = "::: note\nOuter note\n::: tip\nInner tip\n:::\nBack to outer note\n:::\nRegular text";
+        let opts = MarkdownExportOptions::default();
+        let res = export_to_normal_markdown(md, &opts).unwrap();
+        assert!(res.content.contains("> [!NOTE]"));
+        assert!(res.content.contains("> Outer note"));
+        assert!(res.content.contains("> > [!TIP]"));
+        assert!(res.content.contains("> > Inner tip"));
+        assert!(res.content.contains("> Back to outer note"));
+        assert!(res.content.contains("Regular text"));
+    }
+
+    #[test]
+    fn test_export_no_transform_inside_inline_code() {
+        let md = "Code: `[Example](https://example.com)` and `(@sec:intro)`.\n\n[Example](https://example.com)\n\n# Introduction {#sec:intro}";
+        let opts = MarkdownExportOptions {
+            bibliography: true,
+            ..Default::default()
+        };
+        let res = export_to_normal_markdown(md, &opts).unwrap();
+        assert!(res.content.contains("`[Example](https://example.com)`"), "Expected link inside code not to be transformed: {}", res.content);
+        assert!(res.content.contains("`(@sec:intro)`"), "Expected ref inside code not to be transformed: {}", res.content);
+        assert!(res.content.contains("[Example](https://example.com) [[1]](#bib-1)"));
     }
 
     #[test]
@@ -1459,6 +1566,52 @@ mod tests {
         assert!(!res.content.contains("theme: elegant"));
         assert!(!res.content.contains("papersize: a4"));
         assert!(!res.content.contains("toc: true"));
+    }
+
+    #[test]
+    fn test_export_frontmatter_cleaning_user_case() {
+        let md = r#"---
+title: Phase 3 - Schéma relationnel
+subtitle: Tables de correspondance (Phase 2 Français → Phase 3 Anglais)
+author: Eliott Jaquier — Shanshe Gundishvili — Aurélien Dévaud
+date: \today
+lang: fr
+geometry: margin=2cm
+table-of-contents: false
+---
+
+# Introduction
+Bonjour le monde.
+"#;
+        let opts = MarkdownExportOptions::default();
+        let res = export_to_normal_markdown(md, &opts).unwrap();
+        assert!(res.content.contains("title: Phase 3 - Schéma relationnel"));
+        assert!(res.content.contains("subtitle: Tables de correspondance (Phase 2 Français → Phase 3 Anglais)"));
+        assert!(res.content.contains("author: Eliott Jaquier — Shanshe Gundishvili — Aurélien Dévaud"));
+        assert!(res.content.contains("lang: fr"));
+        assert!(!res.content.contains("geometry"));
+        assert!(!res.content.contains("margin=2cm"));
+        assert!(!res.content.contains("table-of-contents"));
+        assert!(!res.content.contains(r"\today"));
+    }
+
+    #[test]
+    fn test_export_no_frontmatter_option() {
+        let md = r#"---
+title: Phase 3 - Schéma relationnel
+author: Eliott Jaquier
+---
+
+# Introduction
+"#;
+        let opts = MarkdownExportOptions {
+            no_frontmatter: true,
+            ..Default::default()
+        };
+        let res = export_to_normal_markdown(md, &opts).unwrap();
+        assert!(!res.content.starts_with("---"));
+        assert!(!res.content.contains("title: Phase 3"));
+        assert!(res.content.contains("# Introduction"));
     }
 
     #[test]

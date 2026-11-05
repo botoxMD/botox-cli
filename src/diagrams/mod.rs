@@ -26,14 +26,14 @@ pub fn resolve_file_content(path_str: &str, resource_dir: Option<&Path>) -> Opti
         return None;
     }
     let p = Path::new(trimmed);
-    if p.is_file() {
-        return fs::read_to_string(p).ok();
-    }
     if let Some(res_dir) = resource_dir {
         let joined = res_dir.join(p);
-        if joined.is_file() {
+        if joined.is_file() && crate::compiler::is_path_allowed(&joined, resource_dir) {
             return fs::read_to_string(joined).ok();
         }
+    }
+    if p.is_file() && crate::compiler::is_path_allowed(p, resource_dir) {
+        return fs::read_to_string(p).ok();
     }
     None
 }
@@ -84,56 +84,8 @@ pub fn parse_code_fence_file(fence: &str) -> (String, Option<String>) {
     (lang, file)
 }
 
-fn parse_dimension(val: &str) -> Option<String> {
-    let trimmed = val.trim().trim_matches(|c| c == '"' || c == '\'');
-    if trimmed.is_empty() {
-        return None;
-    }
-    if let Some(stripped) = trimmed.strip_prefix("0.")
-        && let Some(rest) = stripped.strip_suffix(r"\linewidth")
-            .or_else(|| stripped.strip_suffix(r"\textwidth"))
-            .or_else(|| stripped.strip_suffix("\\columnwidth"))
-    {
-        let num_str = format!("0.{}", rest.trim());
-        if let Ok(pct) = num_str.parse::<f64>() {
-            return Some(format!("{}%", (pct * 100.0).round() as i64));
-        }
-    }
-    if trimmed.ends_with(r"\linewidth")
-        || trimmed.ends_with(r"\textwidth")
-        || trimmed.ends_with("\\columnwidth")
-    {
-        return Some("100%".to_string());
-    }
-    Some(trimmed.to_string())
-}
-
 pub fn parse_diagram_fence_attributes(s: &str) -> (Option<String>, Option<String>, Option<String>) {
-    let mut width = None;
-    let mut height = None;
-    let mut id = None;
-
-    for token in s.split_whitespace() {
-        let token = token.trim_matches(|c| c == ',' || c == '{' || c == '}');
-        if token.starts_with('#') || token.starts_with(r"\#") {
-            let raw_id = token.strip_prefix(r"\#").or_else(|| token.strip_prefix('#')).unwrap_or(token);
-            let clean_id = raw_id.replace(':', "-");
-            if !clean_id.is_empty() {
-                id = Some(clean_id);
-            }
-        } else if let Some(stripped) = token.strip_prefix("id=") {
-            let val = stripped.trim_matches('"').trim_matches('\'').replace(':', "-");
-            if !val.is_empty() {
-                id = Some(val);
-            }
-        } else if let Some(stripped) = token.strip_prefix("width=") {
-            width = parse_dimension(stripped);
-        } else if let Some(stripped) = token.strip_prefix("height=") {
-            height = parse_dimension(stripped);
-        }
-    }
-
-    (width, height, id)
+    crate::markdown::pandoc::parse_image_attributes(s)
 }
 
 pub fn parse_diagram_fence(fence: &str) -> Option<DiagramSpec> {
