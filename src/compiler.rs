@@ -1827,6 +1827,8 @@ Second column body text.
             r"\lfloor N / K \rfloor",
             r"\lceil N / K \rceil",
             r"N \bmod K",
+            r"\longrightarrow\!\!\!\triangleright",
+            r"-\,-\rightarrow\!\!\!\triangleright",
         ];
 
         for expr in tricky_latex {
@@ -1836,6 +1838,43 @@ Second column body text.
             assert!(compile_typst(&full, &tmp, None).is_ok(), "Typst failed to compile tricky LaTeX expr: {}\n  Mitex: {}", expr, typst_math);
             let _ = std::fs::remove_file(tmp);
         }
+    }
+
+    #[test]
+    fn test_user_uml_markdown_document_compilation() {
+        let md = r#"
+## 1. UML & Modélisation Objet
+
+* **4 Piliers de la POO :** **Encapsulation** (protéger l'état interne), **Abstraction** (cacher la complexité inutile), **Héritage** (spécialiser par relation *est-un / is-a*) et **Polymorphisme** (manipuler un objet sous une forme plus générique via liaison dynamique).
+* **Objet vs Classe :** Une classe décrit le type (structure statique + comportement). Un objet (instance) possède un **état** (valeurs des attributs), un **comportement** (méthodes) et une **identité** (existe indépendamment de son état).
+* **Conventions graphiques des classes :**
+* **Visibilités :** `+` (`public`), `-` (`private`), `#` (`protected`), `~` ou rien (`package`).
+* **Propriétés de classe (`static`) :** Soulignées (ex: $\underline{\text{compteur : int}}$).
+* **Abstrait & Interfaces :** Le nom d'une classe abstraite, d'une méthode abstraite ou d'une interface s'écrit en *italique*. Si une classe a $\ge 1$ méthode abstraite, elle **doit** être abstraite (mais une classe abstraite peut n'avoir aucune méthode abstraite, juste pour interdire son instanciation).
+* **Flèches d'héritage / implémentation :** Trait plein + triangle vide ($\longrightarrow\!\!\!\triangleright$) pour l'héritage (`extends`). Trait pointillé + triangle vide ($-\,-\rightarrow\!\!\!\triangleright$) pour l'implémentation d'interface (`implements`).
+
+* **Associations, Sens de lecture et Navigabilité (Piège fréquent) :**
+* **Sens de lecture (`>` ou `<` à côté du verbe) :** Indique uniquement comment lire la phrase (ex: `Personne` — *possède >* — `Chien`). N'implique aucune restriction technique.
+"#;
+        let (typst_markup, _) = crate::engine::transpile_markdown_to_typst_markup(
+            md,
+            None,
+            &crate::config::BotoxConfig::default(),
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+        ).expect("transpile should succeed");
+        let tmp_pdf = std::env::temp_dir().join(format!("test_uml_doc_{}.pdf", std::process::id()));
+        let res = compile_typst(&typst_markup, &tmp_pdf, None);
+        assert!(res.is_ok(), "Typst compile error on user UML document: {:?}", res.err());
+        let _ = std::fs::remove_file(tmp_pdf);
     }
 
     #[test]

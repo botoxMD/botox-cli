@@ -29,6 +29,11 @@ Botox operates in two primary modes determined automatically from Markdown front
 - **Slide Delimiters**: Slides are separated by horizontal rules (`---`, `===`, or `\newpage`).
 - **Stepwise Reveals**: Supports incremental pause points via `<!-- pause -->` or `\pause`.
 
+### C. Standard Markdown Export Mode
+- **Primary Target**: Clean standard CommonMark (`.md`), with rendered diagram assets and resolved IEEE citations.
+- **Use Cases**: Porting extended documents (`.btx`, `.btx.md`, `.md`) to standard GitHub / GitLab repos, static site generators, or external Markdown readers.
+- **Trigger**: Subcommand `botox markdown <input> [-o output.md]` or flag `--markdown` / `--md`.
+
 ---
 
 ## 2. Command Line Interface (CLI) Reference
@@ -41,22 +46,26 @@ botox init slides.md                 # Scaffold an interactive presentation slid
 
 # 2. Compile documents (defaults to .pdf output)
 botox document.md                    # Compiles to document.pdf
-botox document.md -o custom.pdf      # Explicit PDF destination
+botox pdf document.md -o custom.pdf  # Explicit PDF subcommand
 botox document.md -o document.html   # Export document to HTML reader
 botox document.md -o pages.json      # Export vector SVG pages JSON for webviews
 
-# 3. Compile presentations (defaults to .html output)
+# 3. Export clean standard Markdown
+botox markdown document.md -o clean.md # Export portable CommonMark
+botox document.md --markdown         # Same via flag
+
+# 4. Compile presentations (defaults to .html output)
 botox slides.md                      # Compiles to interactive slides.html
 botox slides.md -o deck.pdf          # Export presentation slides to PDF
 
-# 4. Live watch mode (recompiles automatically on change)
-botox -w document.md
-botox --watch slides.md
+# 5. Live watch mode & Background Daemon
+botox -w document.md                 # Recompile on file changes
+botox daemon                         # Background daemon for instant editor previews
 
-# 5. Unix standard I/O streaming (stream PDF directly to stdout)
+# 6. Unix standard I/O streaming (stream PDF directly to stdout)
 cat document.md | botox - -o - > output.pdf
 
-# 6. Configuration inspection & Agent Skills
+# 7. Configuration inspection & Agent Skills
 botox config                         # Display active configuration cascade
 botox setup                          # Interactive configuration wizard
 botox setup --global --author "Name" # Non-interactive config setup
@@ -111,6 +120,8 @@ abstract: >
 keywords: "distributed systems, agentic coding, typst, rust"
 lang: en
 papersize: a4                        # a4, us-letter, a5
+orientation: portrait                # portrait (default) or landscape
+landscape: false                     # true for full-document horizontal orientation
 fontsize: 11pt                       # 9pt, 10pt, 11pt, 12pt
 mainfont: "New Computer Modern"      # Any system font or embedded font
 mathfont: "New Computer Modern Math"
@@ -670,11 +681,34 @@ See the comparative results in @tbl:perf.
 * **Unnumbered Headings**: `# Preface {-}` or `# Preface {.unnumbered}`
 * **Referencing Sections**: `As discussed in @sec:background...`
 
-### Page Breaks
+### Page Breaks & Page Orientation (Landscape / Horizontal Pages)
 Force page breaks in documents using any of the following:
 * `\newpage`
 * `\pagebreak`
+* `\columnbreak` (breaks to the next column in multi-column layouts)
 * `<div style="page-break-after: always"></div>`
+
+#### Individual Landscape / Flipped Pages
+Rotate individual pages (for wide tables, large architectural diagrams, or multi-column data matrices) while keeping the rest of the document in portrait:
+* **Pandoc Fenced Div**:
+  ```markdown
+  ::: landscape
+  | Long Table | Column 2 | Column 3 | Column 4 |
+  |---|---|---|---|
+  :::
+  ```
+* **LaTeX Environment**:
+  ```latex
+  \begin{landscape}
+  ...
+  \end{landscape}
+  ```
+* **HTML Directives**:
+  ```html
+  <!-- landscape -->
+  ...
+  <!-- /landscape -->
+  ```
 
 ### Footnotes
 ```markdown
