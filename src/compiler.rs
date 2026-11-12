@@ -1841,6 +1841,30 @@ Second column body text.
     }
 
     #[test]
+    fn test_comprehensive_math_stress_document_compilation() {
+        let md = std::fs::read_to_string("tests/math_stress_test.md").unwrap();
+        let (typst_markup, _) = crate::engine::transpile_markdown_to_typst_markup(
+            &md,
+            None,
+            &crate::config::BotoxConfig::default(),
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+        ).expect("transpile math stress test");
+        let tmp = std::env::temp_dir().join(format!("test_stress_{}.pdf", std::process::id()));
+        let res = compile_typst(&typst_markup, &tmp, None);
+        assert!(res.is_ok(), "Typst compile error on math stress test: {:?}", res.err());
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    #[test]
     fn test_user_uml_markdown_document_compilation() {
         let md = r#"
 ## 1. UML & Modélisation Objet

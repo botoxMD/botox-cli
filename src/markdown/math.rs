@@ -7,6 +7,9 @@
 /// native compatibility for LaTeX math constructs (delimiters, shims, and macros).
 pub const TYPST_MATH_PREAMBLE: &str = r#"
 // Botox LaTeX Math Bridge Shims
+#let diff = sym.partial
+#let operatorname(it) = math.op(math.upright(it))
+#let operatornamewithlimits(it) = math.op(limits: true, math.upright(it))
 #let negthinspace = h(-(3/18) * 1em)
 #let negthinmedspace = h(-(3/18) * 1em)
 #let negmedspace = h(-(4/18) * 1em)
@@ -19,6 +22,10 @@ pub const TYPST_MATH_PREAMBLE: &str = r#"
 #let tfrac(num, den) = $inline((num)/(den))$
 #let dbinom(n, k) = $display(binom(#n, #k))$
 #let tbinom(n, k) = $inline(binom(#n, #k))$
+#let big(it) = math.lr(size: 1.2em, it)
+#let Big(it) = math.lr(size: 1.8em, it)
+#let bigg(it) = math.lr(size: 2.4em, it)
+#let Bigg(it) = math.lr(size: 3em, it)
 #let stackrel(sup, base) = $limits(base)^(sup)$
 #let overset(sup, base) = $limits(base)^(sup)$
 #let underset(sub, base) = $limits(base)_(sub)$
@@ -75,6 +82,31 @@ pub const TYPST_MATH_PREAMBLE: &str = r#"
 #let plim = math.op("plim", limits: true)
 #let projlim = math.op("proj\u{2009}lim", limits: true)
 #let injlim = math.op("inj\u{2009}lim", limits: true)
+#let botox_xarrow(arrow_sym, ..args) = {
+  let p = args.pos()
+  if p.len() == 1 { $limits(stretch(#arrow_sym)^#p.at(0))$ }
+  else if p.len() >= 2 { $limits(stretch(#arrow_sym)^#p.at(1)_#p.at(0))$ }
+  else { arrow_sym }
+}
+#let xleftarrow(..args) = botox_xarrow(math.arrow.l, ..args)
+#let xrightarrow(..args) = botox_xarrow(math.arrow.r, ..args)
+#let xLeftarrow(..args) = botox_xarrow(math.arrow.l.double, ..args)
+#let xRightarrow(..args) = botox_xarrow(math.arrow.r.double, ..args)
+#let xleftrightarrow(..args) = botox_xarrow(math.arrow.l.r, ..args)
+#let xLeftrightarrow(..args) = botox_xarrow(math.arrow.l.r.double, ..args)
+#let xhookleftarrow(..args) = botox_xarrow(math.arrow.l.hook, ..args)
+#let xhookrightarrow(..args) = botox_xarrow(math.arrow.r.hook, ..args)
+#let xtwoheadleftarrow(..args) = botox_xarrow(math.arrow.l.twohead, ..args)
+#let xtwoheadrightarrow(..args) = botox_xarrow(math.arrow.r.twohead, ..args)
+#let xleftharpoonup(..args) = botox_xarrow(math.harpoon.lt, ..args)
+#let xrightharpoonup(..args) = botox_xarrow(math.harpoon.rt, ..args)
+#let xleftharpoondown(..args) = botox_xarrow(math.harpoon.lb, ..args)
+#let xrightharpoondown(..args) = botox_xarrow(math.harpoon.rb, ..args)
+#let xleftrightharpoons(..args) = botox_xarrow(math.harpoons.ltrb, ..args)
+#let xrightleftharpoons(..args) = botox_xarrow(math.harpoons.rtlb, ..args)
+#let xtofrom(..args) = botox_xarrow(math.arrows.rl, ..args)
+#let xmapsto(..args) = botox_xarrow(math.arrow.r.bar, ..args)
+#let xlongequal(..args) = botox_xarrow(math.eq, ..args)
 #let underline(..args) = {
   let items = args.pos()
   let joined = ()
@@ -88,11 +120,17 @@ pub const TYPST_MATH_PREAMBLE: &str = r#"
 #let bmatrix(..args) = math.mat(delim: "[", ..args)
 #let Bmatrix(..args) = math.mat(delim: "{", ..args)
 #let vmatrix(..args) = math.mat(delim: "|", ..args)
-#let Vmatrix(..args) = math.mat(delim: "||", ..args)
+#let Vmatrix(..args) = math.mat(delim: "\u{2016}", ..args)
 #let matrix(..args) = math.mat(delim: none, ..args)
+#let smallmatrix(..args) = math.inline(math.mat(delim: none, ..args))
+#let smallmat(..args) = math.inline(math.mat(delim: none, ..args))
 #let aligned(it) = it
 #let alignedat(..args) = args.pos().last()
 #let textmath(it) = it
+#let mitexdisplay(it) = math.display(it)
+#let mitexinline(it) = math.inline(it)
+#let mitexscript(it) = math.script(it)
+#let mitexsscript(it) = math.sscript(it)
 #let mitexmathbf(it) = math.bold(math.upright(it))
 #let mitexsqrt(..args) = {
   if args.pos().len() == 1 {
@@ -110,6 +148,21 @@ fn normalize_mitex_ast(ast: &mut String) {
         *ast = inner.trim().to_string();
     }
     *ast = ast
+        .replace("angle.l", "chevron.l")
+        .replace("angle.r", "chevron.r")
+        .replace("planck.reduce", "planck")
+        .replace("times.circle.big", "times.o.big")
+        .replace("times.circle", "times.o")
+        .replace("plus.circle.big", "plus.o.big")
+        .replace("plus.circle", "plus.o")
+        .replace("dot.circle.big", "dot.o.big")
+        .replace("dot.circle", "dot.o")
+        .replace("minus.circle", "minus.o")
+        .replace("diff ", "partial ")
+        .replace("diff^", "partial^")
+        .replace("diff_", "partial_")
+        .replace("diff)", "partial)")
+        .replace("diff,", "partial,")
         .replace("mitexsqrt(", "sqrt(")
         .replace("mitexmathbf(", "bold(")
         .replace("sect ", "inter ")
@@ -118,7 +171,7 @@ fn normalize_mitex_ast(ast: &mut String) {
         .replace("pmatrix(", "mat(delim: \"(\", ")
         .replace("bmatrix(", "mat(delim: \"[\", ")
         .replace("vmatrix(", "mat(delim: \"|\", ")
-        .replace("Vmatrix(", "mat(delim: \"||\", ")
+        .replace("Vmatrix(", "mat(delim: \"\u{2016}\", ")
         .replace("Bmatrix(", "mat(delim: \"{\", ")
         .replace("matrix(", "mat(delim: #none, ");
 }
@@ -198,6 +251,34 @@ fn convert_latex_single_quoted_strings(s: &str) -> String {
     result
 }
 
+fn preprocess_smash(s: &str) -> (String, bool) {
+    if !s.contains(r"\smash") {
+        return (s.to_string(), false);
+    }
+    let mut result = String::with_capacity(s.len());
+    let mut remainder = s;
+    let mut found = false;
+    while let Some(pos) = remainder.find(r"\smash") {
+        result.push_str(&remainder[..pos]);
+        let rest = &remainder[pos + 6..];
+        let trimmed = rest.trim_start();
+        let after_opt = if trimmed.starts_with('[') {
+            if let Some(close) = trimmed.find(']') {
+                &trimmed[close + 1..]
+            } else {
+                rest
+            }
+        } else {
+            rest
+        };
+        result.push_str(r"\underbar");
+        remainder = after_opt;
+        found = true;
+    }
+    result.push_str(remainder);
+    (result, found)
+}
+
 /// Converts LaTeX math syntax into clean Typst math markup.
 ///
 /// Employs `mitex` AST parsing as the primary compiler bridge, normalizing
@@ -212,11 +293,15 @@ pub fn convert_latex_math_to_typst(math: &str) -> String {
         return format!("dif {}", &trimmed[1..]);
     }
 
-    let preprocessed = convert_latex_single_quoted_strings(trimmed);
+    let (with_smash, has_smash) = preprocess_smash(trimmed);
+    let preprocessed = convert_latex_single_quoted_strings(&with_smash);
 
     // Primary: AST-based LaTeX math parsing
     if let Ok(mut ast) = mitex::convert_math(&preprocessed, None) {
         normalize_mitex_ast(&mut ast);
+        if has_smash {
+            ast = ast.replace("underbar(", "smash(");
+        }
         return ast.trim().to_string();
     }
 
