@@ -503,11 +503,15 @@ pub fn markdown_to_typst_with_options(
                         }
                         if let Some(sz) = code_size {
                             typst.push_str(&format!(
-                                "#[#show raw.where(block: true): set text(size: {sz})\n{fence_str}{lang}\n{clean_code}{fence_str}\n]\n\n"
+                                "#[#show raw.where(block: true): set text(size: {sz})\n{fence_str}{lang}\n{clean_code}{fence_str}\n]\n"
                             ));
                         } else {
-                            typst.push_str(&format!("{fence_str}{lang}\n{clean_code}{fence_str}\n\n"));
+                            typst.push_str(&format!("{fence_str}{lang}\n{clean_code}{fence_str}\n"));
                         }
+                        if code_src_line.is_some() {
+                            typst.push_str("#metadata(\"botox-src:0:end\")\n");
+                        }
+                        typst.push('\n');
                         continue;
                     }
                     Tag::List(_) => {

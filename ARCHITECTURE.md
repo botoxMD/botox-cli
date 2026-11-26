@@ -203,5 +203,5 @@ Provides curated layout presets (`cheatsheet`, `paper`, `report`, `notes`, `cv`,
 
 Operates directly on Typst's in-memory `PagedDocument` frame tree with zero-width `#metadata("botox-src:<line>:<kind>")` source tags injected by `engine::compile_for_inspection`:
 1. **Geometry Extraction**: Walks `FrameItem::{Text, Shape, Image, Group, Tag}` to extract per-column lines, logical blocks, container boxes, and font/glyph telemetry.
-2. **Diagnostics (`botox inspect`)**: Detects `SHORT_LAST_LINE`, `INFLATED_LEADING`, `PAGE_SPILLOVER`, `COLUMN_IMBALANCE`, `OVERSIZED_PADDING`, `CONTENT_OVERFLOW`, `GUTTER_INTRUSION`, `TEXT_OVERLAP`, `ORPHAN_HEADING`, `TINY_IMAGE`, `CLIPPED_IMAGE`, and `MISSING_GLYPH`, plus `--target-pages N` reclaim plans and `--compare` before/after diffs.
+2. **Diagnostics (`botox inspect`)**: Detects `SHORT_LAST_LINE`, `INFLATED_LEADING`, `PAGE_SPILLOVER`, `COLUMN_IMBALANCE`, `OVERSIZED_PADDING`, `CONTENT_OVERFLOW`, `GUTTER_INTRUSION`, `TEXT_OVERLAP`, `ORPHAN_HEADING`, `SPLIT_CODE_BLOCK`, `TINY_IMAGE`, `CLIPPED_IMAGE`, and `MISSING_GLYPH`, plus `--target-pages N` reclaim plans and `--compare` before/after diffs.
 3. **Spatial Probing (`botox probe`)**: Supports `--page`, `--region`, `--zone`, `--around`, `--at-line`, `--measure-gap`, `--list-blocks`, and `--density-grid WxH` ASCII/JSON occupancy heatmaps.

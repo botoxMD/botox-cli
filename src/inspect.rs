@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use typst_library::foundations::Value as TypstValue;
 use typst_library::introspection::{MetadataElem, Tag};
 use typst_library::layout::{Frame, FrameItem, Transform};
-use typst_library::model::HeadingElem;
+use typst_library::model::{HeadingElem, TableElem};
 
 const PT_PER_MM: f64 = 72.0 / 25.4;
 const PT_PER_CM: f64 = 72.0 / 2.54;
@@ -88,6 +88,7 @@ struct RawTextRun {
     font_size_pt: f64,
     has_missing_glyph: bool,
     is_math: bool,
+    in_table: bool,
     col: usize,
     src_line: Option<usize>,
     src_kind: Option<String>,
@@ -114,6 +115,8 @@ pub struct TextLine {
     pub font_size_pt: f64,
     #[serde(default)]
     pub is_math: bool,
+    #[serde(default)]
+    pub in_table: bool,
     pub src_line: Option<usize>,
     pub src_kind: Option<String>,
 }
@@ -234,10 +237,18 @@ pub struct ExtractedDocument {
     raw_runs_by_page: Vec<Vec<RawTextRun>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveTagKind {
+    Table,
+    Heading,
+    Other,
+}
+
 struct FrameWalkState {
     cur_src_line: Option<usize>,
     cur_src_kind: Option<String>,
-    in_heading: bool,
+    tag_stack: Vec<ActiveTagKind>,
+    in_table_depth: usize,
     runs: Vec<RawTextRun>,
     containers: Vec<RenderedContainer>,
 }
@@ -260,18 +271,37 @@ fn walk_inspect_frame(
                     if let Some(line_str) = parts.next()
                         && let Ok(line_num) = line_str.parse::<usize>()
                     {
-                        state.cur_src_line = Some(line_num);
-                        state.cur_src_kind = parts.next().map(|k| k.to_string());
+                        let kind = parts.next().map(|k| k.to_string());
+                        if line_num == 0 && kind.as_deref() == Some("end") {
+                            state.cur_src_line = None;
+                            state.cur_src_kind = None;
+                        } else {
+                            state.cur_src_line = Some(line_num);
+                            state.cur_src_kind = kind;
+                        }
                     }
+                    state.tag_stack.push(ActiveTagKind::Other);
+                } else if elem.to_packed::<TableElem>().is_some() {
+                    state.in_table_depth += 1;
+                    state.tag_stack.push(ActiveTagKind::Table);
                 } else if elem.to_packed::<HeadingElem>().is_some() {
-                    state.in_heading = true;
                     state.cur_src_kind = Some("heading".to_string());
+                    state.tag_stack.push(ActiveTagKind::Heading);
+                } else {
+                    state.tag_stack.push(ActiveTagKind::Other);
                 }
             }
             FrameItem::Tag(Tag::End(_, _, _)) => {
-                if state.in_heading {
-                    state.in_heading = false;
-                    state.cur_src_kind = None;
+                if let Some(kind) = state.tag_stack.pop() {
+                    match kind {
+                        ActiveTagKind::Table => {
+                            state.in_table_depth = state.in_table_depth.saturating_sub(1);
+                        }
+                        ActiveTagKind::Heading => {
+                            state.cur_src_kind = None;
+                        }
+                        ActiveTagKind::Other => {}
+                    }
                 }
             }
             FrameItem::Text(text_item) => {
@@ -298,6 +328,7 @@ fn walk_inspect_frame(
                     font_size_pt: round2(size),
                     has_missing_glyph,
                     is_math,
+                    in_table: state.in_table_depth > 0,
                     col: 1,
                     src_line: state.cur_src_line,
                     src_kind: state.cur_src_kind.clone(),
@@ -357,19 +388,27 @@ pub fn extract_document_geometry(
     let mut font_map: BTreeMap<String, (Vec<f64>, usize, usize)> = BTreeMap::new();
     let mut next_block_id = 1usize;
 
+    let mut carry_src_line: Option<usize> = None;
+    let mut carry_src_kind: Option<String> = None;
+    let mut carry_table_depth: usize = 0;
+
     for (page_idx, page) in doc.pages().iter().enumerate() {
         let page_num = page_idx + 1;
         let width_pt = page.frame.width().to_pt().max(1.0);
         let height_pt = page.frame.height().to_pt().max(1.0);
 
         let mut state = FrameWalkState {
-            cur_src_line: None,
-            cur_src_kind: None,
-            in_heading: false,
+            cur_src_line: carry_src_line,
+            cur_src_kind: carry_src_kind.clone(),
+            tag_stack: (0..carry_table_depth).map(|_| ActiveTagKind::Table).collect(),
+            in_table_depth: carry_table_depth,
             runs: Vec::new(),
             containers: Vec::new(),
         };
         walk_inspect_frame(&page.frame, Transform::identity(), page_num, &mut state);
+        carry_src_line = state.cur_src_line;
+        carry_src_kind = state.cur_src_kind.clone();
+        carry_table_depth = state.in_table_depth;
 
         for run in &state.runs {
             let entry = font_map
@@ -549,6 +588,7 @@ fn group_runs_into_lines(runs: &[RawTextRun], page_num: usize) -> Vec<TextLine> 
         let mut y_sum = 0.0;
         let mut size_max = 0.0f64;
         let mut is_math = false;
+        let mut in_table = false;
         let mut src_line = None;
         let mut src_kind = None;
 
@@ -563,6 +603,9 @@ fn group_runs_into_lines(runs: &[RawTextRun], page_num: usize) -> Vec<TextLine> 
             size_max = size_max.max(r.font_size_pt);
             if r.is_math {
                 is_math = true;
+            }
+            if r.in_table {
+                in_table = true;
             }
             // Prefer non-bullet runs for source-line attribution so `- #metadata(...)` binds to the item's line
             if !is_bullet_marker(&r.text) && r.src_line.is_some() && src_line.is_none() {
@@ -585,6 +628,7 @@ fn group_runs_into_lines(runs: &[RawTextRun], page_num: usize) -> Vec<TextLine> 
             word_count,
             font_size_pt: round2(size_max),
             is_math,
+            in_table,
             src_line,
             src_kind,
         });
@@ -814,7 +858,7 @@ pub fn analyze_layout(
                     .iter()
                     .filter(|l| l.col == blk.col && l.bbox.y >= blk.bbox.y - 1.0 && l.bbox.bottom() <= blk.bbox.bottom() + 1.0)
                     .collect();
-                if lines_in_blk.last().is_some_and(|l| l.is_math) {
+                if lines_in_blk.last().is_some_and(|l| l.is_math || l.in_table) {
                     continue;
                 }
                 let last_text = lines_in_blk
@@ -869,6 +913,9 @@ pub fn analyze_layout(
             for (col, mut clines) in by_col {
                 clines.sort_by(|a, b| a.y_baseline.total_cmp(&b.y_baseline));
                 for w in clines.windows(2) {
+                    if w[0].in_table || w[1].in_table {
+                        continue;
+                    }
                     let dy = w[1].y_baseline - w[0].y_baseline;
                     let same_block = (w[1].font_size_pt - w[0].font_size_pt).abs() < 0.8
                         && (w[1].src_line == w[0].src_line || w[1].src_line.is_none());
@@ -1074,6 +1121,8 @@ pub fn analyze_layout(
                     && inter.w > 4.0
                     && inter.h > a.font_size_pt.min(b.font_size_pt) * 0.60
                 {
+                    let excerpt_a: String = a.text.chars().take(32).collect();
+                    let excerpt_b: String = b.text.chars().take(32).collect();
                     issues.push(LayoutIssue {
                         code: "TEXT_OVERLAP".to_string(),
                         severity: "error".to_string(),
@@ -1081,13 +1130,70 @@ pub fn analyze_layout(
                         col: a.col,
                         bbox_pt: inter.to_array(),
                         src_line: a.src_line.or(b.src_line),
-                        text_excerpt: format!("\"{}\" overlaps \"{}\"", a.text.chars().take(25).collect::<String>(), b.text.chars().take(25).collect::<String>()),
+                        text_excerpt: format!("\"{excerpt_a}\" overlaps \"{excerpt_b}\""),
                         reclaimable_pt: None,
-                        metrics: serde_json::json!({ "overlap_area_pt2": round2(inter.area()) }),
-                        suggestion: "Two text runs overlap spatially; check custom negative spacing or wide math formulas.".to_string(),
+                        metrics: serde_json::json!({
+                            "overlap_area_pt2": round2(inter.area()),
+                            "overlap_bbox_pt": inter.to_array(),
+                            "text_a": excerpt_a,
+                            "text_b": excerpt_b,
+                        }),
+                        suggestion: format!(
+                            "Text overlap at ({:.1}, {:.1}, {:.1}x{:.1}pt): \"{}\" overlaps \"{}\"; check negative spacing, wide math, or long tokens.",
+                            inter.x, inter.y, inter.w, inter.h, excerpt_a, excerpt_b
+                        ),
                     });
                 }
             }
+        }
+    }
+
+    // 8b. SPLIT_CODE_BLOCK (fenced code block split across columns or pages)
+    let mut code_lines_by_src: BTreeMap<usize, Vec<&TextLine>> = BTreeMap::new();
+    for line in &doc.lines {
+        if line.src_kind.as_deref() == Some("code")
+            && let Some(sl) = line.src_line
+        {
+            code_lines_by_src.entry(sl).or_default().push(line);
+        }
+    }
+    for (src_line, clines) in code_lines_by_src {
+        let mut loc_counts: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+        for l in &clines {
+            *loc_counts.entry((l.page, l.col)).or_default() += 1;
+        }
+        if loc_counts.len() >= 2 {
+            let first = clines[0];
+            let breakdown: Vec<String> = loc_counts
+                .iter()
+                .map(|((p, c), cnt)| {
+                    format!(
+                        "{cnt} line{} on p{p} col{c}",
+                        if *cnt == 1 { "" } else { "s" }
+                    )
+                })
+                .collect();
+            let split_summary = breakdown.join(", ");
+            let preview: String = first.text.chars().take(50).collect();
+            issues.push(LayoutIssue {
+                code: "SPLIT_CODE_BLOCK".to_string(),
+                severity: "warn".to_string(),
+                page: first.page,
+                col: first.col,
+                bbox_pt: first.bbox.to_array(),
+                src_line: Some(src_line),
+                text_excerpt: preview.clone(),
+                reclaimable_pt: None,
+                metrics: serde_json::json!({
+                    "fragments": loc_counts.len(),
+                    "total_lines": clines.len(),
+                    "split": split_summary,
+                }),
+                suggestion: format!(
+                    "Code block at md:{src_line} (\"{}\") splits across column/page break ({}); consider adding `\\columnbreak`, trimming preceding lines, or shrinking `code-fontsize`.",
+                    preview, split_summary
+                ),
+            });
         }
     }
 
@@ -2200,6 +2306,7 @@ margin: "0.5cm"
                     word_count: 3,
                     font_size_pt: 10.0,
                     is_math: false,
+                    in_table: false,
                     src_line: Some(5),
                     src_kind: Some("para".to_string()),
                 },
@@ -2212,6 +2319,7 @@ margin: "0.5cm"
                     word_count: 3,
                     font_size_pt: 10.0,
                     is_math: false,
+                    in_table: false,
                     src_line: Some(6),
                     src_kind: Some("para".to_string()),
                 },
@@ -2222,9 +2330,20 @@ margin: "0.5cm"
             raw_runs_by_page: vec![Vec::new()],
         };
         let report = analyze_layout(&extracted, "collide.md", None);
+        let overlap = report
+            .issues
+            .iter()
+            .find(|i| i.code == "TEXT_OVERLAP")
+            .expect("Expected TEXT_OVERLAP on colliding lines");
         assert!(
-            report.issues.iter().any(|i| i.code == "TEXT_OVERLAP"),
-            "Expected TEXT_OVERLAP on colliding lines"
+            overlap.suggestion.contains("Colliding line A") && overlap.suggestion.contains("Colliding line B"),
+            "TEXT_OVERLAP suggestion should include both colliding strings: {}",
+            overlap.suggestion
+        );
+        assert!(
+            overlap.suggestion.contains("70.0, 93.0"),
+            "TEXT_OVERLAP suggestion should include overlap bbox coordinates: {}",
+            overlap.suggestion
         );
     }
 
@@ -2283,5 +2402,75 @@ margin: "0.5cm"
             "Math denominators should not trigger SHORT_LAST_LINE: {:?}",
             report.issues
         );
+    }
+
+    #[test]
+    fn test_table_rows_do_not_trigger_inflated_leading() {
+        let md = r#"---
+author: ""
+theme: compact
+columns: 2
+geometry: "margin=0.35cm"
+fontsize: 8.25pt
+---
+
+## Commands
+
+Regular body paragraph with multiple lines of text to establish a clean median body leading across the column before the table appears.
+
+| Command | Purpose |
+| :--- | :--- |
+| `git status` | Working tree state |
+| `git diff` | Unstaged changes |
+| `git log` | Commit history |
+| `git rebase` | Replay commits |
+| `git bisect` | Binary search bugs |
+"#;
+        let cfg = BotoxConfig::defaults();
+        let (doc, _, cols) = crate::engine::compile_for_inspection(
+            md, None, &cfg, false, false, None, None, None, None, None, &[], &[], Some(Path::new("tbl.md")), "tbl.md",
+        ).unwrap();
+        let extracted = extract_document_geometry(&doc, cols);
+        assert!(
+            extracted.lines.iter().any(|l| l.in_table),
+            "Expected table lines to be flagged with in_table=true"
+        );
+        let report = analyze_layout(&extracted, "tbl.md", None);
+        let inflated: Vec<_> = report.issues.iter().filter(|i| i.code == "INFLATED_LEADING").collect();
+        assert!(
+            inflated.is_empty(),
+            "Table rows should not trigger INFLATED_LEADING, got: {:?}",
+            inflated
+        );
+    }
+
+    #[test]
+    fn test_split_code_block_across_columns_detected() {
+        // Fill ~85% of Column 1, then place a 12-line fenced code block so it splits across Col 1 -> Col 2
+        let mut md = String::from(
+            "---\nauthor: \"\"\ntheme: compact\ncolumns: 2\ncolumn-gutter: 8pt\ngeometry: \"margin=0.35cm\"\nfontsize: 8.25pt\ncode-fontsize: 7.3pt\nnumber-sections: false\ntable-of-contents: false\nbibliography: false\n---\n\n## TCP Client\n\n",
+        );
+        for idx in 1..=58 {
+            md.push_str(&format!("- **Bullet {idx}:** Compact summary line.\n"));
+        }
+        md.push_str("\n```python\n");
+        for idx in 1..=20 {
+            md.push_str(&format!("line_{idx} = send_packet({idx})\n"));
+        }
+        md.push_str("```\n");
+
+        let cfg = BotoxConfig::defaults();
+        let (doc, _, cols) = crate::engine::compile_for_inspection(
+            &md, None, &cfg, false, false, None, None, None, None, None, &[], &[], Some(Path::new("split.md")), "split.md",
+        ).unwrap();
+        let extracted = extract_document_geometry(&doc, cols);
+        let report = analyze_layout(&extracted, "split.md", None);
+        let split_issue = report
+            .issues
+            .iter()
+            .find(|i| i.code == "SPLIT_CODE_BLOCK")
+            .expect("Expected SPLIT_CODE_BLOCK warning when fenced code splits across columns");
+        assert_eq!(split_issue.severity, "warn");
+        assert!(split_issue.suggestion.contains("col1") && split_issue.suggestion.contains("col2"));
     }
 }
