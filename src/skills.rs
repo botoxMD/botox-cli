@@ -103,6 +103,10 @@ botox probe sheet.md --at-line 48              # Map Markdown source line to ren
 | `-N, --number-sections`| None | Number headings automatically (1, 1.1, 1.1.1) | Disabled |
 | `-b, --bibliography` | None | Transform hyperlinks into IEEE numbered citations `[1]` with an end bibliography | Disabled |
 | `--no-bibliography` | None | Disable link-to-citation bibliography transformation | Enabled |
+| `template [name]` | `[name]` | List built-in header templates (`cheatsheet`, `paper`, `report`, `notes`, `cv`, `essay`, `memo`, `landscape`, `slides`) or print YAML header | List all |
+| `init <file> -t <name>` | `<name>` | Initialize a new file from a curated header/layout template (supports `--header-only` and `--list`) | Default doc |
+| `inspect <file>` | `--json`, `--target-pages N`, `--compare` | Inspect compiled PDF geometry for wasted space, widows, overflows, orphan headings, and fit-to-page reclaim plans | Human summary |
+| `probe <file>` | `--zone`, `--region`, `--around`, `--at-line`, `--density-grid` | Spatially probe pages, columns, bounding boxes, gaps, and ASCII/JSON occupancy heatmaps | Page 1 |
 | `--exclude-ref` | `<csv>` | Comma-separated domains/patterns to exclude from bibliography (e.g. `github.com,x.com`) | None |
 | `--include-ref` | `<csv>` | Comma-separated domains/patterns to restrict bibliography citations to | None |
 | `--markdown, --md` | None | Export to clean, portable standard Markdown with assets & resolved citations | Disabled |

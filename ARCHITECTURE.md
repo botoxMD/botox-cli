@@ -190,3 +190,18 @@ flowchart LR
    - System `$PATH`
 2. **JSON Vector IPC / Persistent Daemon:** The extension calls `botox compile <input.md> -o <temp.json> --json-pages` or communicates via the background daemon (`botox daemon`). The binary outputs page count, per-page SVG vector markup, and heading metadata.
 3. **Secure Webview:** Renders vector pages in a dedicated panel with strict Content Security Policy (`default-src 'none'`), synchronizing scroll positions via heading interpolation and tracking live document edits.
+
+---
+
+### 2.7 Header & Layout Templates (`src/templates.rs`)
+
+Provides curated layout presets (`cheatsheet`, `paper`, `report`, `notes`, `cv`, `essay`, `memo`, `landscape`, `slides`) accessible via `botox template [name]` and `botox init <file> --template <name>`. Each preset configures margins, column counts, gutters, line spacing, body and code font sizes, and TOC/bibliography toggles while inheriting user defaults (`author`, `lang`, `papersize`, `kroki_url`) from `BotoxConfig`.
+
+---
+
+### 2.8 Layout Inspection & Spatial Probing (`src/inspect.rs`)
+
+Operates directly on Typst's in-memory `PagedDocument` frame tree with zero-width `#metadata("botox-src:<line>:<kind>")` source tags injected by `engine::compile_for_inspection`:
+1. **Geometry Extraction**: Walks `FrameItem::{Text, Shape, Image, Group, Tag}` to extract per-column lines, logical blocks, container boxes, and font/glyph telemetry.
+2. **Diagnostics (`botox inspect`)**: Detects `SHORT_LAST_LINE`, `INFLATED_LEADING`, `PAGE_SPILLOVER`, `COLUMN_IMBALANCE`, `OVERSIZED_PADDING`, `CONTENT_OVERFLOW`, `GUTTER_INTRUSION`, `TEXT_OVERLAP`, `ORPHAN_HEADING`, `TINY_IMAGE`, `CLIPPED_IMAGE`, and `MISSING_GLYPH`, plus `--target-pages N` reclaim plans and `--compare` before/after diffs.
+3. **Spatial Probing (`botox probe`)**: Supports `--page`, `--region`, `--zone`, `--around`, `--at-line`, `--measure-gap`, `--list-blocks`, and `--density-grid WxH` ASCII/JSON occupancy heatmaps.

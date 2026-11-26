@@ -18,6 +18,9 @@ It embeds the Typst typesetting engine directly inside the binary, so you don't 
 - **Diagrams**: Mermaid, PlantUML, UMLet (`.uxf`), and Graphviz diagrams compiled via Kroki with automatic fallbacks and local caching.
 - **File Referencing**: Reference external diagram files (`.uxf`, `.puml`, `.mmd`) or code files directly instead of copying their contents into Markdown.
 - **Structure**: Tables with alignment and captions, callout boxes, table of contents, and automatic bibliography generation for links.
+- **Header & Layout Templates**: Built-in layout presets (`cheatsheet`, `paper`, `report`, `notes`, `cv`, `essay`, `memo`, `landscape`, `slides`) with tuned margins, columns, font sizes, and spacing (`botox template` / `botox init --template`).
+- **Layout Inspection & Spatial Probing**: Analyze compiled PDF geometry for wasted space, short trailing lines (widows), overflows, column imbalance, orphan headings, fit-to-page reclaim plans (`botox inspect`), and region/zone/anchor/density-grid probing (`botox probe`).
+- **Code Block Typography**: Configure code block font size globally (`code-fontsize` in frontmatter or `botox.yaml`) or per block (```` ```rust size=7pt ````).
 - **Daemon Mode**: Background compilation daemon (`botox daemon`) for instant editor preview integration.
 - **Watch Mode**: `--watch` / `-w` automatically recompiles when you save changes.
 - **Piping**: Supports reading from stdin and streaming output to stdout (`-o -`).
@@ -126,6 +129,30 @@ Convert extended Botox Markdown with embedded diagrams and LaTeX callouts into c
 botox markdown document.md -o portable.md
 ```
 
+### Header & Layout Templates
+
+List all curated layout presets, print a YAML header to stdout, or scaffold a new document with tuned margins, columns, and font sizes:
+
+```bash
+botox templates                              # List all built-in header templates
+botox template cheatsheet                    # Print only the YAML frontmatter header
+botox init sheet.md --template cheatsheet    # Create a new file from a template
+```
+
+### Layout Inspection & Spatial Probing
+
+Analyze the compiled PDF layout directly from Typst's in-memory geometry (great for optimizing dense cheatsheets, CVs, and AI agent authoring loops):
+
+```bash
+botox inspect document.md                    # Detect wasted space, widows, overflows, orphan headings
+botox inspect sheet.md --target-pages 2 --json  # Ranked reclaim plan to fit onto 2 pages
+botox inspect sheet.md --compare base.json   # Diff page count, fill %, and resolved issues
+botox probe sheet.md --density-grid 16x24    # ASCII + JSON occupancy heatmap of page 1
+botox probe sheet.md --zone col:2:bottom     # Probe specific page/column/quadrant/gutter
+botox probe sheet.md --around "Three areas"  # Inspect neighborhood around a text anchor
+botox probe sheet.md --at-line 48            # Map Markdown source line to rendered PDF bbox
+```
+
 ### Watch Mode & Daemon
 
 Automatically rebuild on file changes:
@@ -164,6 +191,9 @@ For complete, working samples that demonstrate how to write documents and presen
 Usage: botox <input.md|input.btx|input.btx.md> [options]
        botox <pdf|slides|markdown> <input> [options]
        botox init <filename> [options]
+       botox template [name] [options]
+       botox inspect <input.md> [--json] [--target-pages N] [--compare baseline.json]
+       botox probe <input.md> [options]
        botox config
        botox setup [options]
        botox skills [options]
@@ -173,7 +203,10 @@ Commands:
   pdf <input>             Compile document to PDF
   slides <input>          Compile presentation to interactive HTML or PDF
   markdown <input>        Export to portable standard Markdown with assets
-  init <filename>         Initialize a new Markdown document or presentation
+  init <filename>         Initialize a new Markdown/Botox document or slide deck (supports --template <name>)
+  template, templates     List available header templates or print a template's YAML frontmatter header
+  inspect <input>         Analyze compiled PDF geometry for wasted space, widows, overflows, and reclaim plans
+  probe <input>           Spatially probe regions, zones, anchors, source lines, gaps, and density grids
   config                  Display currently active configuration
   setup                   Interactive configuration wizard
   skills, --skills        Generate agent skill definition for AI coding agents
