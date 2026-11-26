@@ -8,6 +8,8 @@ mod skills;
 pub mod daemon;
 pub mod engine;
 pub mod emitter;
+pub mod templates;
+pub mod inspect;
 
 use std::path::{Path, PathBuf};
 
@@ -21,6 +23,9 @@ fn show_help() {
     println!(r#"Usage: botox <input.md|input.btx|input.btx.md> [options]
        botox <pdf|slides|markdown> <input> [options]
        botox init <filename> [options]
+       botox template [name] [options]
+       botox inspect <input.md> [--json] [--target-pages N] [--compare baseline.json]
+       botox probe <input.md> [options]
        botox config
        botox setup [options]
        botox skills [options]
@@ -30,7 +35,10 @@ Pure Rust single native binary: Transforms Markdown and Botox (.btx, .btx.md) in
 Mode is detected automatically from frontmatter structure and file extensions, or specified explicitly.
 
 Commands:
-  init <filename>         Initialize a new Markdown/Botox document or presentation slide deck
+  init <filename>         Initialize a new Markdown/Botox document or slide deck (supports --template <name>)
+  template, templates     List available header templates or print a template's YAML frontmatter header
+  inspect                 Analyze compiled PDF geometry for wasted space, overflows, widows, and reclaim plans
+  probe                   Spatially probe regions, zones, lines, gaps, and density grids in the compiled PDF
   markdown, md            Export to clean, portable standard Markdown with assets & resolved citations
   config                  Display currently active configuration settings and loaded sources
   setup                   Interactive configuration wizard to configure user defaults
@@ -317,21 +325,437 @@ fn prompt_choice(prompt: &str, choices: &[&str], default: &str) -> String {
     default.to_string()
 }
 
+fn load_and_compile_for_inspect(
+    input_path: &Path,
+    custom_config: Option<&Path>,
+    cli_theme: Option<&str>,
+    explicit_slides: bool,
+    explicit_pdf: bool,
+) -> Result<(inspect::ExtractedDocument, String), String> {
+    let source = DocumentSource::File {
+        path: input_path,
+        resource_dir: None,
+    };
+    let raw_content = source.read_content()?;
+    let doc_dir = source.resource_dir();
+    let src_filename = source.filename_display();
+    let (config_data, _) = config::BotoxConfig::load(custom_config, doc_dir);
+    let (doc, _is_slides, expected_cols) = engine::compile_for_inspection(
+        &raw_content,
+        doc_dir,
+        &config_data,
+        explicit_pdf,
+        explicit_slides,
+        None,
+        None,
+        None,
+        None,
+        cli_theme,
+        &[],
+        &[],
+        Some(input_path),
+        &src_filename,
+    )?;
+    Ok((inspect::extract_document_geometry(&doc, expected_cols), src_filename))
+}
+
+fn handle_inspect(args: &[String]) {
+    if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
+        println!(r#"Usage: botox inspect <input.md> [options]
+
+Inspect the compiled PDF layout geometry for wasted space, short trailing lines (widows),
+inflated leading, overflows, column imbalance, orphan headings, and missing glyphs.
+
+Options:
+  --json                  Output structured JSON report for AI agents
+  --target-pages <N>      Compute a ranked reclaim plan to fit the document into N pages
+  --compare <file.json>   Diff current layout metrics & issues against a saved JSON baseline
+  --theme <theme>         Override document/slide theme
+  --config <file>         Custom configuration YAML path
+  --slides, --pdf         Force slide or PDF document mode
+"#);
+        return;
+    }
+
+    let mut input_file: Option<PathBuf> = None;
+    let mut json_mode = false;
+    let mut target_pages: Option<usize> = None;
+    let mut compare_path: Option<PathBuf> = None;
+    let mut cli_theme: Option<String> = None;
+    let mut custom_config: Option<PathBuf> = None;
+    let mut explicit_slides = false;
+    let mut explicit_pdf = false;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => json_mode = true,
+            "--slides" => explicit_slides = true,
+            "--pdf" => explicit_pdf = true,
+            "--target-pages" => {
+                i += 1;
+                if i < args.len() {
+                    match args[i].parse::<usize>() {
+                        Ok(n) if n > 0 => target_pages = Some(n),
+                        _ => {
+                            eprintln!("Error: --target-pages requires a positive integer, got '{}'", args[i]);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+            "--compare" => {
+                i += 1;
+                if i < args.len() {
+                    compare_path = Some(PathBuf::from(&args[i]));
+                }
+            }
+            "--theme" => {
+                i += 1;
+                if i < args.len() {
+                    cli_theme = Some(args[i].clone());
+                }
+            }
+            "--config" => {
+                i += 1;
+                if i < args.len() {
+                    custom_config = Some(PathBuf::from(&args[i]));
+                }
+            }
+            other if !other.starts_with('-') && input_file.is_none() => {
+                input_file = Some(PathBuf::from(other));
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let Some(path) = input_file else {
+        eprintln!("Error: 'botox inspect' requires an input file.");
+        std::process::exit(1);
+    };
+
+    let (extracted, label) = match load_and_compile_for_inspect(
+        &path,
+        custom_config.as_deref(),
+        cli_theme.as_deref(),
+        explicit_slides,
+        explicit_pdf,
+    ) {
+        Ok(res) => res,
+        Err(e) => {
+            eprintln!("Inspection failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let report = inspect::analyze_layout(&extracted, &label, target_pages);
+
+    if let Some(ref cmp_file) = compare_path {
+        let base_str = match std::fs::read_to_string(cmp_file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Failed to read baseline '{}': {e}", cmp_file.display());
+                std::process::exit(1);
+            }
+        };
+        let baseline: inspect::InspectReport = match serde_json::from_str(&base_str) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Invalid baseline JSON '{}': {e}", cmp_file.display());
+                std::process::exit(1);
+            }
+        };
+        let delta = inspect::compare_reports(&baseline, &report);
+        if json_mode {
+            let combined = serde_json::json!({ "report": report, "delta": delta });
+            println!("{}", serde_json::to_string_pretty(&combined).unwrap_or_default());
+        } else {
+            print!("{}", inspect::format_inspect_human(&report));
+            println!(
+                "\nBaseline Comparison: pages {:+}, last_fill {:+.1}%, issues {:+} (resolved: {:?}, added: {:?})",
+                delta.pages_delta, delta.last_fill_delta_pct, delta.issues_delta, delta.resolved_codes, delta.added_codes
+            );
+        }
+        return;
+    }
+
+    if json_mode {
+        println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+    } else {
+        print!("{}", inspect::format_inspect_human(&report));
+    }
+}
+
+fn parse_grid_dims(s: &str) -> Option<(usize, usize)> {
+    let (w, h) = s.trim().split_once('x').or_else(|| s.trim().split_once('X'))?;
+    Some((w.parse().ok()?, h.parse().ok()?))
+}
+
+fn handle_probe(args: &[String]) {
+    if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
+        println!(r#"Usage: botox probe <input.md> [options]
+
+Spatially probe rendered regions, columns, text anchors, source lines, and occupancy grids.
+
+Options:
+  --page <N>                Inspect page N (1-indexed, default: 1)
+  --region <x,y,w,h>        Probe explicit box (supports pt, mm, cm, or %, e.g. 50%,75%,50%,25%)
+  --zone <spec>             Named zone: page:1:col:2:bottom, page:2:q4, page:last:bottom, page:1:gutter
+  --around <text>           Probe elements around a matching text anchor
+  --radius <dim>            Radius around anchor (default: 56.7pt / 20mm)
+  --at-line <N>             Locate rendered block(s) for Markdown source line N
+  --measure-gap <A> <B>     Measure exact dx, dy in pt between text A and text B
+  --density-grid <WxH>      Render ASCII + JSON occupancy grid (e.g. 16x24)
+  --list-blocks             Include logical block inventory
+  --json                    Output structured JSON for AI agents
+  --theme <theme>           Override document/slide theme
+  --config <file>           Custom configuration YAML path
+"#);
+        return;
+    }
+
+    let mut input_file: Option<PathBuf> = None;
+    let mut json_mode = false;
+    let mut cli_theme: Option<String> = None;
+    let mut custom_config: Option<PathBuf> = None;
+    let mut explicit_slides = false;
+    let mut explicit_pdf = false;
+    let mut query = inspect::ProbeQuery {
+        radius_pt: 56.7,
+        ..Default::default()
+    };
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => json_mode = true,
+            "--slides" => explicit_slides = true,
+            "--pdf" => explicit_pdf = true,
+            "--list-blocks" => query.list_blocks = true,
+            "--page" => {
+                i += 1;
+                if i < args.len() {
+                    match args[i].parse::<usize>() {
+                        Ok(n) if n > 0 => query.page = Some(n),
+                        _ => {
+                            eprintln!("Error: --page requires a positive integer, got '{}'", args[i]);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+            "--region" => {
+                i += 1;
+                if i < args.len() {
+                    query.region = Some(args[i].clone());
+                }
+            }
+            "--zone" => {
+                i += 1;
+                if i < args.len() {
+                    query.zone = Some(args[i].clone());
+                }
+            }
+            "--around" => {
+                i += 1;
+                if i < args.len() {
+                    query.around = Some(args[i].clone());
+                }
+            }
+            "--radius" => {
+                i += 1;
+                if i < args.len() {
+                    let s = args[i].trim().to_ascii_lowercase();
+                    if let Some(mm) = s.strip_suffix("mm") {
+                        if let Ok(v) = mm.parse::<f64>() {
+                            query.radius_pt = v * (72.0 / 25.4);
+                        }
+                    } else if let Some(pt) = s.strip_suffix("pt") {
+                        if let Ok(v) = pt.parse::<f64>() {
+                            query.radius_pt = v;
+                        }
+                    } else if let Ok(v) = s.parse::<f64>() {
+                        query.radius_pt = v;
+                    }
+                }
+            }
+            "--at-line" => {
+                i += 1;
+                if i < args.len() {
+                    match args[i].parse::<usize>() {
+                        Ok(n) if n > 0 => query.at_line = Some(n),
+                        _ => {
+                            eprintln!("Error: --at-line requires a positive integer, got '{}'", args[i]);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+            "--measure-gap" => {
+                if i + 2 < args.len() {
+                    query.measure_gap = Some((args[i + 1].clone(), args[i + 2].clone()));
+                    i += 2;
+                } else {
+                    eprintln!("Error: --measure-gap requires two text arguments: <A> <B>");
+                    std::process::exit(1);
+                }
+            }
+            "--density-grid" => {
+                i += 1;
+                if i < args.len() {
+                    match parse_grid_dims(&args[i]) {
+                        Some(dims) => query.density_grid = Some(dims),
+                        None => {
+                            eprintln!("Error: --density-grid requires WxH format (e.g. 16x24), got '{}'", args[i]);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+            "--theme" => {
+                i += 1;
+                if i < args.len() {
+                    cli_theme = Some(args[i].clone());
+                }
+            }
+            "--config" => {
+                i += 1;
+                if i < args.len() {
+                    custom_config = Some(PathBuf::from(&args[i]));
+                }
+            }
+            other if !other.starts_with('-') && input_file.is_none() => {
+                input_file = Some(PathBuf::from(other));
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let Some(path) = input_file else {
+        eprintln!("Error: 'botox probe' requires an input file.");
+        std::process::exit(1);
+    };
+
+    let (extracted, label) = match load_and_compile_for_inspect(
+        &path,
+        custom_config.as_deref(),
+        cli_theme.as_deref(),
+        explicit_slides,
+        explicit_pdf,
+    ) {
+        Ok(res) => res,
+        Err(e) => {
+            eprintln!("Probe compilation failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    match inspect::run_probe(&extracted, &label, &query) {
+        Ok(report) => {
+            if json_mode {
+                println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+            } else {
+                print!("{}", inspect::format_probe_human(&report));
+            }
+        }
+        Err(e) => {
+            eprintln!("Probe error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn handle_templates(args: &[String]) {
+    if args.is_empty() || args.iter().any(|a| a == "-l" || a == "--list" || a == "list") {
+        print!("{}", templates::format_template_list());
+        return;
+    }
+
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        println!(r#"Usage: botox template [name] [options]
+       botox templates
+
+List available header templates or print a template's YAML frontmatter header to stdout.
+
+Arguments:
+  [name]                  Template name (e.g. cheatsheet, paper, report, notes, cv, essay, memo, landscape, slides)
+
+Options:
+  -l, --list              List all available header templates
+  --theme <theme>         Override the template's default theme
+  --full                  Include the starter Markdown body in addition to the YAML header
+"#);
+        return;
+    }
+
+    let mut tpl_name: Option<String> = None;
+    let mut cli_theme: Option<String> = None;
+    let mut full = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--theme" => {
+                i += 1;
+                if i < args.len() {
+                    cli_theme = Some(args[i].clone());
+                }
+            }
+            "--full" => full = true,
+            other if !other.starts_with('-') && tpl_name.is_none() => {
+                tpl_name = Some(other.to_string());
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let Some(name) = tpl_name else {
+        print!("{}", templates::format_template_list());
+        return;
+    };
+
+    let Some(tpl) = templates::find_template(&name) else {
+        eprintln!("Error: Unknown template '{name}'.\n");
+        eprint!("{}", templates::format_template_list());
+        std::process::exit(1);
+    };
+
+    let (resolved_cfg, _) = config::BotoxConfig::load(None, None);
+    let output = if full {
+        templates::render_template_document(tpl, &resolved_cfg, cli_theme.as_deref(), Path::new(&format!("{}.md", tpl.name)))
+    } else {
+        templates::render_template_header(tpl, &resolved_cfg, cli_theme.as_deref())
+    };
+    print!("{output}");
+}
+
 fn handle_init(args: &[String]) {
     if args.is_empty() || args[0] == "-h" || args[0] == "--help" {
         println!(r#"Usage: botox init <filename> [options]
+       botox init --list
 
-Initialize a new Markdown document or presentation slide deck with active default settings.
+Initialize a new Markdown document or presentation slide deck with active default settings
+or a curated layout header template.
 
 Arguments:
-  <filename>              Target file path to create (e.g. document.md, slides.md)
+  <filename>              Target file path to create (e.g. document.md, cheatsheet.md, or '-' for stdout)
 
 Options:
+  -t, --template <name>   Use a built-in header/layout template (cheatsheet, paper, report, notes, cv, essay, memo, landscape, slides)
+  -l, --list              List all available header templates and their layout presets
+  --header-only           Write only the YAML frontmatter header without starter body content
   --slides                Initialize as a presentation slide deck
   --doc, --pdf            Initialize as a publication-grade LaTeX PDF document
   -f, --force             Overwrite target file if it already exists
-  --theme <theme>         Slide theme (default: from config or 'default')
+  --theme <theme>         Override document or slide theme
 "#);
+        return;
+    }
+
+    if args.iter().any(|a| a == "-l" || a == "--list" || a == "--list-templates") {
+        print!("{}", templates::format_template_list());
         return;
     }
 
@@ -339,7 +763,9 @@ Options:
     let mut explicit_slides = false;
     let mut explicit_doc = false;
     let mut force = false;
+    let mut header_only = false;
     let mut cli_theme: Option<String> = None;
+    let mut cli_template: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -347,11 +773,21 @@ Options:
             "--slides" | "slides" => explicit_slides = true,
             "--doc" | "--pdf" | "pdf" | "doc" => explicit_doc = true,
             "-f" | "--force" => force = true,
+            "--header-only" => header_only = true,
+            "-t" | "--template" => {
+                i += 1;
+                if i < args.len() {
+                    cli_template = Some(args[i].clone());
+                }
+            }
             "--theme" => {
                 i += 1;
                 if i < args.len() {
                     cli_theme = Some(args[i].clone());
                 }
+            }
+            "-" if target_filename.is_none() => {
+                target_filename = Some(PathBuf::from("-"));
             }
             other => {
                 if !other.starts_with('-') && target_filename.is_none() {
@@ -370,12 +806,14 @@ Options:
         Some(p) => p,
         None => {
             eprintln!("Error: 'botox init' requires a target filename.");
-            eprintln!("Example: botox init document.md   or   botox init slides.md");
+            eprintln!("Example: botox init document.md   or   botox init sheet.md --template cheatsheet");
             std::process::exit(1);
         }
     };
 
-    if target_path.exists() && !force {
+    let to_stdout = target_path.as_os_str() == "-";
+
+    if !to_stdout && target_path.exists() && !force {
         eprintln!(
             "Error: File '{}' already exists. Use --force to overwrite.",
             target_path.display()
@@ -383,18 +821,38 @@ Options:
         std::process::exit(1);
     }
 
-    let fname_lower = target_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    let is_slides = explicit_slides
-        || (!explicit_doc && (fname_lower.contains("slide") || fname_lower.contains("pres")));
-
-    let doc_dir = target_path.parent();
+    let doc_dir = if to_stdout { None } else { target_path.parent() };
     let (resolved_cfg, _) = config::BotoxConfig::load(None, doc_dir);
 
-    let content = generate_init_template(is_slides, &resolved_cfg, cli_theme.as_deref(), &target_path);
+    let (content, doc_type_label) = if let Some(ref tpl_name) = cli_template {
+        let Some(tpl) = templates::find_template(tpl_name) else {
+            eprintln!("Error: Unknown template '{tpl_name}'.\n");
+            eprint!("{}", templates::format_template_list());
+            std::process::exit(1);
+        };
+        let rendered = if header_only {
+            templates::render_template_header(tpl, &resolved_cfg, cli_theme.as_deref())
+        } else {
+            templates::render_template_document(tpl, &resolved_cfg, cli_theme.as_deref(), &target_path)
+        };
+        (rendered, format!("'{}' template", tpl.name))
+    } else {
+        let fname_lower = target_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let is_slides = explicit_slides
+            || (!explicit_doc && (fname_lower.contains("slide") || fname_lower.contains("pres")));
+        let rendered = generate_init_template(is_slides, &resolved_cfg, cli_theme.as_deref(), &target_path);
+        let label = if is_slides { "slide presentation" } else { "PDF document" }.to_string();
+        (rendered, label)
+    };
+
+    if to_stdout {
+        print!("{content}");
+        return;
+    }
 
     if let Some(parent) = target_path.parent()
         && !parent.as_os_str().is_empty() {
@@ -403,8 +861,7 @@ Options:
 
     match std::fs::write(&target_path, content) {
         Ok(()) => {
-            let doc_type = if is_slides { "slide presentation" } else { "PDF document" };
-            println!("Initialized new {} -> '{}'", doc_type, target_path.display());
+            println!("Initialized new {} -> '{}'", doc_type_label, target_path.display());
         }
         Err(e) => {
             eprintln!("Error writing '{}': {e}", target_path.display());
@@ -763,6 +1220,21 @@ fn main() {
 
     if args[1] == "init" {
         handle_init(&args[2..]);
+        return;
+    }
+
+    if args[1] == "template" || args[1] == "templates" {
+        handle_templates(&args[2..]);
+        return;
+    }
+
+    if args[1] == "inspect" {
+        handle_inspect(&args[2..]);
+        return;
+    }
+
+    if args[1] == "probe" {
+        handle_probe(&args[2..]);
         return;
     }
 

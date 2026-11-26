@@ -832,12 +832,12 @@ pub fn render_doc_to_pages(doc: &typst_layout::PagedDocument) -> BotoxPagesOutpu
     }
 }
 
-pub fn compile_typst_to_pages(
+pub fn compile_typst_to_document(
     typst_markup: &str,
     resource_dir: Option<&Path>,
     markdown_source: Option<&str>,
     source_filename: Option<&str>,
-) -> Result<BotoxPagesOutput, String> {
+) -> Result<typst_layout::PagedDocument, String> {
     let fonts = load_needed_fonts(typst_markup);
     let res_dir = resource_dir
         .map(|p| p.to_path_buf())
@@ -853,14 +853,22 @@ pub fn compile_typst_to_pages(
     };
 
     let typst::diag::Warned { output, warnings: _ } = typst::compile(&world);
-    let doc: typst_layout::PagedDocument = output.map_err(|diags| {
+    output.map_err(|diags| {
         if std::env::var("BOTOX_DEBUG").is_ok() {
             let debug_path = crate::diagrams::get_cache_dir().join("debug_fail.typ");
             let _ = std::fs::write(debug_path, typst_markup);
         }
         format_compilation_error(&diags, typst_markup, markdown_source, source_filename)
-    })?;
+    })
+}
 
+pub fn compile_typst_to_pages(
+    typst_markup: &str,
+    resource_dir: Option<&Path>,
+    markdown_source: Option<&str>,
+    source_filename: Option<&str>,
+) -> Result<BotoxPagesOutput, String> {
+    let doc = compile_typst_to_document(typst_markup, resource_dir, markdown_source, source_filename)?;
     Ok(render_doc_to_pages(&doc))
 }
 

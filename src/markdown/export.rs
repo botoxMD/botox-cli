@@ -241,6 +241,7 @@ pub fn filter_frontmatter_for_markdown(raw_fm: &str, lang: &str) -> Option<Strin
         "theme", "slides_theme", "slides-theme",
         "papersize", "paper", "pagesize", "page-size", "page_size",
         "fontsize", "font-size", "font",
+        "code-fontsize", "code_fontsize", "codefontsize", "code-size", "code_size",
         "mainfont", "sansfont", "monofont", "mathfont", "cjkfont",
         "margin", "margins", "geometry",
         "columns", "gutter", "column-gutter", "column_gutter",

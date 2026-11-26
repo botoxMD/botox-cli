@@ -15,6 +15,8 @@ pub struct DocumentConfig {
     pub affiliation: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fontsize: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "code-fontsize", alias = "codefontsize", alias = "code-size", alias = "code_size")]
+    pub code_fontsize: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mainfont: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,6 +92,7 @@ impl DocumentConfig {
             author: None,
             affiliation: None,
             fontsize: None,
+            code_fontsize: None,
             mainfont: None,
             mathfont: Some("New Computer Modern Math".to_string()),
             monofont: Some("DejaVu Sans Mono".to_string()),
@@ -115,6 +118,7 @@ impl DocumentConfig {
         if other.author.is_some() { self.author = other.author.clone(); }
         if other.affiliation.is_some() { self.affiliation = other.affiliation.clone(); }
         if other.fontsize.is_some() { self.fontsize = other.fontsize.clone(); }
+        if other.code_fontsize.is_some() { self.code_fontsize = other.code_fontsize.clone(); }
         if other.mainfont.is_some() { self.mainfont = other.mainfont.clone(); }
         if other.mathfont.is_some() { self.mathfont = other.mathfont.clone(); }
         if other.monofont.is_some() { self.monofont = other.monofont.clone(); }
@@ -156,6 +160,8 @@ pub struct SlidesConfig {
     pub color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "code-fontsize", alias = "codefontsize", alias = "code-size", alias = "code_size")]
+    pub code_fontsize: Option<String>,
 }
 
 impl Default for SlidesConfig {
@@ -173,6 +179,7 @@ impl SlidesConfig {
             background_color: None,
             color: None,
             author: None,
+            code_fontsize: None,
         }
     }
 
@@ -183,6 +190,7 @@ impl SlidesConfig {
         if other.background_color.is_some() { self.background_color = other.background_color.clone(); }
         if other.color.is_some() { self.color = other.color.clone(); }
         if other.author.is_some() { self.author = other.author.clone(); }
+        if other.code_fontsize.is_some() { self.code_fontsize = other.code_fontsize.clone(); }
     }
 }
 

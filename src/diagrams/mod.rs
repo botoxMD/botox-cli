@@ -39,6 +39,11 @@ pub fn resolve_file_content(path_str: &str, resource_dir: Option<&Path>) -> Opti
 }
 
 pub fn parse_code_fence_file(fence: &str) -> (String, Option<String>) {
+    let (lang, file, _) = parse_code_fence_attributes(fence);
+    (lang, file)
+}
+
+pub fn parse_code_fence_attributes(fence: &str) -> (String, Option<String>, Option<String>) {
     let trimmed = fence.trim();
     let inside = if trimmed.starts_with('{') && trimmed.ends_with('}') {
         &trimmed[1..trimmed.len() - 1]
@@ -56,32 +61,49 @@ pub fn parse_code_fence_file(fence: &str) -> (String, Option<String>) {
         (first.to_string(), None)
     };
 
-    let mut file = colon_file;
-    if file.is_none() {
-        for attr in ["file=", "src=", "path="] {
+    let extract_attr = |keys: &[&str]| -> Option<String> {
+        for attr in keys {
             if let Some(pos) = inside.find(attr) {
+                // Ensure attribute boundary (start of string, whitespace, '{', ',', ';')
+                if pos > 0 {
+                    let prev = inside[..pos].chars().last().unwrap_or(' ');
+                    if !prev.is_whitespace() && prev != '{' && prev != ',' && prev != ';' {
+                        continue;
+                    }
+                }
                 let rest = inside[pos + attr.len()..].trim_start();
                 if let Some(stripped) = rest.strip_prefix('"') {
                     if let Some(end) = stripped.find('"') {
-                        file = Some(stripped[..end].to_string());
-                        break;
+                        return Some(stripped[..end].to_string());
                     }
                 } else if let Some(stripped) = rest.strip_prefix('\'') {
                     if let Some(end) = stripped.find('\'') {
-                        file = Some(stripped[..end].to_string());
-                        break;
+                        return Some(stripped[..end].to_string());
                     }
                 } else {
-                    let token = rest.split_whitespace().next().unwrap_or("").trim_end_matches('}');
+                    let token = rest
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .trim_end_matches(['}', ',', ';']);
                     if !token.is_empty() {
-                        file = Some(token.to_string());
-                        break;
+                        return Some(token.to_string());
                     }
                 }
             }
         }
-    }
-    (lang, file)
+        None
+    };
+
+    let file = colon_file.or_else(|| extract_attr(&["file=", "src=", "path="]));
+    let size = extract_attr(&["code-fontsize=", "code_fontsize=", "font-size=", "fontsize=", "size="])
+        .filter(|s| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '%')
+        });
+
+    (lang, file, size)
 }
 
 pub fn parse_diagram_fence_attributes(s: &str) -> (Option<String>, Option<String>, Option<String>) {
@@ -411,5 +433,27 @@ pub mod tests {
         let sanitized = sanitize_svg_for_typesetting(raw_svg);
         assert!(!sanitized.contains("<foreignObject"));
         assert!(sanitized.contains("A &amp; B &gt; C"));
+    }
+
+    #[test]
+    fn test_parse_code_fence_attributes_variants_and_sanitization() {
+        let (lang, file, size) = parse_code_fence_attributes("rust size=7pt");
+        assert_eq!(lang, "rust");
+        assert_eq!(file, None);
+        assert_eq!(size.as_deref(), Some("7pt"));
+
+        let (lang2, file2, size2) = parse_code_fence_attributes("{.python file=\"app.py\" fontsize=\"6.5pt\"}");
+        assert_eq!(lang2, "python");
+        assert_eq!(file2.as_deref(), Some("app.py"));
+        assert_eq!(size2.as_deref(), Some("6.5pt"));
+
+        let (lang3, file3, size3) = parse_code_fence_attributes("rs:src/main.rs code-fontsize=8pt");
+        assert_eq!(lang3, "rs");
+        assert_eq!(file3.as_deref(), Some("src/main.rs"));
+        assert_eq!(size3.as_deref(), Some("8pt"));
+
+        // Reject unsafe injection payloads in size attribute
+        let (_, _, unsafe_size) = parse_code_fence_attributes("rust size=\"7pt);#panic()\"");
+        assert_eq!(unsafe_size, None);
     }
 }

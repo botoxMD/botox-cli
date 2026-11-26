@@ -42,6 +42,13 @@ impl DocumentTheme {
         }
     }
 
+    pub fn default_code_fontsize(&self) -> &'static str {
+        match self {
+            Self::Compact => "8pt",
+            _ => "8.5pt",
+        }
+    }
+
     pub fn default_margins(&self) -> (&'static str, &'static str) {
         match self {
             Self::Academic => ("2.5cm", "2.5cm"),

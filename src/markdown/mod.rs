@@ -18,7 +18,7 @@ pub use references::{format_references_block, url_matches_pattern};
 pub use tables::parse_caption_and_label;
 
 pub use crate::diagrams::{
-    parse_code_fence_file, parse_diagram_fence, resolve_file_content,
+    parse_code_fence_attributes, parse_diagram_fence, resolve_file_content,
 };
 
 #[derive(Debug, Clone)]
@@ -35,6 +35,8 @@ pub struct MarkdownOptions<'a> {
     pub resource_dir: Option<&'a std::path::Path>,
     pub base_columns: usize,
     pub is_landscape: bool,
+    pub emit_source_tags: bool,
+    pub source_line_offset: usize,
 }
 
 impl<'a> Default for MarkdownOptions<'a> {
@@ -52,6 +54,8 @@ impl<'a> Default for MarkdownOptions<'a> {
             resource_dir: None,
             base_columns: 1,
             is_landscape: false,
+            emit_source_tags: false,
+            source_line_offset: 0,
         }
     }
 }
@@ -83,6 +87,8 @@ pub fn markdown_to_typst(
             resource_dir: None,
             base_columns: 1,
             is_landscape: false,
+            emit_source_tags: false,
+            source_line_offset: 0,
         },
     )
 }
@@ -198,7 +204,23 @@ pub fn markdown_to_typst_with_options(
         }
     }
 
-    let mut events: Vec<Event> = Parser::new_ext(markdown, options).collect();
+    let mut events: Vec<Event> = Vec::new();
+    let mut event_lines: Vec<usize> = Vec::new();
+    if opts.emit_source_tags {
+        let mut line_starts = vec![0usize];
+        for (idx, b) in markdown.bytes().enumerate() {
+            if b == b'\n' {
+                line_starts.push(idx + 1);
+            }
+        }
+        for (ev, range) in Parser::new_ext(markdown, options).into_offset_iter() {
+            let line_idx = line_starts.partition_point(|&s| s <= range.start).saturating_sub(1);
+            events.push(ev);
+            event_lines.push(opts.source_line_offset + line_idx + 1);
+        }
+    } else {
+        events = Parser::new_ext(markdown, options).collect();
+    }
     let mut typst = String::with_capacity(markdown.len() * 2);
 
     let mut list_depth: usize = 0;
@@ -233,7 +255,7 @@ pub fn markdown_to_typst_with_options(
                 }
                 match tag {
                     Tag::Paragraph => {
-                        if let Some(Event::Text(next_text)) = events.get(i + 1) {
+                        let is_table_caption = if let Some(Event::Text(next_text)) = events.get(i + 1) {
                             let trimmed = next_text.trim_start();
                             if (trimmed.starts_with("Table:") || trimmed.starts_with(": ")) && trimmed.len() > 2 {
                                 let mut j = i + 1;
@@ -271,9 +293,25 @@ pub fn markdown_to_typst_with_options(
                                     let (caption, label) = parse_caption_and_label(raw_cap.trim());
                                     pending_table_caption = Some((caption, label));
                                     i = j + 1;
-                                    continue;
+                                    true
+                                } else {
+                                    false
                                 }
+                            } else {
+                                false
                             }
+                        } else {
+                            false
+                        };
+                        if is_table_caption {
+                            continue;
+                        }
+                        if opts.emit_source_tags
+                            && list_depth == 0
+                            && !in_table
+                            && let Some(&src_line) = event_lines.get(i)
+                        {
+                            typst.push_str(&format!("#metadata(\"botox-src:{src_line}:para\")"));
                         }
                     }
                     Tag::Heading { level, .. } => {
@@ -285,12 +323,21 @@ pub fn markdown_to_typst_with_options(
                             HeadingLevel::H5 => 5,
                             HeadingLevel::H6 => 6,
                         };
+                        if opts.emit_source_tags
+                            && let Some(&src_line) = event_lines.get(i) {
+                                typst.push_str(&format!("#metadata(\"botox-src:{src_line}:heading\")\n"));
+                            }
                         current_heading = Some((lvl, String::new()));
                     }
                     Tag::BlockQuote(_) => {
                         typst.push_str("#quote(block: true)[");
                     }
                     Tag::CodeBlock(kind) => {
+                        let code_src_line = if opts.emit_source_tags {
+                            event_lines.get(i).copied()
+                        } else {
+                            None
+                        };
                         let mut code = String::new();
                         let mut j = i + 1;
                         while j < num_events {
@@ -414,9 +461,11 @@ pub fn markdown_to_typst_with_options(
 
                         // Regular code block (fenced or indented)
                         let mut final_code = code;
+                        let mut code_size: Option<String> = None;
                         let lang = match &kind {
                             pulldown_cmark::CodeBlockKind::Fenced(l) => {
-                                let (clean_lang, code_file) = parse_code_fence_file(l.as_ref());
+                                let (clean_lang, code_file, parsed_size) = parse_code_fence_attributes(l.as_ref());
+                                code_size = parsed_size;
                                 if let Some(ref cf) = code_file {
                                     if let Some(loaded) = resolve_file_content(cf, opts.resource_dir) {
                                         final_code = loaded;
@@ -449,7 +498,16 @@ pub fn markdown_to_typst_with_options(
                         } else {
                             format!("{final_code}\n")
                         };
-                        typst.push_str(&format!("{fence_str}{lang}\n{clean_code}{fence_str}\n\n"));
+                        if let Some(src_line) = code_src_line {
+                            typst.push_str(&format!("#metadata(\"botox-src:{src_line}:code\")\n"));
+                        }
+                        if let Some(sz) = code_size {
+                            typst.push_str(&format!(
+                                "#[#show raw.where(block: true): set text(size: {sz})\n{fence_str}{lang}\n{clean_code}{fence_str}\n]\n\n"
+                            ));
+                        } else {
+                            typst.push_str(&format!("{fence_str}{lang}\n{clean_code}{fence_str}\n\n"));
+                        }
                         continue;
                     }
                     Tag::List(_) => {
@@ -462,6 +520,10 @@ pub fn markdown_to_typst_with_options(
                         let indent = "  ".repeat(list_depth.saturating_sub(1));
                         typst.push_str(&indent);
                         typst.push_str("- ");
+                        if opts.emit_source_tags
+                            && let Some(&src_line) = event_lines.get(i) {
+                                typst.push_str(&format!("#metadata(\"botox-src:{src_line}:item\")"));
+                            }
                     }
                     Tag::Emphasis => {
                         if let Some((_, ref mut h_buf)) = current_heading {
@@ -1694,6 +1756,21 @@ Check [link](https://example.com/api?q="quoted") here.
         let typst = markdown_to_typst_with_options(md, &opts);
         assert!(typst.contains("#pagebreak(weak: true)\n#set page(flipped: true, columns: 1)"));
         assert!(typst.contains("#pagebreak(weak: true)\n#set page(flipped: false, columns: 2)"));
+    }
+
+    #[test]
+    fn test_code_block_per_block_fontsize_attribute() {
+        let md = "```rust size=6.5pt\nfn main() {}\n```\n\n```python {fontsize=\"7pt\"}\nprint(1)\n```";
+        let opts = MarkdownOptions::default();
+        let typst = markdown_to_typst_with_options(md, &opts);
+        assert!(typst.contains("#[#show raw.where(block: true): set text(size: 6.5pt)\n```rust\nfn main() {}\n```\n]"));
+        assert!(typst.contains("#[#show raw.where(block: true): set text(size: 7pt)\n```python\nprint(1)\n```\n]"));
+
+        // Compile end-to-end through Typst to verify per-block override works cleanly
+        let fm: serde_yaml::Value = serde_yaml::from_str("code-fontsize: 8pt").unwrap();
+        let full = crate::document::wrap_document(&typst, &fm, &crate::config::DocumentConfig::defaults(), None, None, None, None);
+        let pdf = crate::compiler::compile_typst_to_pdf_bytes(&full, None);
+        assert!(pdf.is_ok(), "Per-block code size failed to compile: {:?}", pdf.err());
     }
 
     #[test]

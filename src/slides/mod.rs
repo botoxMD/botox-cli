@@ -111,14 +111,36 @@ impl<'a> DocumentEmitter for SlideEmitter<'a> {
     ));
 
     // Code blocks in slides
+    let code_fontsize = fm
+        .get("code-fontsize")
+        .or_else(|| fm.get("code_fontsize"))
+        .or_else(|| fm.get("codefontsize"))
+        .or_else(|| fm.get("code-size"))
+        .or_else(|| fm.get("code_size"))
+        .and_then(|v| {
+            if let Some(s) = v.as_str() {
+                Some(s.trim().to_string())
+            } else if let Some(n) = v.as_i64() {
+                Some(format!("{n}pt"))
+            } else {
+                v.as_f64().map(|n| format!("{n}pt"))
+            }
+        })
+        .filter(|s| !s.is_empty())
+        .or_else(|| config.code_fontsize.clone())
+        .unwrap_or_else(|| "15pt".to_string());
+
     out.push_str("#show raw: set text(font: \"DejaVu Sans Mono\")\n");
+    out.push_str(&format!(
+        "#show raw.where(block: true): set text(size: {code_fontsize})\n"
+    ));
     out.push_str("#show raw.where(block: true): it => block(\n");
     out.push_str("  fill: rgb(\"#ffffff\").transparentize(60%),\n");
     out.push_str("  stroke: 0.5pt + rgb(\"#cbd5e1\"),\n");
     out.push_str("  inset: (x: 18pt, y: 14pt),\n");
     out.push_str("  radius: 6pt,\n");
     out.push_str("  width: 100%,\n");
-    out.push_str(")[#set text(size: 15pt); #it]\n");
+    out.push_str(")[#it]\n");
     out.push_str("#show raw.where(block: false): it => box(\n");
     out.push_str("  fill: rgb(\"#ffffff\").transparentize(40%),\n");
     out.push_str("  inset: (x: 4pt, y: 2pt),\n");
@@ -259,5 +281,21 @@ date: "2026-10-07"
         // Sub-slide 0 should contain Point 1, Sub-slide 1 should contain Point 1 and Point 2
         assert!(typst.contains("== Features\n- Point 1"));
         assert!(typst.contains("== Features\n- Point 1\n\n- Point 2"));
+    }
+
+    #[test]
+    fn test_slides_code_fontsize_cascade() {
+        let mut cfg = SlidesConfig::defaults();
+        let fm_empty: Value = serde_yaml::from_str("{}").unwrap();
+        let default_typst = wrap_slides("```rs\nfn main(){}\n```", &fm_empty, &cfg, None, None);
+        assert!(default_typst.contains("#show raw.where(block: true): set text(size: 15pt)"));
+
+        cfg.code_fontsize = Some("13pt".to_string());
+        let cfg_typst = wrap_slides("```rs\nfn main(){}\n```", &fm_empty, &cfg, None, None);
+        assert!(cfg_typst.contains("#show raw.where(block: true): set text(size: 13pt)"));
+
+        let fm_override: Value = serde_yaml::from_str("code-fontsize: 11.5pt").unwrap();
+        let fm_typst = wrap_slides("```rs\nfn main(){}\n```", &fm_override, &cfg, None, None);
+        assert!(fm_typst.contains("#show raw.where(block: true): set text(size: 11.5pt)"));
     }
 }

@@ -425,7 +425,91 @@ pub fn transpile_markdown_to_typst_markup(
     cli_include_ref: &[String],
     source_path: Option<&Path>,
 ) -> Result<(String, bool), String> {
+    transpile_markdown_internal(
+        raw_content,
+        doc_dir,
+        config_data,
+        explicit_pdf,
+        explicit_slides,
+        cli_toc,
+        cli_author,
+        cli_font,
+        cli_bibliography,
+        cli_theme,
+        cli_exclude_ref,
+        cli_include_ref,
+        source_path,
+        false,
+    )
+    .map(|(markup, is_slides, _)| (markup, is_slides))
+}
+
+/// Transpiles raw markdown with zero-width `#metadata("botox-src:...")` tags
+/// and compiles it to an in-memory Typst `PagedDocument` for layout inspection and probing.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_for_inspection(
+    raw_content: &str,
+    doc_dir: Option<&Path>,
+    config_data: &BotoxConfig,
+    explicit_pdf: bool,
+    explicit_slides: bool,
+    cli_toc: Option<bool>,
+    cli_author: Option<&str>,
+    cli_font: Option<&str>,
+    cli_bibliography: Option<bool>,
+    cli_theme: Option<&str>,
+    cli_exclude_ref: &[String],
+    cli_include_ref: &[String],
+    source_path: Option<&Path>,
+    source_filename: &str,
+) -> Result<(typst_layout::PagedDocument, bool, usize), String> {
+    let (typst_markup, is_slides, expected_columns) = transpile_markdown_internal(
+        raw_content,
+        doc_dir,
+        config_data,
+        explicit_pdf,
+        explicit_slides,
+        cli_toc,
+        cli_author,
+        cli_font,
+        cli_bibliography,
+        cli_theme,
+        cli_exclude_ref,
+        cli_include_ref,
+        source_path,
+        true,
+    )
+    .map_err(|e| format!("[YAML Frontmatter Error] {source_filename}: {e}"))?;
+
+    let doc = compiler::compile_typst_to_document(
+        &typst_markup,
+        doc_dir,
+        Some(raw_content),
+        Some(source_filename),
+    )?;
+    Ok((doc, is_slides, expected_columns))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transpile_markdown_internal(
+    raw_content: &str,
+    doc_dir: Option<&Path>,
+    config_data: &BotoxConfig,
+    explicit_pdf: bool,
+    explicit_slides: bool,
+    cli_toc: Option<bool>,
+    cli_author: Option<&str>,
+    cli_font: Option<&str>,
+    cli_bibliography: Option<bool>,
+    cli_theme: Option<&str>,
+    cli_exclude_ref: &[String],
+    cli_include_ref: &[String],
+    source_path: Option<&Path>,
+    emit_source_tags: bool,
+) -> Result<(String, bool, usize), String> {
     let (fm, body_md) = parse_frontmatter_strict(raw_content)?;
+    let body_offset_bytes = raw_content.len().saturating_sub(body_md.len());
+    let source_line_offset = raw_content[..body_offset_bytes].bytes().filter(|&b| b == b'\n').count();
     let fallback = source_path.unwrap_or(Path::new("document.md"));
     let is_slides = detect_is_slides(&fm, raw_content, fallback, explicit_slides, explicit_pdf);
 
@@ -563,6 +647,8 @@ pub fn transpile_markdown_to_typst_markup(
         resource_dir: doc_dir,
         base_columns: columns,
         is_landscape,
+        emit_source_tags,
+        source_line_offset,
     };
     let body_typst = markdown::markdown_to_typst_with_options(body_md, &md_opts);
 
@@ -585,7 +671,7 @@ pub fn transpile_markdown_to_typst_markup(
     };
     let typst_markup = emitter.emit(&body_typst);
 
-    Ok((typst_markup, is_slides))
+    Ok((typst_markup, is_slides, columns))
 }
 
 /// Primary publishing entrypoint: executes the end-to-end publishing pipeline.

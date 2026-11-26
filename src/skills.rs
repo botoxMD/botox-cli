@@ -45,9 +45,12 @@ Botox operates in two primary modes determined automatically from Markdown front
 
 ### Common Invocation Patterns
 ```bash
-# 1. Initialize new templates
-botox init document.md               # Scaffold an academic PDF document template
-botox init slides.md                 # Scaffold an interactive presentation slide deck
+# 1. Initialize new documents or print header templates
+botox init document.md                        # Scaffold a default PDF document
+botox init sheet.md --template cheatsheet     # Scaffold from a layout preset (cheatsheet, paper, report, notes, cv, essay, memo, landscape, slides)
+botox init --list                             # List all built-in header/layout templates
+botox template cheatsheet                     # Print only the YAML frontmatter header to stdout
+botox init slides.md                          # Scaffold an interactive presentation slide deck
 
 # 2. Compile documents (defaults to .pdf output)
 botox document.md                    # Compiles to document.pdf
@@ -76,7 +79,13 @@ botox setup                          # Interactive configuration wizard
 botox setup --global --author "Name" # Non-interactive config setup
 botox skills                         # Generate .agents/skills/botox/SKILL.md in project
 botox skills --global                # Install to ~/.agents/skills/botox/SKILL.md
-botox skills -o -                    # Print skill definition directly to stdout
+# 8. Layout Inspection & Spatial Probing (for PDF optimization)
+botox inspect document.md --json               # Detect wasted space, widows, overflows, inflated leading
+botox inspect sheet.md --target-pages 2 --json # Get a ranked reclaim plan to fit onto 2 pages
+botox probe sheet.md --zone page:1:col:2:bottom --json
+botox probe sheet.md --density-grid 16x24      # View ASCII occupancy heatmap of a page
+botox probe sheet.md --around "Three areas"    # Inspect local neighborhood & gaps around an anchor
+botox probe sheet.md --at-line 48              # Map Markdown source line to rendered PDF bbox
 ```
 
 ### Complete CLI Flag Table
@@ -128,6 +137,7 @@ papersize: a4                        # a4, us-letter, a5
 orientation: portrait                # portrait (default) or landscape
 landscape: false                     # true for full-document horizontal orientation
 fontsize: 11pt                       # 9pt, 10pt, 11pt, 12pt
+code-fontsize: 8.5pt                 # Code block font size (aliases: code_fontsize, code-size; override per block with ```lang size=7pt)
 mainfont: "New Computer Modern"      # Any system font or embedded font
 mathfont: "New Computer Modern Math"
 monofont: "DejaVu Sans Mono"

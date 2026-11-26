@@ -285,7 +285,29 @@ impl<'a> DocumentEmitter for ArticleEmitter<'a> {
     out.push_str("#set table.cell(breakable: false)\n\n");
 
     // Code styling
+    let code_fontsize = fm
+        .get("code-fontsize")
+        .or_else(|| fm.get("code_fontsize"))
+        .or_else(|| fm.get("codefontsize"))
+        .or_else(|| fm.get("code-size"))
+        .or_else(|| fm.get("code_size"))
+        .and_then(|v| {
+            if let Some(s) = v.as_str() {
+                Some(s.trim().to_string())
+            } else if let Some(n) = v.as_i64() {
+                Some(format!("{n}pt"))
+            } else {
+                v.as_f64().map(|n| format!("{n}pt"))
+            }
+        })
+        .filter(|s| !s.is_empty())
+        .or_else(|| config.code_fontsize.clone())
+        .unwrap_or_else(|| doc_theme.default_code_fontsize().to_string());
+
     out.push_str(&format!("#show raw: set text(font: {monofont_family})\n"));
+    out.push_str(&format!(
+        "#show raw.where(block: true): set text(size: {code_fontsize})\n"
+    ));
     match doc_theme {
         DocumentTheme::Technical => {
             out.push_str("#show raw.where(block: true): it => block(\n");
@@ -294,7 +316,7 @@ impl<'a> DocumentEmitter for ArticleEmitter<'a> {
             out.push_str("  inset: (x: 12pt, y: 10pt),\n");
             out.push_str("  radius: (right: 4pt),\n");
             out.push_str("  width: 100%,\n");
-            out.push_str(")[#set text(size: 8.5pt); #it]\n");
+            out.push_str(")[#it]\n");
         }
         DocumentTheme::Minimal => {
             out.push_str("#show raw.where(block: true): it => block(\n");
@@ -302,7 +324,7 @@ impl<'a> DocumentEmitter for ArticleEmitter<'a> {
             out.push_str("  inset: (x: 12pt, y: 10pt),\n");
             out.push_str("  radius: 3pt,\n");
             out.push_str("  width: 100%,\n");
-            out.push_str(")[#set text(size: 8.5pt); #it]\n");
+            out.push_str(")[#it]\n");
         }
         DocumentTheme::Elegant => {
             out.push_str("#show raw.where(block: true): it => block(\n");
@@ -311,7 +333,7 @@ impl<'a> DocumentEmitter for ArticleEmitter<'a> {
             out.push_str("  inset: (x: 12pt, y: 10pt),\n");
             out.push_str("  radius: 4pt,\n");
             out.push_str("  width: 100%,\n");
-            out.push_str(")[#set text(size: 8.5pt); #it]\n");
+            out.push_str(")[#it]\n");
         }
         DocumentTheme::Compact => {
             out.push_str("#show raw.where(block: true): it => block(\n");
@@ -320,7 +342,7 @@ impl<'a> DocumentEmitter for ArticleEmitter<'a> {
             out.push_str("  inset: (x: 8pt, y: 7pt),\n");
             out.push_str("  radius: 3pt,\n");
             out.push_str("  width: 100%,\n");
-            out.push_str(")[#set text(size: 8pt); #it]\n");
+            out.push_str(")[#it]\n");
         }
         _ => {
             // Academic & Modern
@@ -330,7 +352,7 @@ impl<'a> DocumentEmitter for ArticleEmitter<'a> {
             out.push_str("  inset: (x: 12pt, y: 10pt),\n");
             out.push_str("  radius: 4pt,\n");
             out.push_str("  width: 100%,\n");
-            out.push_str(")[#set text(size: 8.5pt); #it]\n");
+            out.push_str(")[#it]\n");
         }
     }
     out.push_str("#show raw.where(block: false): it => box(\n");
@@ -750,6 +772,29 @@ title: "Config Fallback"
         let fm_portrait: Value = serde_yaml::from_str("title: Portrait Doc").unwrap();
         let doc_portrait = wrap_document("= Heading\nBody", &fm_portrait, &default_cfg, None, None, None, None);
         assert!(!doc_portrait.contains("flipped: true"));
+    }
+
+    #[test]
+    fn test_document_code_fontsize_cascade() {
+        let mut cfg = DocumentConfig::defaults();
+        let fm_default: Value = serde_yaml::from_str("title: Default Code Size").unwrap();
+        let doc_default = wrap_document("= Heading\n```rust\nfn main() {}\n```", &fm_default, &cfg, None, None, None, None);
+        assert!(doc_default.contains("#show raw.where(block: true): set text(size: 8.5pt)"));
+
+        // Compact theme defaults to 8pt
+        let fm_compact: Value = serde_yaml::from_str("theme: compact").unwrap();
+        let doc_compact = wrap_document("= Heading\n```rust\nfn main() {}\n```", &fm_compact, &cfg, None, None, None, None);
+        assert!(doc_compact.contains("#show raw.where(block: true): set text(size: 8pt)"));
+
+        // Config override
+        cfg.code_fontsize = Some("7.5pt".to_string());
+        let doc_cfg = wrap_document("= Heading\n```rust\nfn main() {}\n```", &fm_default, &cfg, None, None, None, None);
+        assert!(doc_cfg.contains("#show raw.where(block: true): set text(size: 7.5pt)"));
+
+        // Frontmatter override beats config
+        let fm_override: Value = serde_yaml::from_str("code-fontsize: 6.5pt").unwrap();
+        let doc_fm = wrap_document("= Heading\n```rust\nfn main() {}\n```", &fm_override, &cfg, None, None, None, None);
+        assert!(doc_fm.contains("#show raw.where(block: true): set text(size: 6.5pt)"));
     }
 
     #[test]
