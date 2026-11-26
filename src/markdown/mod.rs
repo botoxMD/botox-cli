@@ -97,6 +97,25 @@ pub fn markdown_to_typst_with_options(
     markdown: &str,
     opts: &MarkdownOptions<'_>,
 ) -> String {
+    markdown_to_typst_internal(markdown, opts, None, 0)
+}
+
+pub fn markdown_to_typst_with_sourcemap(
+    markdown: &str,
+    opts: &MarkdownOptions<'_>,
+    raw_body_offset: usize,
+) -> (String, Vec<crate::sync_map::SourceSegment>) {
+    let mut segments = Vec::new();
+    let typst = markdown_to_typst_internal(markdown, opts, Some(&mut segments), raw_body_offset);
+    (typst, segments)
+}
+
+fn markdown_to_typst_internal(
+    raw_markdown: &str,
+    opts: &MarkdownOptions<'_>,
+    mut source_segments: Option<&mut Vec<crate::sync_map::SourceSegment>>,
+    raw_body_offset: usize,
+) -> String {
     let is_slides = opts.is_slides;
     let bibliography = opts.bibliography;
     let lang = opts.lang;
@@ -106,7 +125,12 @@ pub fn markdown_to_typst_with_options(
     let ref_exclude = opts.ref_exclude;
     let ref_include = opts.ref_include;
 
-    let preprocessed = preprocess_pandoc(markdown);
+    let preprocessed = preprocess_pandoc(raw_markdown);
+    let prep_offset_map = if source_segments.is_some() {
+        Some(crate::sync_map::PreprocessOffsetMap::build(raw_markdown, &preprocessed))
+    } else {
+        None
+    };
     let markdown = &preprocessed;
     let has_ref_command = preprocessed.contains("<!--botox:ref");
     let should_index_citations = bibliography || has_ref_command;
@@ -206,7 +230,8 @@ pub fn markdown_to_typst_with_options(
 
     let mut events: Vec<Event> = Vec::new();
     let mut event_lines: Vec<usize> = Vec::new();
-    if opts.emit_source_tags {
+    let mut event_ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    if opts.emit_source_tags || source_segments.is_some() {
         let mut line_starts = vec![0usize];
         for (idx, b) in markdown.bytes().enumerate() {
             if b == b'\n' {
@@ -214,9 +239,14 @@ pub fn markdown_to_typst_with_options(
             }
         }
         for (ev, range) in Parser::new_ext(markdown, options).into_offset_iter() {
-            let line_idx = line_starts.partition_point(|&s| s <= range.start).saturating_sub(1);
+            if opts.emit_source_tags {
+                let line_idx = line_starts.partition_point(|&s| s <= range.start).saturating_sub(1);
+                event_lines.push(opts.source_line_offset + line_idx + 1);
+            }
+            if source_segments.is_some() {
+                event_ranges.push(range);
+            }
             events.push(ev);
-            event_lines.push(opts.source_line_offset + line_idx + 1);
         }
     } else {
         events = Parser::new_ext(markdown, options).collect();
@@ -225,10 +255,11 @@ pub fn markdown_to_typst_with_options(
 
     let mut list_depth: usize = 0;
     let mut in_table_header = false;
-    let mut table_cells: Vec<String> = Vec::new();
+    let mut table_cells: Vec<(String, Option<(usize, usize)>)> = Vec::new();
     let mut table_col_count = 0;
     let mut table_alignments: Vec<&'static str> = Vec::new();
     let mut current_cell = String::new();
+    let mut current_cell_md_range: Option<(usize, usize)> = None;
     let mut in_table = false;
     let mut in_footnote_def = false;
     let mut rendered_first_ref = false;
@@ -236,6 +267,7 @@ pub fn markdown_to_typst_with_options(
     let mut current_link: Option<(String, String)> = None;
     let mut current_image: Option<(String, String)> = None;
     let mut current_heading: Option<(usize, String)> = None;
+    let mut current_heading_md_range: Option<(usize, usize)> = None;
     let mut pending_table_caption: Option<(String, Option<String>)> = None;
 
     let num_events = events.len();
@@ -338,11 +370,20 @@ pub fn markdown_to_typst_with_options(
                         } else {
                             None
                         };
+                        let fence_prep_range = event_ranges.get(i).cloned();
                         let mut code = String::new();
+                        let mut code_prep_start: Option<usize> = None;
+                        let mut code_prep_end: usize = 0;
                         let mut j = i + 1;
                         while j < num_events {
                             match &events[j] {
                                 Event::Text(t) => {
+                                    if let Some(r) = event_ranges.get(j) {
+                                        if code_prep_start.is_none() {
+                                            code_prep_start = Some(r.start);
+                                        }
+                                        code_prep_end = r.end;
+                                    }
                                     code.push_str(t);
                                     j += 1;
                                 }
@@ -406,6 +447,7 @@ pub fn markdown_to_typst_with_options(
                                         }
                                         let img_call = format!("image({})", img_args.join(", "));
 
+                                        let diag_ts = typst.len();
                                         if spec.caption.is_some() || spec.id.is_some() {
                                             let mut fig = format!("\n#figure({img_call}");
                                             if let Some(ref cap) = spec.caption {
@@ -420,6 +462,20 @@ pub fn markdown_to_typst_with_options(
                                             typst.push_str(&fig);
                                         } else {
                                             typst.push_str(&format!("\n#align(center)[#{img_call}]\n\n"));
+                                        }
+                                        let diag_te = typst.len();
+                                        if let (Some(segs), Some(omap), Some(ref fr)) = (
+                                            source_segments.as_deref_mut(),
+                                            prep_offset_map.as_ref(),
+                                            fence_prep_range,
+                                        ) {
+                                            let (ms, me) = omap.map_range(fr.start, fr.end, raw_body_offset);
+                                            segs.push(crate::sync_map::SourceSegment {
+                                                typst_start: diag_ts,
+                                                typst_end: diag_te,
+                                                md_start: ms,
+                                                md_end: me,
+                                            });
                                         }
                                     }
                                     Err(err) => {
@@ -501,12 +557,30 @@ pub fn markdown_to_typst_with_options(
                         if let Some(src_line) = code_src_line {
                             typst.push_str(&format!("#metadata(\"botox-src:{src_line}:code\")\n"));
                         }
+                        let code_body_typst_start;
                         if let Some(sz) = code_size {
                             typst.push_str(&format!(
-                                "#[#show raw.where(block: true): set text(size: {sz})\n{fence_str}{lang}\n{clean_code}{fence_str}\n]\n"
+                                "#[#show raw.where(block: true): set text(size: {sz})\n{fence_str}{lang}\n"
                             ));
+                            code_body_typst_start = typst.len();
+                            typst.push_str(&clean_code);
+                            typst.push_str(&format!("{fence_str}\n]\n"));
                         } else {
-                            typst.push_str(&format!("{fence_str}{lang}\n{clean_code}{fence_str}\n"));
+                            typst.push_str(&format!("{fence_str}{lang}\n"));
+                            code_body_typst_start = typst.len();
+                            typst.push_str(&clean_code);
+                            typst.push_str(&format!("{fence_str}\n"));
+                        }
+                        if let (Some(segs), Some(omap), Some(ps)) =
+                            (source_segments.as_deref_mut(), prep_offset_map.as_ref(), code_prep_start)
+                        {
+                            let (ms, me) = omap.map_range(ps, code_prep_end, raw_body_offset);
+                            segs.push(crate::sync_map::SourceSegment {
+                                typst_start: code_body_typst_start,
+                                typst_end: code_body_typst_start + clean_code.len(),
+                                md_start: ms,
+                                md_end: me,
+                            });
                         }
                         if code_src_line.is_some() {
                             typst.push_str("#metadata(\"botox-src:0:end\")\n");
@@ -635,10 +709,15 @@ pub fn markdown_to_typst_with_options(
                         typst.push_str("\n\n");
                     }
                     TagEnd::Heading(_) => {
+                        let h_md_range = current_heading_md_range.take();
                         if let Some((lvl, h_text)) = current_heading.take() {
                             let (clean_title, is_unnumbered, id) = parse_heading_attributes(&h_text);
+                            let title_typst_start;
                             if is_unnumbered {
-                                typst.push_str(&format!("#heading(level: {lvl}, numbering: none)[{clean_title}]"));
+                                typst.push_str(&format!("#heading(level: {lvl}, numbering: none)["));
+                                title_typst_start = typst.len();
+                                typst.push_str(&clean_title);
+                                typst.push(']');
                             } else {
                                 let prefix = match lvl {
                                     1 => "=",
@@ -648,7 +727,17 @@ pub fn markdown_to_typst_with_options(
                                     5 => "=====",
                                     _ => "======",
                                 };
-                                typst.push_str(&format!("{prefix} {clean_title}"));
+                                typst.push_str(&format!("{prefix} "));
+                                title_typst_start = typst.len();
+                                typst.push_str(&clean_title);
+                            }
+                            if let (Some(segs), Some((ms, me))) = (source_segments.as_deref_mut(), h_md_range) {
+                                segs.push(crate::sync_map::SourceSegment {
+                                    typst_start: title_typst_start,
+                                    typst_end: title_typst_start + clean_title.len(),
+                                    md_start: ms,
+                                    md_end: me,
+                                });
                             }
                             if let Some(ref label) = id {
                                 typst.push_str(&format!(" <{label}>"));
@@ -885,6 +974,7 @@ pub fn markdown_to_typst_with_options(
                                     typst.push_str(&format!("\n#align(center)[#{img_call}]\n\n"));
                                 }
                             } else {
+                                let img_ts = typst.len();
                                 if !alt.is_empty() || id.is_some() {
                                     let mut fig = format!("\n#figure({img_call}");
                                     if !alt.is_empty() {
@@ -898,6 +988,20 @@ pub fn markdown_to_typst_with_options(
                                     typst.push_str(&fig);
                                 } else {
                                     typst.push_str(&format!("\n#align(center)[#{img_call}]\n\n"));
+                                }
+                                let img_te = typst.len();
+                                if let (Some(segs), Some(omap), Some(r)) = (
+                                    source_segments.as_deref_mut(),
+                                    prep_offset_map.as_ref(),
+                                    event_ranges.get(i),
+                                ) {
+                                    let (ms, me) = omap.map_range(r.start, r.end, raw_body_offset);
+                                    segs.push(crate::sync_map::SourceSegment {
+                                        typst_start: img_ts,
+                                        typst_end: img_te,
+                                        md_start: ms,
+                                        md_end: me,
+                                    });
                                 }
                             }
                         }
@@ -919,7 +1023,7 @@ pub fn markdown_to_typst_with_options(
                         if in_table_header {
                             table_col_count += 1;
                         }
-                        table_cells.push(current_cell.trim().to_string());
+                        table_cells.push((current_cell.trim().to_string(), current_cell_md_range.take()));
                         current_cell.clear();
                     }
                     TagEnd::Table => {
@@ -932,19 +1036,59 @@ pub fn markdown_to_typst_with_options(
                             "left".to_string()
                         };
                         let mut tbl_str = format!("table(\n  columns: {cols},\n  align: ({align_str}),\n");
+                        let mut cell_rel_segments: Vec<crate::sync_map::SourceSegment> = Vec::new();
                         if table_col_count > 0 && table_cells.len() >= table_col_count {
                             let header_slice = &table_cells[..table_col_count];
-                            let header_args: Vec<String> = header_slice
-                                .iter()
-                                .map(|c| format!("[*{c}*]"))
-                                .collect();
-                            tbl_str.push_str(&format!("  table.header({}),\n", header_args.join(", ")));
-                            for cell in &table_cells[table_col_count..] {
-                                tbl_str.push_str(&format!("  [{cell}],\n"));
+                            tbl_str.push_str("  table.header(");
+                            for (ci, (c, mr)) in header_slice.iter().enumerate() {
+                                if ci > 0 {
+                                    tbl_str.push_str(", ");
+                                }
+                                tbl_str.push_str("[*");
+                                let s = tbl_str.len();
+                                tbl_str.push_str(c);
+                                let e = tbl_str.len();
+                                tbl_str.push_str("*]");
+                                if let Some((ms, me)) = *mr {
+                                    cell_rel_segments.push(crate::sync_map::SourceSegment {
+                                        typst_start: s,
+                                        typst_end: e,
+                                        md_start: ms,
+                                        md_end: me,
+                                    });
+                                }
+                            }
+                            tbl_str.push_str("),\n");
+                            for (cell, mr) in &table_cells[table_col_count..] {
+                                tbl_str.push_str("  [");
+                                let s = tbl_str.len();
+                                tbl_str.push_str(cell);
+                                let e = tbl_str.len();
+                                tbl_str.push_str("],\n");
+                                if let Some((ms, me)) = *mr {
+                                    cell_rel_segments.push(crate::sync_map::SourceSegment {
+                                        typst_start: s,
+                                        typst_end: e,
+                                        md_start: ms,
+                                        md_end: me,
+                                    });
+                                }
                             }
                         } else {
-                            for cell in &table_cells {
-                                tbl_str.push_str(&format!("  [{cell}],\n"));
+                            for (cell, mr) in &table_cells {
+                                tbl_str.push_str("  [");
+                                let s = tbl_str.len();
+                                tbl_str.push_str(cell);
+                                let e = tbl_str.len();
+                                tbl_str.push_str("],\n");
+                                if let Some((ms, me)) = *mr {
+                                    cell_rel_segments.push(crate::sync_map::SourceSegment {
+                                        typst_start: s,
+                                        typst_end: e,
+                                        md_start: ms,
+                                        md_end: me,
+                                    });
+                                }
                             }
                         }
                         tbl_str.push(')');
@@ -999,18 +1143,34 @@ pub fn markdown_to_typst_with_options(
                         }
 
                         let row_count = table_cells.len().checked_div(cols).unwrap_or(0);
+                        let tbl_base_offset;
                         if let Some((caption, label)) = pending_table_caption.take() {
                             let escaped_caption = escape_typst_text(&caption);
-                            let mut fig = format!("\n#figure(\n  {tbl_str},\n  caption: [{escaped_caption}],\n)");
+                            typst.push_str("\n#figure(\n  ");
+                            tbl_base_offset = typst.len();
+                            typst.push_str(&tbl_str);
+                            typst.push_str(&format!(",\n  caption: [{escaped_caption}],\n)"));
                             if let Some(ref l) = label {
-                                fig.push_str(&format!(" <{l}>"));
+                                typst.push_str(&format!(" <{l}>"));
                             }
-                            fig.push_str("\n\n");
-                            typst.push_str(&fig);
+                            typst.push_str("\n\n");
                         } else if !is_slides && row_count > 0 && row_count <= 8 {
-                            typst.push_str(&format!("#block(breakable: false)[#{tbl_str}]\n\n"));
+                            typst.push_str("#block(breakable: false)[#");
+                            tbl_base_offset = typst.len();
+                            typst.push_str(&tbl_str);
+                            typst.push_str("]\n\n");
                         } else {
-                            typst.push_str(&format!("#{tbl_str}\n\n"));
+                            typst.push('#');
+                            tbl_base_offset = typst.len();
+                            typst.push_str(&tbl_str);
+                            typst.push_str("\n\n");
+                        }
+                        if let Some(segs) = source_segments.as_deref_mut() {
+                            for mut cs in cell_rel_segments {
+                                cs.typst_start += tbl_base_offset;
+                                cs.typst_end += tbl_base_offset;
+                                segs.push(cs);
+                            }
                         }
                     }
                     _ => {}
@@ -1021,8 +1181,17 @@ pub fn markdown_to_typst_with_options(
                     i += 1;
                     continue;
                 }
+                let md_span = prep_offset_map.as_ref().and_then(|omap| {
+                    event_ranges.get(i).map(|r| omap.map_range(r.start, r.end, raw_body_offset))
+                });
                 let escaped = escape_typst_text(&text);
                 if let Some((_, ref mut h_buf)) = current_heading {
+                    if let Some((ms, me)) = md_span {
+                        current_heading_md_range = Some(match current_heading_md_range {
+                            Some((os, oe)) => (os.min(ms), oe.max(me)),
+                            None => (ms, me),
+                        });
+                    }
                     h_buf.push_str(&escaped);
                     i += 1;
                     continue;
@@ -1036,9 +1205,25 @@ pub fn markdown_to_typst_with_options(
                     link_text.push_str(&escaped);
                 }
                 if in_table {
+                    if let Some((ms, me)) = md_span {
+                        current_cell_md_range = Some(match current_cell_md_range {
+                            Some((os, oe)) => (os.min(ms), oe.max(me)),
+                            None => (ms, me),
+                        });
+                    }
                     current_cell.push_str(&escaped);
                 } else {
+                    let ts = typst.len();
                     typst.push_str(&escaped);
+                    let te = typst.len();
+                    if let (Some(segs), Some((ms, me))) = (source_segments.as_deref_mut(), md_span) {
+                        segs.push(crate::sync_map::SourceSegment {
+                            typst_start: ts,
+                            typst_end: te,
+                            md_start: ms,
+                            md_end: me,
+                        });
+                    }
                 }
             }
             Event::Html(html) | Event::InlineHtml(html) => {
@@ -1053,7 +1238,22 @@ pub fn markdown_to_typst_with_options(
                         let kind = parts.next().unwrap_or("note");
                         let title = parts.next().unwrap_or("");
                         let escaped_title = escape_typst_text(title).replace('"', "\\\"");
+                        let ts = typst.len();
                         typst.push_str(&format!("\n#botox_callout(\"{kind}\", \"{escaped_title}\")[\n"));
+                        let te = typst.len();
+                        if let (Some(segs), Some(omap), Some(r)) = (
+                            source_segments.as_deref_mut(),
+                            prep_offset_map.as_ref(),
+                            event_ranges.get(i),
+                        ) {
+                            let (ms, me) = omap.map_range(r.start, r.end, raw_body_offset);
+                            segs.push(crate::sync_map::SourceSegment {
+                                typst_start: ts,
+                                typst_end: te,
+                                md_start: ms,
+                                md_end: me,
+                            });
+                        }
                     }
                 } else if html.contains("<!--botox:callout:end-->") {
                     typst.push_str("\n]\n\n");
@@ -1195,7 +1395,16 @@ pub fn markdown_to_typst_with_options(
                     i += 1;
                     continue;
                 }
+                let md_span = prep_offset_map.as_ref().and_then(|omap| {
+                    event_ranges.get(i).map(|r| omap.map_range(r.start, r.end, raw_body_offset))
+                });
                 if let Some((_, ref mut h_buf)) = current_heading {
+                    if let Some((ms, me)) = md_span {
+                        current_heading_md_range = Some(match current_heading_md_range {
+                            Some((os, oe)) => (os.min(ms), oe.max(me)),
+                            None => (ms, me),
+                        });
+                    }
                     h_buf.push('`');
                     h_buf.push_str(&code);
                     h_buf.push('`');
@@ -1215,13 +1424,32 @@ pub fn markdown_to_typst_with_options(
                     link_text.push('`');
                 }
                 if in_table {
+                    if let Some((ms, me)) = md_span {
+                        current_cell_md_range = Some(match current_cell_md_range {
+                            Some((os, oe)) => (os.min(ms), oe.max(me)),
+                            None => (ms, me),
+                        });
+                    }
                     current_cell.push('`');
                     current_cell.push_str(&code);
                     current_cell.push('`');
                 } else {
                     typst.push('`');
+                    let ts = typst.len();
                     typst.push_str(&code);
+                    let te = typst.len();
                     typst.push('`');
+                    if let (Some(segs), Some((ms, me))) = (source_segments.as_deref_mut(), md_span) {
+                        // Strip surrounding backtick bytes in md_span when present
+                        let inner_ms = if me > ms + 2 { ms + 1 } else { ms };
+                        let inner_me = if me > ms + 2 { me - 1 } else { me };
+                        segs.push(crate::sync_map::SourceSegment {
+                            typst_start: ts,
+                            typst_end: te,
+                            md_start: inner_ms,
+                            md_end: inner_me,
+                        });
+                    }
                 }
             }
             Event::InlineMath(math) => {
@@ -1229,6 +1457,9 @@ pub fn markdown_to_typst_with_options(
                     i += 1;
                     continue;
                 }
+                let md_span = prep_offset_map.as_ref().and_then(|omap| {
+                    event_ranges.get(i).map(|r| omap.map_range(r.start, r.end, raw_body_offset))
+                });
                 if let Some((_, ref mut h_buf)) = current_heading {
                     let converted = convert_latex_math_to_typst(&math);
                     h_buf.push('$');
@@ -1242,7 +1473,17 @@ pub fn markdown_to_typst_with_options(
                 if in_table {
                     current_cell.push_str(&s);
                 } else {
+                    let ts = typst.len();
                     typst.push_str(&s);
+                    let te = typst.len();
+                    if let (Some(segs), Some((ms, me))) = (source_segments.as_deref_mut(), md_span) {
+                        segs.push(crate::sync_map::SourceSegment {
+                            typst_start: ts,
+                            typst_end: te,
+                            md_start: ms,
+                            md_end: me,
+                        });
+                    }
                 }
             }
             Event::DisplayMath(math) => {
@@ -1250,6 +1491,9 @@ pub fn markdown_to_typst_with_options(
                     i += 1;
                     continue;
                 }
+                let md_span = prep_offset_map.as_ref().and_then(|omap| {
+                    event_ranges.get(i).map(|r| omap.map_range(r.start, r.end, raw_body_offset))
+                });
                 let mut eq_label = None;
                 if let Some(Event::Text(next_text)) = events.get_mut(i + 1) {
                     let trimmed = next_text.trim_start();
@@ -1281,7 +1525,17 @@ pub fn markdown_to_typst_with_options(
                 if in_table {
                     current_cell.push_str(&s);
                 } else {
+                    let ts = typst.len();
                     typst.push_str(&s);
+                    let te = typst.len();
+                    if let (Some(segs), Some((ms, me))) = (source_segments.as_deref_mut(), md_span) {
+                        segs.push(crate::sync_map::SourceSegment {
+                            typst_start: ts,
+                            typst_end: te,
+                            md_start: ms,
+                            md_end: me,
+                        });
+                    }
                 }
             }
             Event::Rule => {
@@ -1289,10 +1543,25 @@ pub fn markdown_to_typst_with_options(
                     i += 1;
                     continue;
                 }
+                let ts = typst.len();
                 if is_slides {
                     typst.push_str("\n#pagebreak()\n\n");
                 } else {
                     typst.push_str("\n#line(length: 100%, stroke: 0.5pt + luma(180))\n\n");
+                }
+                let te = typst.len();
+                if let (Some(segs), Some(omap), Some(r)) = (
+                    source_segments.as_deref_mut(),
+                    prep_offset_map.as_ref(),
+                    event_ranges.get(i),
+                ) {
+                    let (ms, me) = omap.map_range(r.start, r.end, raw_body_offset);
+                    segs.push(crate::sync_map::SourceSegment {
+                        typst_start: ts,
+                        typst_end: te,
+                        md_start: ms,
+                        md_end: me,
+                    });
                 }
             }
             Event::SoftBreak => {

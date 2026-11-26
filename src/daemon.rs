@@ -1,13 +1,15 @@
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use crate::compiler::{self, BotoxHeadingInfo};
+use crate::sync_map::{ClickJumpResult, CursorJumpResult, SyncIndex};
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Default)]
 pub struct DaemonRequest {
     #[serde(default)]
     pub id: Option<u64>,
-    pub action: String, // "ping", "compile", "compile_file", "shutdown"
+    pub action: String, // "ping", "compile", "compile_file", "jump_from_click", "jump_from_cursor", "shutdown"
     pub markdown: Option<String>,
     pub file: Option<String>,
     pub resource_dir: Option<String>,
@@ -19,9 +21,14 @@ pub struct DaemonRequest {
     pub bibliography: Option<bool>,
     pub is_slides: Option<bool>,
     pub output_file: Option<String>,
+    pub page: Option<usize>,
+    pub x_pt: Option<f64>,
+    pub y_pt: Option<f64>,
+    pub line: Option<usize>,
+    pub col: Option<usize>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Default)]
 pub struct DaemonResponse {
     pub id: Option<u64>,
     pub status: String,
@@ -41,6 +48,10 @@ pub struct DaemonResponse {
     pub duration_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jump: Option<ClickJumpResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<CursorJumpResult>,
 }
 
 pub fn handle_daemon(_args: &[String]) {
@@ -50,6 +61,7 @@ pub fn handle_daemon(_args: &[String]) {
     let stdout = std::io::stdout();
     let mut reader = std::io::BufReader::new(stdin.lock());
     let mut writer = std::io::BufWriter::new(stdout.lock());
+    let mut sync_cache: HashMap<String, SyncIndex> = HashMap::new();
 
     // Print daemon ready signal to stderr for process managers
     eprintln!("[BOTOX:DAEMON] ready v{}", env!("CARGO_PKG_VERSION"));
@@ -70,16 +82,9 @@ pub fn handle_daemon(_args: &[String]) {
             Ok(r) => r,
             Err(e) => {
                 let err_resp = DaemonResponse {
-                    id: None,
                     status: "error".to_string(),
                     error: Some(format!("Invalid JSON request: {e}")),
-                    num_pages: None,
-                    pages: None,
-                    headings: None,
-                    is_slides: None,
-                    pause_indices: None,
-                    duration_ms: None,
-                    version: None,
+                    ..Default::default()
                 };
                 if let Ok(json) = serde_json::to_string(&err_resp) {
                     let _ = writeln!(writer, "{json}");
@@ -94,14 +99,7 @@ pub fn handle_daemon(_args: &[String]) {
             let resp = DaemonResponse {
                 id: req.id,
                 status: "ok".to_string(),
-                error: None,
-                num_pages: None,
-                pages: None,
-                headings: None,
-                is_slides: None,
-                pause_indices: None,
-                duration_ms: None,
-                version: None,
+                ..Default::default()
             };
             if let Ok(json) = serde_json::to_string(&resp) {
                 let _ = writeln!(writer, "{json}");
@@ -114,14 +112,50 @@ pub fn handle_daemon(_args: &[String]) {
             let resp = DaemonResponse {
                 id: req.id,
                 status: "ok".to_string(),
-                error: None,
-                num_pages: None,
-                pages: None,
-                headings: None,
-                is_slides: None,
-                pause_indices: None,
-                duration_ms: None,
                 version: Some(env!("CARGO_PKG_VERSION")),
+                ..Default::default()
+            };
+            if let Ok(json) = serde_json::to_string(&resp) {
+                let _ = writeln!(writer, "{json}");
+                let _ = writer.flush();
+            }
+            line_buffer.clear();
+            continue;
+        }
+
+        if req.action == "jump_from_click" {
+            let start_time = std::time::Instant::now();
+            let key = req.source_file.as_deref().or(req.file.as_deref()).unwrap_or("__default__");
+            let jump = sync_cache.get(key).and_then(|idx| {
+                idx.jump_from_click(req.page.unwrap_or(1), req.x_pt.unwrap_or(0.0), req.y_pt.unwrap_or(0.0))
+            });
+            let resp = DaemonResponse {
+                id: req.id,
+                status: "ok".to_string(),
+                jump,
+                duration_ms: Some(start_time.elapsed().as_secs_f64() * 1000.0),
+                ..Default::default()
+            };
+            if let Ok(json) = serde_json::to_string(&resp) {
+                let _ = writeln!(writer, "{json}");
+                let _ = writer.flush();
+            }
+            line_buffer.clear();
+            continue;
+        }
+
+        if req.action == "jump_from_cursor" {
+            let start_time = std::time::Instant::now();
+            let key = req.source_file.as_deref().or(req.file.as_deref()).unwrap_or("__default__");
+            let cursor = sync_cache.get(key).and_then(|idx| {
+                idx.jump_from_cursor(req.line.unwrap_or(1), req.col.unwrap_or(1))
+            });
+            let resp = DaemonResponse {
+                id: req.id,
+                status: "ok".to_string(),
+                cursor,
+                duration_ms: Some(start_time.elapsed().as_secs_f64() * 1000.0),
+                ..Default::default()
             };
             if let Ok(json) = serde_json::to_string(&resp) {
                 let _ = writeln!(writer, "{json}");
@@ -132,7 +166,18 @@ pub fn handle_daemon(_args: &[String]) {
         }
 
         let start_time = std::time::Instant::now();
-        let resp = process_daemon_request(&req, start_time);
+        let (resp, sync_idx) = process_daemon_request_with_sync(&req, start_time);
+        if let Some(idx) = sync_idx {
+            let key = req
+                .source_file
+                .clone()
+                .or_else(|| req.file.clone())
+                .unwrap_or_else(|| "__default__".to_string());
+            if sync_cache.len() >= 8 && !sync_cache.contains_key(&key) {
+                sync_cache.clear();
+            }
+            sync_cache.insert(key, idx);
+        }
         if let Ok(json) = serde_json::to_string(&resp) {
             let _ = writeln!(writer, "{json}");
             let _ = writer.flush();
@@ -142,7 +187,15 @@ pub fn handle_daemon(_args: &[String]) {
     }
 }
 
+#[allow(dead_code)]
 fn process_daemon_request(req: &DaemonRequest, start_time: std::time::Instant) -> DaemonResponse {
+    process_daemon_request_with_sync(req, start_time).0
+}
+
+fn process_daemon_request_with_sync(
+    req: &DaemonRequest,
+    start_time: std::time::Instant,
+) -> (DaemonResponse, Option<SyncIndex>) {
     let doc_dir_buf = req.resource_dir.as_ref().map(PathBuf::from).or_else(|| {
         req.file.as_ref().and_then(|f| Path::new(f).parent().map(|p| p.to_path_buf()))
     });
@@ -157,36 +210,32 @@ fn process_daemon_request(req: &DaemonRequest, start_time: std::time::Instant) -
     } else if let Some(ref file_path) = req.file {
         let p = Path::new(file_path);
         if !compiler::is_path_allowed(p, None) {
-            return DaemonResponse {
-                id: req.id,
-                status: "error".to_string(),
-                error: Some(format!("Access denied to file outside allowed directory: '{file_path}'")),
-                num_pages: None,
-                pages: None,
-                headings: None,
-                is_slides: None,
-                pause_indices: None,
-                duration_ms: Some(start_time.elapsed().as_secs_f64() * 1000.0),
-                version: None,
-            };
+            return (
+                DaemonResponse {
+                    id: req.id,
+                    status: "error".to_string(),
+                    error: Some(format!("Access denied to file outside allowed directory: '{file_path}'")),
+                    duration_ms: Some(start_time.elapsed().as_secs_f64() * 1000.0),
+                    ..Default::default()
+                },
+                None,
+            );
         }
         crate::engine::DocumentSource::File {
             path: p,
             resource_dir: doc_dir,
         }
     } else {
-        return DaemonResponse {
-            id: req.id,
-            status: "error".to_string(),
-            error: Some("Request must provide either 'markdown' or 'file'".to_string()),
-            num_pages: None,
-            pages: None,
-            headings: None,
-            is_slides: None,
-            pause_indices: None,
-            duration_ms: Some(start_time.elapsed().as_secs_f64() * 1000.0),
-            version: None,
-        };
+        return (
+            DaemonResponse {
+                id: req.id,
+                status: "error".to_string(),
+                error: Some("Request must provide either 'markdown' or 'file'".to_string()),
+                duration_ms: Some(start_time.elapsed().as_secs_f64() * 1000.0),
+                ..Default::default()
+            },
+            None,
+        );
     };
 
     let target = match req.is_slides {
@@ -205,8 +254,8 @@ fn process_daemon_request(req: &DaemonRequest, start_time: std::time::Instant) -
         ..Default::default()
     };
 
-    match crate::engine::publish_to_pages(&source, &opts) {
-        Ok(output) => {
+    match crate::engine::publish_to_pages_with_sync(&source, &opts) {
+        Ok((output, sync_idx)) => {
             let duration_ms = start_time.elapsed().as_secs_f64() * 1000.0;
             if let Some(ref out_file) = req.output_file {
                 let p = Path::new(out_file);
@@ -220,31 +269,31 @@ fn process_daemon_request(req: &DaemonRequest, start_time: std::time::Instant) -
                     }
                 }
             }
+            (
+                DaemonResponse {
+                    id: req.id,
+                    status: "ok".to_string(),
+                    num_pages: Some(output.num_pages),
+                    pages: Some(output.pages),
+                    headings: Some(output.headings),
+                    is_slides: Some(output.is_slides),
+                    pause_indices: Some(output.pause_indices),
+                    duration_ms: Some(duration_ms),
+                    ..Default::default()
+                },
+                sync_idx,
+            )
+        }
+        Err(e) => (
             DaemonResponse {
                 id: req.id,
-                status: "ok".to_string(),
-                error: None,
-                num_pages: Some(output.num_pages),
-                pages: Some(output.pages),
-                headings: Some(output.headings),
-                is_slides: Some(output.is_slides),
-                pause_indices: Some(output.pause_indices),
-                duration_ms: Some(duration_ms),
-                version: None,
-            }
-        }
-        Err(e) => DaemonResponse {
-            id: req.id,
-            status: "error".to_string(),
-            error: Some(e),
-            num_pages: None,
-            pages: None,
-            headings: None,
-            is_slides: None,
-            pause_indices: None,
-            duration_ms: Some(start_time.elapsed().as_secs_f64() * 1000.0),
-            version: None,
-        },
+                status: "error".to_string(),
+                error: Some(e),
+                duration_ms: Some(start_time.elapsed().as_secs_f64() * 1000.0),
+                ..Default::default()
+            },
+            None,
+        ),
     }
 }
 
@@ -257,17 +306,7 @@ mod tests {
         let req = DaemonRequest {
             id: Some(10),
             action: "ping".to_string(),
-            markdown: None,
-            file: None,
-            resource_dir: None,
-            source_file: None,
-            theme: None,
-            author: None,
-            font: None,
-            toc: None,
-            bibliography: None,
-            is_slides: None,
-            output_file: None,
+            ..Default::default()
         };
         let resp = process_daemon_request(&req, std::time::Instant::now());
         // For ping, handle_daemon handles it directly, but let's test process_daemon_request requirement validation
@@ -281,18 +320,12 @@ mod tests {
             id: Some(42),
             action: "compile".to_string(),
             markdown: Some("# Daemon Heading\n\nFast preview test paragraph.\n".to_string()),
-            file: None,
-            resource_dir: None,
             source_file: Some("live.md".to_string()),
             theme: Some("academic".to_string()),
-            author: None,
-            font: None,
-            toc: None,
-            bibliography: None,
             is_slides: Some(false),
-            output_file: None,
+            ..Default::default()
         };
-        let resp = process_daemon_request(&req, std::time::Instant::now());
+        let (resp, sync_idx) = process_daemon_request_with_sync(&req, std::time::Instant::now());
         assert_eq!(resp.status, "ok");
         assert_eq!(resp.id, Some(42));
         assert_eq!(resp.num_pages, Some(1));
@@ -301,6 +334,15 @@ mod tests {
         assert_eq!(pages.len(), 1);
         assert!(pages[0].contains("<svg"));
         assert!(resp.duration_ms.unwrap() > 0.0);
+
+        let idx = sync_idx.expect("SyncIndex should be built on daemon compile");
+        assert!(idx.glyph_count() > 20, "expected mapped glyphs, got {}", idx.glyph_count());
+        let c = idx.jump_from_cursor(3, 6).expect("cursor jump on line 3 col 6");
+        assert_eq!(c.page, 1);
+        let back = idx.jump_from_click(c.page as usize, c.x_pt as f64 + 1.0, c.y_pt as f64 + 2.0)
+            .expect("click jump back to source");
+        assert_eq!(back.line, 3);
+        assert!((back.col as i32 - 6).abs() <= 2, "expected col ~6, got {}", back.col);
     }
 
     #[test]
@@ -309,16 +351,7 @@ mod tests {
             id: Some(101),
             action: "compile".to_string(),
             markdown: Some("---\nslides: true\n---\n\n# Slide One\n\nBullet 1\n".to_string()),
-            file: None,
-            resource_dir: None,
-            source_file: None,
-            theme: None,
-            author: None,
-            font: None,
-            toc: None,
-            bibliography: None,
-            is_slides: None,
-            output_file: None,
+            ..Default::default()
         };
         let resp = process_daemon_request(&req, std::time::Instant::now());
         assert_eq!(resp.status, "ok");
@@ -332,16 +365,8 @@ mod tests {
             id: Some(999),
             action: "compile".to_string(),
             markdown: Some("# Title\n\nSee @fig-nonexistent-diagram-label-xyz for details.\n".to_string()),
-            file: None,
-            resource_dir: None,
             source_file: Some("err.md".to_string()),
-            theme: None,
-            author: None,
-            font: None,
-            toc: None,
-            bibliography: None,
-            is_slides: None,
-            output_file: None,
+            ..Default::default()
         };
         let resp = process_daemon_request(&req, std::time::Instant::now());
         assert_eq!(resp.status, "error");
@@ -354,17 +379,8 @@ mod tests {
         let req = DaemonRequest {
             id: Some(101),
             action: "compile_file".to_string(),
-            markdown: None,
             file: Some("/etc/shadow".to_string()),
-            resource_dir: None,
-            source_file: None,
-            theme: None,
-            author: None,
-            font: None,
-            toc: None,
-            bibliography: None,
-            is_slides: None,
-            output_file: None,
+            ..Default::default()
         };
         let resp = process_daemon_request(&req, std::time::Instant::now());
         assert_eq!(resp.status, "error");

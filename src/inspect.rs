@@ -484,12 +484,18 @@ pub fn extract_document_geometry(
             });
         }
 
-        let max_col_bottom = col_stats
-            .iter()
-            .map(|c| c.content_bottom_y)
-            .fold(usable_top, f64::max);
-        let page_fill_pct = round2((((max_col_bottom - usable_top) / usable_h) * 100.0).clamp(0.0, 100.0));
-        let page_dead_pt = round2((usable_bottom - max_col_bottom).max(0.0));
+        let page_fill_pct = if col_stats.is_empty() {
+            0.0
+        } else {
+            let sum_fill: f64 = col_stats.iter().map(|c| c.fill_pct).sum();
+            round2((sum_fill / col_stats.len() as f64).clamp(0.0, 100.0))
+        };
+        let page_dead_pt = if col_stats.is_empty() {
+            round2(usable_h)
+        } else {
+            let sum_dead: f64 = col_stats.iter().map(|c| c.bottom_dead_space_pt).sum();
+            round2((sum_dead / col_stats.len() as f64).max(0.0))
+        };
 
         pages_summary.push(PageSummary {
             page: page_num,
@@ -833,6 +839,17 @@ pub fn analyze_layout(
     file_label: &str,
     target_pages: Option<usize>,
 ) -> InspectReport {
+    analyze_layout_with_source(doc, file_label, target_pages, None)
+}
+
+/// Runs full wasted-space and layout-health diagnostics with optional raw Markdown source
+/// (used to attribute explicit `\newpage` / `\columnbreak` causes on `UNDERFULL_COLUMN`).
+pub fn analyze_layout_with_source(
+    doc: &ExtractedDocument,
+    file_label: &str,
+    target_pages: Option<usize>,
+    raw_markdown: Option<&str>,
+) -> InspectReport {
     let mut issues: Vec<LayoutIssue> = Vec::new();
 
     for page in &doc.pages {
@@ -1012,6 +1029,123 @@ pub fn analyze_layout(
             }
         }
 
+        // 4b. UNDERFULL_COLUMN on non-final columns with large trailing dead space (> 80pt & < 88% fill)
+        for col_stat in &page.columns {
+            let is_final_col_of_doc =
+                page.page == doc.pages.len() && col_stat.col == page.columns.len();
+            if is_final_col_of_doc || col_stat.block_count == 0 {
+                continue;
+            }
+            if col_stat.bottom_dead_space_pt > 80.0 && col_stat.fill_pct < 88.0 {
+                let mut col_blks: Vec<&&LayoutBlock> = page_blocks
+                    .iter()
+                    .filter(|b| b.col == col_stat.col)
+                    .collect();
+                col_blks.sort_by(|a, b| a.bbox.y.total_cmp(&b.bbox.y));
+                let last_blk_line = col_blks.last().and_then(|b| b.src_line);
+
+                // Find the next column's blocks (either next col on same page, or col 1 on next page)
+                let (next_page, next_col) = if col_stat.col < page.columns.len() {
+                    (page.page, col_stat.col + 1)
+                } else {
+                    (page.page + 1, 1)
+                };
+                let mut next_col_blks: Vec<&LayoutBlock> = doc
+                    .blocks
+                    .iter()
+                    .filter(|b| b.page == next_page && b.col == next_col)
+                    .collect();
+                next_col_blks.sort_by(|a, b| a.bbox.y.total_cmp(&b.bbox.y));
+                let next_first = next_col_blks.first().copied();
+                let next_first_line = next_first.and_then(|b| b.src_line);
+
+                // Check raw Markdown between last_blk_line and next_first_line for explicit break commands
+                let mut explicit_break: Option<(usize, &'static str)> = None;
+                if let (Some(md), Some(start_ln)) = (raw_markdown, last_blk_line) {
+                    let end_ln = next_first_line.unwrap_or(start_ln + 40);
+                    for (idx, line_text) in md.lines().enumerate() {
+                        let ln = idx + 1;
+                        if ln <= start_ln || ln >= end_ln {
+                            continue;
+                        }
+                        let trimmed = line_text.trim();
+                        if trimmed == r"\newpage" {
+                            explicit_break = Some((ln, r"\newpage"));
+                            break;
+                        } else if trimmed == r"\pagebreak" {
+                            explicit_break = Some((ln, r"\pagebreak"));
+                            break;
+                        } else if trimmed == r"\columnbreak" {
+                            explicit_break = Some((ln, r"\columnbreak"));
+                            break;
+                        }
+                    }
+                }
+
+                let (cause_src_line, cause_str) = if let Some((brk_ln, brk_cmd)) = explicit_break {
+                    (
+                        Some(brk_ln),
+                        format!("explicit `{brk_cmd}` at md:{brk_ln}"),
+                    )
+                } else if let Some(nf) = next_first {
+                    // If the next column starts with a sticky heading followed by a table/code/para,
+                    // estimate the combined indivisible height.
+                    let (unit_kind, unit_h) = if nf.kind == "heading" {
+                        if let Some(second) = next_col_blks.get(1) {
+                            let combined = (second.bbox.bottom() - nf.bbox.y).max(nf.bbox.h);
+                            (format!("heading + {}", second.kind), round2(combined))
+                        } else {
+                            (nf.kind.clone(), round2(nf.bbox.h))
+                        }
+                    } else {
+                        (nf.kind.clone(), round2(nf.bbox.h))
+                    };
+                    let loc = nf.src_line.map(|l| format!(" at md:{l}")).unwrap_or_default();
+                    (
+                        nf.src_line.or(last_blk_line),
+                        format!("next indivisible {unit_kind} (~{unit_h:.1}pt{loc}) didn't fit in {:.1}pt", col_stat.bottom_dead_space_pt),
+                    )
+                } else {
+                    (last_blk_line, "large trailing gap before next column/page".to_string())
+                };
+
+                let severity = if col_stat.bottom_dead_space_pt >= 110.0 || col_stat.fill_pct < 82.0 {
+                    "warn"
+                } else {
+                    "hint"
+                };
+
+                let dead_bbox = BBox::new(
+                    col_stat.x_min_pt,
+                    col_stat.content_bottom_y,
+                    (col_stat.x_max_pt - col_stat.x_min_pt).max(10.0),
+                    col_stat.bottom_dead_space_pt,
+                );
+                issues.push(LayoutIssue {
+                    code: "UNDERFULL_COLUMN".to_string(),
+                    severity: severity.to_string(),
+                    page: page.page,
+                    col: col_stat.col,
+                    bbox_pt: dead_bbox.to_array(),
+                    src_line: cause_src_line,
+                    text_excerpt: format!(
+                        "p{} col {} is {:.1}% full ({:.1}pt dead space)",
+                        page.page, col_stat.col, col_stat.fill_pct, col_stat.bottom_dead_space_pt
+                    ),
+                    reclaimable_pt: Some(round2(col_stat.bottom_dead_space_pt)),
+                    metrics: serde_json::json!({
+                        "fill_pct": col_stat.fill_pct,
+                        "bottom_dead_space_pt": col_stat.bottom_dead_space_pt,
+                        "explicit_break": explicit_break.map(|(_, c)| c),
+                    }),
+                    suggestion: format!(
+                        "Column has {:.1}pt dead space ({:.1}% fill) — cause: {cause_str}. Remove blunt breaks, reorder content, or allow splitting.",
+                        col_stat.bottom_dead_space_pt, col_stat.fill_pct
+                    ),
+                });
+            }
+        }
+
         // 5. ORPHAN_HEADING (heading near bottom of column with no following block in same column)
         for col_stat in &page.columns {
             let mut col_blks: Vec<&&LayoutBlock> = page_blocks
@@ -1021,6 +1155,8 @@ pub fn analyze_layout(
             col_blks.sort_by(|a, b| a.bbox.y.total_cmp(&b.bbox.y));
             if let Some(last_blk) = col_blks.last()
                 && last_blk.kind == "heading"
+                && last_blk.line_count <= 2
+                && last_blk.bbox.h <= 42.0
                 && (page.page < doc.pages.len() || col_stat.col < page.columns.len())
             {
                 issues.push(LayoutIssue {
@@ -1396,13 +1532,23 @@ pub fn format_inspect_human(report: &InspectReport) -> String {
             .iter()
             .map(|c| format!("col {}: {:.1}% (dead {:.1}pt)", c.col, c.fill_pct, c.bottom_dead_space_pt))
             .collect();
+        let min_col_fill = p
+            .columns
+            .iter()
+            .map(|c| c.fill_pct)
+            .fold(100.0f64, f64::min);
+        let fill_display = if p.columns.len() >= 2 && min_col_fill < p.fill_pct - 0.5 {
+            format!("{:.1}% (min {:.1}%)", p.fill_pct, min_col_fill)
+        } else {
+            format!("{:.1}%", p.fill_pct)
+        };
         let _ = writeln!(
             out,
-            "  Page {} ({:.0}x{:.0}pt): fill {:.1}% | {}",
+            "  Page {} ({:.0}x{:.0}pt): fill {} | {}",
             p.page,
             p.width_pt,
             p.height_pt,
-            p.fill_pct,
+            fill_display,
             cols_str.join(", ")
         );
     }
@@ -2472,5 +2618,50 @@ Regular body paragraph with multiple lines of text to establish a clean median b
             .expect("Expected SPLIT_CODE_BLOCK warning when fenced code splits across columns");
         assert_eq!(split_issue.severity, "warn");
         assert!(split_issue.suggestion.contains("col1") && split_issue.suggestion.contains("col2"));
+    }
+
+    #[test]
+    fn test_underfull_column_detects_explicit_newpage_and_averages_page_fill() {
+        let mut md = String::from("---\ntitle: Underfull Col Test\ntheme: compact\ncolumns: 2\nfontsize: 9pt\n---\n\n");
+        for i in 1..=26 {
+            md.push_str(&format!("Paragraph {i} with enough text to fill column one completely to the bottom margin of page one.\n\n"));
+        }
+        md.push_str("## Col 2 Start\n\nShort text in col 2.\n\n\\newpage\n\n## Page 2 Start\n\nContent on page 2.\n");
+
+        let cfg = BotoxConfig::defaults();
+        let (doc, _, cols) = crate::engine::compile_for_inspection(
+            &md, None, &cfg,
+            false, false, None, None, None, None, None, &[], &[], None, "uf.md",
+        ).expect("compile ok");
+        let extracted = extract_document_geometry(&doc, cols);
+        let report = analyze_layout_with_source(&extracted, "uf.md", None, Some(&md));
+
+        assert!(report.page_count >= 2, "expected >= 2 pages");
+        let p1 = &report.pages[0];
+        let avg: f64 = p1.columns.iter().map(|c| c.fill_pct).sum::<f64>() / p1.columns.len() as f64;
+        assert!((p1.fill_pct - avg).abs() < 0.2, "page fill {} should equal avg {}", p1.fill_pct, avg);
+
+        let uf: Vec<_> = report.issues.iter().filter(|i| i.code == "UNDERFULL_COLUMN").collect();
+        assert!(!uf.is_empty(), "expected UNDERFULL_COLUMN on underfull non-final column");
+        assert!(
+            uf.iter().any(|i| i.suggestion.contains(r"\newpage")),
+            "expected explicit \\newpage cause in suggestion, got: {:?}",
+            uf.iter().map(|i| &i.suggestion).collect::<Vec<_>>()
+        );
+
+        let text = format_inspect_human(&report);
+        assert!(text.contains("(min "), "expected '(min ...%)' in multi-col text output:\n{text}");
+    }
+
+    #[test]
+    fn test_sticky_headings_emitted_in_document_preamble() {
+        let md = "---\ntitle: Sticky Test\ntheme: compact\n---\n\n# Heading\n\nBody.\n";
+        let cfg = BotoxConfig::defaults();
+        let (typst, _) = crate::engine::transpile_markdown_to_typst_markup(
+            md, None, &cfg,
+            false, false, None, None, None, None, None, &[], &[], None,
+        ).expect("transpile ok");
+        assert!(typst.contains("#show heading: set block(sticky: true)"));
+        assert!(typst.contains("sticky: true"));
     }
 }

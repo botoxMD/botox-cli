@@ -440,8 +440,9 @@ pub fn transpile_markdown_to_typst_markup(
         cli_include_ref,
         source_path,
         false,
+        false,
     )
-    .map(|(markup, is_slides, _)| (markup, is_slides))
+    .map(|(markup, is_slides, _, _)| (markup, is_slides))
 }
 
 /// Transpiles raw markdown with zero-width `#metadata("botox-src:...")` tags
@@ -463,7 +464,7 @@ pub fn compile_for_inspection(
     source_path: Option<&Path>,
     source_filename: &str,
 ) -> Result<(typst_layout::PagedDocument, bool, usize), String> {
-    let (typst_markup, is_slides, expected_columns) = transpile_markdown_internal(
+    let (typst_markup, is_slides, expected_columns, _) = transpile_markdown_internal(
         raw_content,
         doc_dir,
         config_data,
@@ -478,6 +479,7 @@ pub fn compile_for_inspection(
         cli_include_ref,
         source_path,
         true,
+        false,
     )
     .map_err(|e| format!("[YAML Frontmatter Error] {source_filename}: {e}"))?;
 
@@ -506,7 +508,8 @@ fn transpile_markdown_internal(
     cli_include_ref: &[String],
     source_path: Option<&Path>,
     emit_source_tags: bool,
-) -> Result<(String, bool, usize), String> {
+    build_sourcemap: bool,
+) -> Result<(String, bool, usize, Option<crate::sync_map::SourceMap>), String> {
     let (fm, body_md) = parse_frontmatter_strict(raw_content)?;
     let body_offset_bytes = raw_content.len().saturating_sub(body_md.len());
     let source_line_offset = raw_content[..body_offset_bytes].bytes().filter(|&b| b == b'\n').count();
@@ -650,7 +653,12 @@ fn transpile_markdown_internal(
         emit_source_tags,
         source_line_offset,
     };
-    let body_typst = markdown::markdown_to_typst_with_options(body_md, &md_opts);
+    let (body_typst, mut source_map) = if build_sourcemap {
+        let (bt, segs) = markdown::markdown_to_typst_with_sourcemap(body_md, &md_opts, body_offset_bytes);
+        (bt, Some(crate::sync_map::SourceMap::new(raw_content, segs)))
+    } else {
+        (markdown::markdown_to_typst_with_options(body_md, &md_opts), None)
+    };
 
     let emitter: Box<dyn crate::emitter::DocumentEmitter> = if is_slides {
         Box::new(slides::SlideEmitter {
@@ -670,8 +678,13 @@ fn transpile_markdown_internal(
         })
     };
     let typst_markup = emitter.emit(&body_typst);
+    if let Some(ref mut sm) = source_map
+        && let Some(body_pos) = typst_markup.find(&body_typst)
+    {
+        sm.shift_typst_offsets(body_pos);
+    }
 
-    Ok((typst_markup, is_slides, columns))
+    Ok((typst_markup, is_slides, columns, source_map))
 }
 
 /// Primary publishing entrypoint: executes the end-to-end publishing pipeline.
@@ -782,6 +795,48 @@ pub fn publish_to_pages(
         doc_dir,
         Some(&raw_content),
         Some(&src_filename),
+    )
+}
+
+/// Publishes document directly to vector pages AND builds a character-level `SyncIndex`.
+pub fn publish_to_pages_with_sync(
+    source: &DocumentSource<'_>,
+    options: &PublishOptions<'_>,
+) -> Result<(BotoxPagesOutput, Option<crate::sync_map::SyncIndex>), String> {
+    let raw_content = source.read_content()?;
+    let doc_dir = source.resource_dir();
+    let src_path = source.source_path();
+    let src_filename = source.filename_display();
+
+    let (config_data, _) = config::BotoxConfig::load(options.custom_config_path, doc_dir);
+    let explicit_slides = options.target == TargetFormat::Slides;
+    let explicit_pdf = options.target == TargetFormat::Pdf;
+
+    let (typst_markup, _is_slides, _cols, source_map) = transpile_markdown_internal(
+        &raw_content,
+        doc_dir,
+        &config_data,
+        explicit_pdf,
+        explicit_slides,
+        options.toc,
+        options.author,
+        options.font,
+        options.bibliography,
+        options.theme,
+        options.exclude_ref,
+        options.include_ref,
+        src_path,
+        false,
+        true,
+    )
+    .map_err(|e| format!("[YAML Frontmatter Error] {src_filename}: {e}"))?;
+
+    compiler::compile_typst_to_pages_with_sync(
+        &typst_markup,
+        doc_dir,
+        Some(&raw_content),
+        Some(&src_filename),
+        source_map,
     )
 }
 

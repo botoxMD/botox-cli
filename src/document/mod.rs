@@ -279,6 +279,7 @@ impl<'a> DocumentEmitter for ArticleEmitter<'a> {
 
     out.push_str(&format!("#set par(justify: true, leading: {leading_em}{indent_clause})\n"));
     out.push_str("#show heading: set par(justify: false)\n");
+    out.push_str("#show heading: set block(sticky: true)\n");
     out.push_str("#show list: set par(justify: false)\n");
     out.push_str("#show enum: set par(justify: false)\n");
     out.push_str("#show table.cell: set par(justify: false)\n");
@@ -435,45 +436,45 @@ impl<'a> DocumentEmitter for ArticleEmitter<'a> {
         out.push_str("#set par.line(numbering: \"1\")\n");
     }
 
-    // Heading styling per theme
+    // Heading styling per theme (sticky: true prevents orphaned headings at column/page bottoms)
     match doc_theme {
         DocumentTheme::Modern => {
-            out.push_str("#show heading.where(level: 1): it => block(above: 1.9em, below: 1.1em, width: 100%)[\n");
+            out.push_str("#show heading.where(level: 1): it => block(above: 1.9em, below: 1.1em, width: 100%, sticky: true)[\n");
             out.push_str("  #text(fill: rgb(\"#0f172a\"), size: 1.35em, weight: \"bold\")[#it]\n");
             out.push_str("  #v(0.35em)\n");
             out.push_str("  #line(length: 100%, stroke: 1.2pt + rgb(\"#2563eb\"))\n");
             out.push_str("]\n");
-            out.push_str("#show heading.where(level: 2): it => block(above: 1.4em, below: 0.7em)[#text(fill: rgb(\"#0f172a\"), size: 1.18em, weight: \"bold\")[#it]]\n");
-            out.push_str("#show heading.where(level: 3): it => block(above: 1.1em, below: 0.5em)[#text(fill: rgb(\"#334155\"), size: 1.05em, weight: \"bold\")[#it]]\n\n");
+            out.push_str("#show heading.where(level: 2): it => block(above: 1.4em, below: 0.7em, sticky: true)[#text(fill: rgb(\"#0f172a\"), size: 1.18em, weight: \"bold\")[#it]]\n");
+            out.push_str("#show heading.where(level: 3): it => block(above: 1.1em, below: 0.5em, sticky: true)[#text(fill: rgb(\"#334155\"), size: 1.05em, weight: \"bold\")[#it]]\n\n");
         }
         DocumentTheme::Technical => {
-            out.push_str("#show heading.where(level: 1): it => block(above: 1.7em, below: 0.8em, width: 100%)[\n");
+            out.push_str("#show heading.where(level: 1): it => block(above: 1.7em, below: 0.8em, width: 100%, sticky: true)[\n");
             out.push_str("  #text(fill: rgb(\"#0f766e\"), size: 1.3em, weight: \"bold\")[#it]\n");
             out.push_str("  #v(0.3em)\n");
             out.push_str("  #line(length: 100%, stroke: 1pt + rgb(\"#0d9488\"))\n");
             out.push_str("]\n");
-            out.push_str("#show heading.where(level: 2): it => block(above: 1.3em, below: 0.6em)[#text(fill: rgb(\"#0f766e\"), size: 1.15em, weight: \"bold\")[#it]]\n");
-            out.push_str("#show heading.where(level: 3): it => block(above: 1.0em, below: 0.5em)[#text(fill: rgb(\"#0369a1\"), size: 1.0em, weight: \"bold\")[#it]]\n\n");
+            out.push_str("#show heading.where(level: 2): it => block(above: 1.3em, below: 0.6em, sticky: true)[#text(fill: rgb(\"#0f766e\"), size: 1.15em, weight: \"bold\")[#it]]\n");
+            out.push_str("#show heading.where(level: 3): it => block(above: 1.0em, below: 0.5em, sticky: true)[#text(fill: rgb(\"#0369a1\"), size: 1.0em, weight: \"bold\")[#it]]\n\n");
         }
         DocumentTheme::Elegant => {
-            out.push_str("#show heading.where(level: 1): it => block(above: 2.2em, below: 1.0em)[#text(fill: rgb(\"#1c1917\"), size: 1.35em, weight: \"bold\")[#it]]\n");
-            out.push_str("#show heading.where(level: 2): it => block(above: 1.6em, below: 0.7em)[#text(fill: rgb(\"#292524\"), size: 1.15em, weight: \"bold\")[#it]]\n");
-            out.push_str("#show heading.where(level: 3): it => block(above: 1.2em, below: 0.5em)[#text(fill: rgb(\"#44403c\"), size: 1.05em, style: \"italic\")[#it]]\n\n");
+            out.push_str("#show heading.where(level: 1): it => block(above: 2.2em, below: 1.0em, sticky: true)[#text(fill: rgb(\"#1c1917\"), size: 1.35em, weight: \"bold\")[#it]]\n");
+            out.push_str("#show heading.where(level: 2): it => block(above: 1.6em, below: 0.7em, sticky: true)[#text(fill: rgb(\"#292524\"), size: 1.15em, weight: \"bold\")[#it]]\n");
+            out.push_str("#show heading.where(level: 3): it => block(above: 1.2em, below: 0.5em, sticky: true)[#text(fill: rgb(\"#44403c\"), size: 1.05em, style: \"italic\")[#it]]\n\n");
         }
         DocumentTheme::Compact => {
-            out.push_str("#show heading.where(level: 1): it => block(above: 1.2em, below: 0.5em)[#text(size: 1.15em, weight: \"bold\")[#it]]\n");
-            out.push_str("#show heading.where(level: 2): it => block(above: 1.0em, below: 0.4em)[#text(size: 1.05em, weight: \"bold\")[#it]]\n");
-            out.push_str("#show heading.where(level: 3): it => block(above: 0.8em, below: 0.3em)[#text(size: 1.0em, weight: \"bold\", style: \"italic\")[#it]]\n\n");
+            out.push_str("#show heading.where(level: 1): it => block(above: 1.2em, below: 0.5em, sticky: true)[#text(size: 1.15em, weight: \"bold\")[#it]]\n");
+            out.push_str("#show heading.where(level: 2): it => block(above: 1.0em, below: 0.4em, sticky: true)[#text(size: 1.05em, weight: \"bold\")[#it]]\n");
+            out.push_str("#show heading.where(level: 3): it => block(above: 0.8em, below: 0.3em, sticky: true)[#text(size: 1.0em, weight: \"bold\", style: \"italic\")[#it]]\n\n");
         }
         DocumentTheme::Minimal => {
-            out.push_str("#show heading.where(level: 1): it => block(above: 2.4em, below: 1.0em)[#text(size: 1.5em, weight: \"bold\", fill: rgb(\"#18181b\"))[#it]]\n");
-            out.push_str("#show heading.where(level: 2): it => block(above: 1.8em, below: 0.8em)[#text(size: 1.2em, weight: \"bold\", fill: rgb(\"#27272a\"))[#it]]\n");
-            out.push_str("#show heading.where(level: 3): it => block(above: 1.4em, below: 0.6em)[#text(size: 1.05em, weight: \"medium\", fill: rgb(\"#3f3f46\"))[#it]]\n\n");
+            out.push_str("#show heading.where(level: 1): it => block(above: 2.4em, below: 1.0em, sticky: true)[#text(size: 1.5em, weight: \"bold\", fill: rgb(\"#18181b\"))[#it]]\n");
+            out.push_str("#show heading.where(level: 2): it => block(above: 1.8em, below: 0.8em, sticky: true)[#text(size: 1.2em, weight: \"bold\", fill: rgb(\"#27272a\"))[#it]]\n");
+            out.push_str("#show heading.where(level: 3): it => block(above: 1.4em, below: 0.6em, sticky: true)[#text(size: 1.05em, weight: \"medium\", fill: rgb(\"#3f3f46\"))[#it]]\n\n");
         }
         DocumentTheme::Academic => {
-            out.push_str("#show heading.where(level: 1): it => block(above: 1.8em, below: 0.9em)[#it]\n");
-            out.push_str("#show heading.where(level: 2): it => block(above: 1.4em, below: 0.7em)[#it]\n");
-            out.push_str("#show heading.where(level: 3): it => block(above: 1.1em, below: 0.6em)[#it]\n\n");
+            out.push_str("#show heading.where(level: 1): it => block(above: 1.8em, below: 0.9em, sticky: true)[#it]\n");
+            out.push_str("#show heading.where(level: 2): it => block(above: 1.4em, below: 0.7em, sticky: true)[#it]\n");
+            out.push_str("#show heading.where(level: 3): it => block(above: 1.1em, below: 0.6em, sticky: true)[#it]\n\n");
         }
     }
 
