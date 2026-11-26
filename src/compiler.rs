@@ -838,12 +838,23 @@ pub fn compile_typst_to_document(
     markdown_source: Option<&str>,
     source_filename: Option<&str>,
 ) -> Result<typst_layout::PagedDocument, String> {
+    compile_typst_to_document_with_source(typst_markup, resource_dir, markdown_source, source_filename)
+        .map(|(doc, _)| doc)
+}
+
+pub fn compile_typst_to_document_with_source(
+    typst_markup: &str,
+    resource_dir: Option<&Path>,
+    markdown_source: Option<&str>,
+    source_filename: Option<&str>,
+) -> Result<(typst_layout::PagedDocument, typst::syntax::Source), String> {
     let fonts = load_needed_fonts(typst_markup);
     let res_dir = resource_dir
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     let main_source = typst::syntax::Source::detached(typst_markup.to_string());
+    let source_clone = main_source.clone();
     let world = BotoxWorld {
         main_id: main_source.id(),
         main_source,
@@ -853,13 +864,14 @@ pub fn compile_typst_to_document(
     };
 
     let typst::diag::Warned { output, warnings: _ } = typst::compile(&world);
-    output.map_err(|diags| {
+    let doc = output.map_err(|diags| {
         if std::env::var("BOTOX_DEBUG").is_ok() {
             let debug_path = crate::diagrams::get_cache_dir().join("debug_fail.typ");
             let _ = std::fs::write(debug_path, typst_markup);
         }
         format_compilation_error(&diags, typst_markup, markdown_source, source_filename)
-    })
+    })?;
+    Ok((doc, source_clone))
 }
 
 pub fn compile_typst_to_pages(
@@ -870,6 +882,24 @@ pub fn compile_typst_to_pages(
 ) -> Result<BotoxPagesOutput, String> {
     let doc = compile_typst_to_document(typst_markup, resource_dir, markdown_source, source_filename)?;
     Ok(render_doc_to_pages(&doc))
+}
+
+pub fn compile_typst_to_pages_with_sync(
+    typst_markup: &str,
+    resource_dir: Option<&Path>,
+    markdown_source: Option<&str>,
+    source_filename: Option<&str>,
+    source_map: Option<crate::sync_map::SourceMap>,
+) -> Result<(BotoxPagesOutput, Option<crate::sync_map::SyncIndex>), String> {
+    let (doc, source) = compile_typst_to_document_with_source(
+        typst_markup,
+        resource_dir,
+        markdown_source,
+        source_filename,
+    )?;
+    let pages = render_doc_to_pages(&doc);
+    let sync_index = source_map.map(|sm| crate::sync_map::SyncIndex::build(&doc, &source, sm));
+    Ok((pages, sync_index))
 }
 
 pub fn compile_typst(

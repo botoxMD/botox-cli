@@ -10,6 +10,7 @@ pub mod engine;
 pub mod emitter;
 pub mod templates;
 pub mod inspect;
+pub mod sync_map;
 
 use std::path::{Path, PathBuf};
 
@@ -449,7 +450,13 @@ Options:
         }
     };
 
-    let report = inspect::analyze_layout(&extracted, &label, target_pages);
+    let raw_md = std::fs::read_to_string(&path).ok();
+    let report = inspect::analyze_layout_with_source(
+        &extracted,
+        &label,
+        target_pages,
+        raw_md.as_deref(),
+    );
 
     if let Some(ref cmp_file) = compare_path {
         let base_str = match std::fs::read_to_string(cmp_file) {
