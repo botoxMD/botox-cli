@@ -71,28 +71,34 @@ pub fn format_typst_date(d: &str) -> Option<String> {
 pub fn extract_title(fm: &Value) -> Option<String> {
     fm.get("title").and_then(|v| {
         if let Some(s) = v.as_str() {
-            Some(s.to_string())
+            let t = s.trim();
+            if t.is_empty() { None } else { Some(s.to_string()) }
         } else { v.as_i64().map(|n| n.to_string()) }
     })
 }
 
 pub fn extract_authors(fm: &Value, config_author: Option<&str>, cli_author: Option<&str>) -> Vec<String> {
     if let Some(ca) = cli_author {
-        vec![ca.to_string()]
+        if ca.trim().is_empty() { Vec::new() } else { vec![ca.to_string()] }
     } else if let Some(a) = fm.get("author").or_else(|| fm.get("authors")) {
         if let Some(s) = a.as_str() {
-            vec![s.to_string()]
+            if s.trim().is_empty() { Vec::new() } else { vec![s.to_string()] }
         } else if let Some(arr) = a.as_sequence() {
             arr.iter().filter_map(|item| {
                 if let Some(s) = item.as_str() {
-                    Some(s.to_string())
-                } else { item.get("name").and_then(|v| v.as_str()).map(|name| name.to_string()) }
+                    if s.trim().is_empty() { None } else { Some(s.to_string()) }
+                } else {
+                    item.get("name")
+                        .and_then(|v| v.as_str())
+                        .filter(|name| !name.trim().is_empty())
+                        .map(|name| name.to_string())
+                }
             }).collect()
         } else {
             Vec::new()
         }
     } else if let Some(ca) = config_author {
-        vec![ca.to_string()]
+        if ca.trim().is_empty() { Vec::new() } else { vec![ca.to_string()] }
     } else {
         Vec::new()
     }
@@ -101,7 +107,8 @@ pub fn extract_authors(fm: &Value, config_author: Option<&str>, cli_author: Opti
 pub fn extract_date(fm: &Value) -> Option<String> {
     fm.get("date").and_then(|v| {
         if let Some(s) = v.as_str() {
-            Some(s.to_string())
+            let t = s.trim();
+            if t.is_empty() { None } else { Some(s.to_string()) }
         } else { v.as_i64().map(|n| n.to_string()) }
     })
 }
